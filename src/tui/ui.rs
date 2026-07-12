@@ -1,6 +1,6 @@
 //! Rendering for the Meta CLI TUI — Meta-blue surfaces, motion, cursors.
 
-use super::app::{fmt_num, App, Cell};
+use super::app::{fmt_num, line_to_plain, App, Cell, TextRange};
 use super::{markdown, wrap};
 use crate::theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -209,6 +209,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     // Rebuild hit-test maps: headers (click) + any peekable line (hover).
     let mut hit_headers: Vec<Option<usize>> = Vec::new();
     let mut line_cells: Vec<Option<usize>> = Vec::new();
+    let mut plain_lines: Vec<String> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
         if let Cell::User(text) = cell {
@@ -231,6 +232,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             if is_header {
                 header_marked = true;
             }
+            plain_lines.push(line_to_plain(&line));
             wrapped.push(line);
             owner.push(current);
             // A User cell renders a blank spacer line then the prompt; either
@@ -247,6 +249,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     }
     app.hit_headers = hit_headers;
     app.line_cells = line_cells;
+    app.plain_lines = plain_lines;
 
     let total = wrapped.len() as u16;
     let viewport = area.height;
@@ -298,10 +301,19 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
 
     let text_w = area.width.saturating_sub(2 + sb_w).max(10);
 
+    let sel = app.selection;
     let visible: Vec<Line> = wrapped
         .into_iter()
+        .enumerate()
         .skip(top as usize)
         .take(body_h as usize)
+        .map(|(abs_i, line)| {
+            if let Some(range) = sel {
+                apply_selection_style(line, abs_i, range)
+            } else {
+                line
+            }
+        })
         .collect();
 
     let body_rect = Rect {
@@ -878,6 +890,60 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
     }
 }
 
+/// Highlight drag-selected characters with a Meta-blue selection wash.
+fn apply_selection_style(line: Line<'static>, line_idx: usize, range: TextRange) -> Line<'static> {
+    let (a, b) = range.normalized();
+    if line_idx < a.line || line_idx > b.line {
+        return line;
+    }
+    let plain = line_to_plain(&line);
+    let chars: Vec<char> = plain.chars().collect();
+    if chars.is_empty() {
+        return line;
+    }
+    let (from, to) = if a.line == b.line {
+        (a.col.min(chars.len()), b.col.min(chars.len()))
+    } else if line_idx == a.line {
+        (a.col.min(chars.len()), chars.len())
+    } else if line_idx == b.line {
+        (0, b.col.min(chars.len()))
+    } else {
+        (0, chars.len())
+    };
+    if from >= to {
+        return line;
+    }
+    // Rebuild the line as three runs: before · selected · after.
+    // Selected uses inverted Meta blue so it reads like OS selection.
+    let before: String = chars[..from].iter().collect();
+    let mid: String = chars[from..to].iter().collect();
+    let after: String = chars[to..].iter().collect();
+    let mut spans = Vec::new();
+    if !before.is_empty() {
+        // Keep first original style if present for the unselected prefix.
+        if let Some(s0) = line.spans.first() {
+            spans.push(Span::styled(before, s0.style));
+        } else {
+            spans.push(Span::raw(before));
+        }
+    }
+    spans.push(Span::styled(
+        mid,
+        Style::default()
+            .fg(theme::BG)
+            .bg(theme::META_BLUE)
+            .add_modifier(Modifier::BOLD),
+    ));
+    if !after.is_empty() {
+        if let Some(s0) = line.spans.last() {
+            spans.push(Span::styled(after, s0.style));
+        } else {
+            spans.push(Span::raw(after));
+        }
+    }
+    Line::from(spans)
+}
+
 /// Floating dialogue: full thought / tool / turn content.
 ///
 /// Uses click-pinned peek first (always works). Free hover only when the
@@ -1085,7 +1151,7 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  click card to peek  ·  ▸ expands  ·  drag scrollbar  ·  Shift+Tab  ·  Esc"
+            "/help  ·  drag text to select  ·  drag scrollbar  ·  click peek  ·  Shift+Tab  ·  Esc"
                 .to_string(),
             theme::style_faint(),
         ),

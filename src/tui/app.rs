@@ -259,6 +259,36 @@ pub enum ArrowAction {
     Scroll,
 }
 
+/// Character position in the wrapped transcript (line + display column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextPos {
+    pub line: usize,
+    pub col: usize,
+}
+
+/// Ordered selection range in the transcript.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextRange {
+    pub start: TextPos,
+    pub end: TextPos,
+}
+
+impl TextRange {
+    pub fn normalized(self) -> (TextPos, TextPos) {
+        let a = self.start;
+        let b = self.end;
+        if a.line < b.line || (a.line == b.line && a.col <= b.col) {
+            (a, b)
+        } else {
+            (b, a)
+        }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.start == self.end
+    }
+}
+
 /// The whole arrow-key policy, as a pure function — single source of truth for
 /// both `App::arrow_action` and its tests.
 ///
@@ -338,6 +368,14 @@ pub struct App {
     pub scrollbar_track: ratatui::layout::Rect,
     /// True while the user is dragging the scrollbar thumb.
     pub scrollbar_drag: bool,
+    /// True while drag-selecting transcript text (not scrollbar).
+    pub selecting: bool,
+    /// Down position before we know if this is a click or a drag-select.
+    pub select_anchor: Option<TextPos>,
+    /// Active text selection in the transcript (plain drag — no Shift needed).
+    pub selection: Option<TextRange>,
+    /// Plain text of every wrapped transcript line (for copy). Rebuilt each draw.
+    pub plain_lines: Vec<String>,
     /// Per wrapped transcript line: `Some(cell_idx)` when that line is a
     /// collapsible card header (click to expand/collapse).
     pub hit_headers: Vec<Option<usize>>,
@@ -349,8 +387,7 @@ pub struct App {
     pub expand_flash: Option<(usize, Instant)>,
     /// Cell under the mouse (all-motion tracking) for free hover peek.
     pub hover_cell: Option<usize>,
-    /// Click-pinned peek — stays open until Esc / click outside (works even when
-    /// the host terminal does not emit free mouse-move events).
+    /// Click-pinned peek — stays open until Esc / click outside.
     pub peek_pinned: Option<usize>,
     /// Last known mouse position (for anchoring the peek box).
     pub mouse_col: u16,
@@ -397,12 +434,11 @@ impl Drop for TermGuard {
     }
 }
 
-/// Always-on app mouse: wheel, scrollbar drag, click-to-peek, click-to-caret.
+/// Always-on app mouse: wheel, scrollbar drag, in-app text select, click-peek.
 ///
-/// Host terminals cannot give an app the mouse *and* plain drag-select at the
-/// same time. Scrollbar must always work, so capture stays on. **Shift+drag**
-/// is the standard escape hatch for native text selection (Windows Terminal,
-/// Orca, iTerm, most others pass Shift+mouse to the host).
+/// Plain drag on the transcript selects text inside Meta (highlighted + auto
+/// copied on release / Ctrl+C). Drag on the right-edge scrollbar scrolls.
+/// No Shift required — selection is first-class in the app.
 fn enable_app_mouse() {
     let _ = stdout().execute(EnableMouseCapture);
     // 1000/1002 = buttons+drag (scrollbar); 1003 = free hover when supported;
@@ -466,6 +502,10 @@ pub async fn run_tui(
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         scrollbar_drag: false,
+        selecting: false,
+        select_anchor: None,
+        selection: None,
+        plain_lines: Vec::new(),
         hit_headers: Vec::new(),
         line_cells: Vec::new(),
         transcript_top: 0,
@@ -503,7 +543,7 @@ pub async fn run_tui(
     ));
     app.push_note(
         Tone::Mode,
-        "scrollbar · wheel · click-peek always on  ·  Shift+drag to select text  ·  /help".into(),
+        "drag text to select (auto-copies)  ·  drag right scrollbar to scroll  ·  /help".into(),
     );
     if !ecosystem_summary.is_empty() {
         app.push_note(Tone::Skill, ecosystem_summary);
@@ -660,10 +700,16 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         match key.code {
-            // Ctrl+C: copy selection if any; else interrupt busy turn; else
-            // clear input; else double-tap to quit (never steal OS copy when
-            // the user has selected text in the editor).
+            // Ctrl+C: copy transcript selection → input selection → else
+            // interrupt / clear / double-tap quit.
             KeyCode::Char('c') if ctrl => {
+                if let Some(t) = self.selected_transcript_text() {
+                    if !t.is_empty() {
+                        clipboard_set(&t);
+                        self.push_note(Tone::Neutral, format!("copied {} chars", t.chars().count()));
+                        return;
+                    }
+                }
                 if self.input.has_selection() {
                     if let Some(t) = self.input.selected_text() {
                         clipboard_set(&t);
@@ -845,18 +891,20 @@ impl App {
         }
     }
 
-    /// Mouse: click places caret in the input; wheel scrolls the transcript;
-    /// drag the right-edge scrollbar thumb to scrub history.
+    /// Mouse:
+    /// - drag on transcript → select text (auto-copy on release)
+    /// - drag on right scrollbar → scrub history
+    /// - click card → peek; click ▸ → expand; click input → caret
     fn on_mouse(&mut self, m: event::MouseEvent) {
         if self.approval.is_some() || self.picker.is_some() {
             self.scrollbar_drag = false;
+            self.selecting = false;
+            self.select_anchor = None;
             return;
         }
-        // Always track pointer for hover peeks (even during drag/scroll).
         self.mouse_col = m.column;
         self.mouse_row = m.row;
         match m.kind {
-            // Larger steps — wheel felt laggy at 3 lines per notch.
             MouseEventKind::ScrollUp => {
                 self.scroll_up(5);
                 self.update_hover_from_mouse();
@@ -871,47 +919,149 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.hit_scrollbar(m.column, m.row) {
                     self.scrollbar_drag = true;
+                    self.selecting = false;
+                    self.select_anchor = None;
+                    self.selection = None;
                     self.scroll_from_scrollbar_y(m.row);
+                } else if self.in_transcript(m.column, m.row) {
+                    self.scrollbar_drag = false;
+                    // Begin potential drag-select; click actions fire on Up if
+                    // the pointer barely moved (so drag never fights peek/expand).
+                    if let Some(pos) = self.pos_at(m.column, m.row) {
+                        self.select_anchor = Some(pos);
+                        self.selecting = false;
+                        self.selection = Some(TextRange {
+                            start: pos,
+                            end: pos,
+                        });
+                    }
                 } else {
                     self.scrollbar_drag = false;
-                    let body = self.transcript_body;
-                    let in_transcript = body.width > 0
-                        && m.column >= body.x
-                        && m.column < body.right()
-                        && m.row >= body.y
-                        && m.row < body.bottom();
-                    if in_transcript {
-                        self.click_transcript(m.column, m.row);
-                    } else {
-                        // Click outside transcript dismisses pinned peek.
-                        self.peek_pinned = None;
-                        self.click_input(m.column, m.row);
-                    }
+                    self.select_anchor = None;
+                    self.selecting = false;
+                    self.selection = None;
+                    self.peek_pinned = None;
+                    self.click_input(m.column, m.row);
                 }
                 self.update_hover_from_mouse();
             }
-            // Right-click: always pin-peek (reliable even without free hover).
             MouseEventKind::Down(MouseButton::Right) => {
                 self.scrollbar_drag = false;
+                self.selecting = false;
+                self.select_anchor = None;
                 self.update_hover_from_mouse();
                 if let Some(idx) = self.cell_at_mouse() {
                     self.peek_pinned = Some(idx);
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                // Once dragging, follow the pointer anywhere on screen (not only
-                // the 2-col track) so fast scrubbing works like a real scrollbar.
                 if self.scrollbar_drag {
                     self.scroll_from_scrollbar_y(m.row);
+                } else if let Some(anchor) = self.select_anchor {
+                    if let Some(pos) = self.pos_at(m.column, m.row) {
+                        // Threshold: more than 1 cell → real drag-select.
+                        let moved = pos.line != anchor.line
+                            || pos.col.abs_diff(anchor.col) > 1;
+                        if moved {
+                            self.selecting = true;
+                            self.selection = Some(TextRange {
+                                start: anchor,
+                                end: pos,
+                            });
+                            // Selecting hides free-hover peek noise.
+                            self.hover_cell = None;
+                        }
+                    }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
-                self.scrollbar_drag = false;
+                if self.scrollbar_drag {
+                    self.scrollbar_drag = false;
+                } else if self.selecting {
+                    // Finalize selection + auto-copy so it feels like normal UIs.
+                    if let Some(t) = self.selected_transcript_text() {
+                        if !t.trim().is_empty() {
+                            clipboard_set(&t);
+                        }
+                    }
+                    self.selecting = false;
+                    self.select_anchor = None;
+                } else if self.select_anchor.is_some() {
+                    // Click without drag → peek / expand / etc.
+                    let col = m.column;
+                    let row = m.row;
+                    self.select_anchor = None;
+                    self.selection = None;
+                    self.click_transcript(col, row);
+                }
+                self.selecting = false;
             }
             _ => {
                 self.update_hover_from_mouse();
             }
         }
+    }
+
+    fn in_transcript(&self, col: u16, row: u16) -> bool {
+        let body = self.transcript_body;
+        body.width > 0
+            && col >= body.x
+            && col < body.right()
+            && row >= body.y
+            && row < body.bottom()
+    }
+
+    /// Map screen coords → absolute wrapped-line TextPos.
+    fn pos_at(&self, col: u16, row: u16) -> Option<TextPos> {
+        let body = self.transcript_body;
+        if !self.in_transcript(col, row) {
+            return None;
+        }
+        let local_y = row.saturating_sub(body.y) as usize;
+        let line = self.transcript_top as usize + local_y;
+        if line >= self.plain_lines.len() {
+            return None;
+        }
+        let local_x = col.saturating_sub(body.x) as usize;
+        let plain = &self.plain_lines[line];
+        let col_idx = display_col_to_char_idx(plain, local_x);
+        Some(TextPos {
+            line,
+            col: col_idx,
+        })
+    }
+
+    /// Selected transcript text (normalized range), if any.
+    pub fn selected_transcript_text(&self) -> Option<String> {
+        let sel = self.selection?;
+        if sel.is_empty() {
+            return None;
+        }
+        let (a, b) = sel.normalized();
+        if self.plain_lines.is_empty() {
+            return None;
+        }
+        let mut out = String::new();
+        for li in a.line..=b.line.min(self.plain_lines.len().saturating_sub(1)) {
+            let line = &self.plain_lines[li];
+            let chars: Vec<char> = line.chars().collect();
+            let (from, to) = if a.line == b.line {
+                (a.col.min(chars.len()), b.col.min(chars.len()))
+            } else if li == a.line {
+                (a.col.min(chars.len()), chars.len())
+            } else if li == b.line {
+                (0, b.col.min(chars.len()))
+            } else {
+                (0, chars.len())
+            };
+            if from < to {
+                out.extend(chars[from..to].iter());
+            }
+            if li < b.line {
+                out.push('\n');
+            }
+        }
+        Some(out)
     }
 
     /// Resolve `hover_cell` from mouse position over the transcript body.
@@ -1927,12 +2077,13 @@ impl App {
              model: {}  ·  /model <id> to switch\n\
              keys\n  \
              ↑/↓ · wheel · drag scrollbar   scroll the chat\n  \
-             drag scrollbar / wheel         always on — jump or scroll the transcript\n  \
-             Shift+drag                     select text in the host terminal (copy as usual)\n  \
+             drag on chat text              select (highlights + auto-copies)\n  \
+             drag right scrollbar · wheel   scroll the transcript (always on)\n  \
              click card · ▸ chevron         pin peek · expand in place\n  \
-             e / p (empty input)            expand · pin-peek latest thought/tool/turn\n  \
+             e / p (empty input)            expand · pin-peek latest\n  \
              esc                            close peek (then cancel / clear)\n  \
-             Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X   select-all · copy · paste · cut (input)\n  \
+             Ctrl+C                         copy selection (transcript or input)\n  \
+             Ctrl+A / Ctrl+V / Ctrl+X       select-all · paste · cut (input)\n  \
              Ctrl+P/Ctrl+N  prompt history    (also Alt+↑/↓)\n  \
              Enter          send              (\\+Enter or Ctrl+J for a newline)\n  \
              Shift+Tab      cycle modes  ·  Ctrl+R resume a session\n  \
@@ -2005,19 +2156,17 @@ impl App {
         });
     }
 
-    /// Mouse is always captured (scrollbar must never depend on a mode).
-    /// This command only re-asserts capture + explains Shift+drag selection.
+    /// Mouse is always captured. Explains drag-select vs scrollbar drag.
     fn cmd_mouse(&mut self) {
-        // Never turn capture off — users require scrollbar drag always.
         self.cfg.mouse = true;
         enable_app_mouse();
         let _ = crate::config::save_config(&self.cfg);
         self.push_note(
             Tone::Mode,
-            "mouse always on for scrollbar · wheel · click-peek · caret\n  \
-             select text:  hold Shift and drag  (host terminal selection)\n  \
-             then copy with the host shortcut (Ctrl+Shift+C / right-click Copy)\n  \
-             keyboard scroll still works: ↑/↓ · PgUp/PgDn · Home/End"
+            "mouse always on\n  \
+             drag on transcript  →  select text (auto-copies on release; Ctrl+C too)\n  \
+             drag right scrollbar  →  scroll history\n  \
+             wheel · click card to peek · ▸ expands · click input for caret"
                 .into(),
         );
     }
@@ -2221,6 +2370,27 @@ fn clipboard_get() -> Option<String> {
     arboard::Clipboard::new()
         .ok()
         .and_then(|mut cb| cb.get_text().ok())
+}
+
+/// Map a display column (terminal cells) to a char index in `plain`.
+pub fn display_col_to_char_idx(plain: &str, target_col: usize) -> usize {
+    let mut used = 0usize;
+    for (i, ch) in plain.chars().enumerate() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+        if used + w > target_col {
+            return i;
+        }
+        used += w;
+        if used >= target_col {
+            return i + 1;
+        }
+    }
+    plain.chars().count()
+}
+
+/// Flatten a ratatui Line to plain text.
+pub fn line_to_plain(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@ meta          # primary command — Meta-blue interactive TUI
 muse          # optional legacy alias (same binary; prefer `meta`)
 ```
 
-**v0.5.8** — **`meta` primary.** Scrollbar · wheel · click-peek **always on** (no mode that disables them). **Shift+drag** to select text. Duration chips, collapsed cards, design-eng motion.
+**v0.5.9** — **`meta` primary.** **Drag text to select** (in-app highlight + auto-copy). **Drag scrollbar / wheel always on.** Click-peek, duration chips, collapsed cards.
 
 ---
 
@@ -158,8 +158,8 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
 | `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
 | Wheel · drag scrollbar | Scroll transcript |
-| Drag right-edge scrollbar · wheel | **Always on** — jump / scroll the transcript |
-| Shift+drag | Select text in the host terminal, then copy as usual |
+| **Drag on chat text** | Select text (blue highlight) — **auto-copies** on release; Ctrl+C too |
+| **Drag right scrollbar · wheel** | Scroll / jump history — **always on** |
 | Click card / `▸` chevron | Pin peek · expand in place |
 | `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest |
 | `Esc` | Close peek first |
