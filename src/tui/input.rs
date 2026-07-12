@@ -248,7 +248,7 @@ impl InputState {
     }
 
     #[cfg(test)]
-    fn empty_for_test() -> Self {
+    pub(crate) fn empty_for_test() -> Self {
         Self {
             buffer: Vec::new(),
             cursor: 0,

@@ -199,6 +199,10 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let total = wrapped.len() as u16;
     let viewport = area.height;
 
+    // Publish real metrics so PageUp/Home scroll in true pages.
+    app.view_h = viewport;
+    app.view_total = total;
+
     let max_scroll = total.saturating_sub(viewport);
     if app.scroll_from_bottom > max_scroll {
         app.scroll_from_bottom = max_scroll;
@@ -222,7 +226,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
 
     // Scroll indicator when not following the bottom.
     if app.scroll_from_bottom > 0 {
-        let tag = format!(" ↓ {} ", app.scroll_from_bottom);
+        let tag = format!(" ↓ {} lines · End to jump ", app.scroll_from_bottom);
         let w = tag.width() as u16;
         let r = Rect {
             x: area.right().saturating_sub(w + 2),
@@ -476,7 +480,8 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  Shift+Tab modes  ·  Enter send  ·  Esc cancel".to_string(),
+            "/help  ·  ↑↓ scroll chat  ·  Ctrl+P history  ·  Shift+Tab modes  ·  Esc cancel"
+                .to_string(),
             theme::style_faint(),
         ),
     ]));
@@ -582,35 +587,64 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    // The caret is painted *over* a cell, never inserted — inserting a span on
+    // a blink phase shifts the whole line sideways twice a second, which reads
+    // as the input box "jumping". It is steady for the same reason.
     let text = app.input.text();
+    let focused = app.approval.is_none() && app.picker.is_none();
     let mut lines: Vec<Line> = Vec::new();
+
     if text.is_empty() {
         let hint = if app.busy {
             "type a follow-up — Enter queues it"
         } else {
             "plan, build, debug  ·  / for commands"
         };
-        lines.push(Line::from(vec![
-            Span::styled(
-                "❯ ".to_string(),
+        let mut spans = vec![Span::styled(
+            "❯ ".to_string(),
+            Style::default()
+                .fg(theme::META_BLUE)
+                .add_modifier(Modifier::BOLD),
+        )];
+        // Caret occupies its own cell in both states, so the hint never moves.
+        spans.push(Span::styled(
+            " ".to_string(),
+            if focused {
+                theme::style_cursor_on()
+            } else {
+                Style::default()
+            },
+        ));
+        spans.push(Span::styled(format!(" {hint}"), theme::style_faint()));
+        lines.push(Line::from(spans));
+    } else {
+        let (cur_line, cur_col) = app.input.cursor_line_col();
+        for (i, l) in text.split('\n').enumerate() {
+            let prefix = if i == 0 { "❯ " } else { "  " };
+            let mut spans = vec![Span::styled(
+                prefix.to_string(),
                 Style::default()
                     .fg(theme::META_BLUE)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(hint.to_string(), theme::style_faint()),
-        ]));
-    } else {
-        for (i, l) in text.split('\n').enumerate() {
-            let prefix = if i == 0 { "❯ " } else { "  " };
-            lines.push(Line::from(vec![
-                Span::styled(
-                    prefix.to_string(),
-                    Style::default()
-                        .fg(theme::META_BLUE)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(l.to_string(), Style::default().fg(theme::FG)),
-            ]));
+            )];
+            if focused && i == cur_line {
+                // Split the line at the caret and restyle exactly one cell.
+                let chars: Vec<char> = l.chars().collect();
+                let col = cur_col.min(chars.len());
+                let before: String = chars[..col].iter().collect();
+                let under: String = chars.get(col).copied().unwrap_or(' ').to_string();
+                let after: String = chars.iter().skip(col + 1).collect();
+                if !before.is_empty() {
+                    spans.push(Span::styled(before, Style::default().fg(theme::FG)));
+                }
+                spans.push(Span::styled(under, theme::style_cursor_on()));
+                if !after.is_empty() {
+                    spans.push(Span::styled(after, Style::default().fg(theme::FG)));
+                }
+            } else {
+                spans.push(Span::styled(l.to_string(), Style::default().fg(theme::FG)));
+            }
+            lines.push(Line::from(spans));
         }
     }
 
@@ -633,39 +667,6 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let usable = (inner.width as usize).saturating_sub(3); // "❯ " + 1 margin
     let x_off = cur_disp_w.saturating_sub(usable) as u16;
 
-    // Paint Meta block cursor into the line (blink) — not while a modal owns keys.
-    if app.approval.is_none() && app.picker.is_none() && theme::blink_on(app.spinner_epoch.elapsed())
-    {
-        let vis_idx = cur_line.saturating_sub(top);
-        if let Some(line) = lines.get_mut(vis_idx) {
-            // Under placeholder (empty text) cursor sits after ❯
-            if text.is_empty() {
-                // Replace hint with cursor + faint remainder.
-                *line = Line::from(vec![
-                    Span::styled(
-                        "❯ ".to_string(),
-                        Style::default()
-                            .fg(theme::META_BLUE)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(" ".to_string(), theme::style_cursor_on()),
-                    Span::styled(
-                        if app.busy {
-                            " type a follow-up…"
-                        } else {
-                            " plan, build, debug  ·  / for commands"
-                        }
-                        .to_string(),
-                        theme::style_faint(),
-                    ),
-                ]);
-            } else {
-                // Insert reverse block at cursor column within the text span.
-                inject_block_cursor(line, cur_col);
-            }
-        }
-    }
-
     let visible: Vec<Line> = lines.into_iter().skip(top).take(h).collect();
     f.render_widget(
         Paragraph::new(visible)
@@ -683,41 +684,6 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
             f.set_cursor_position((cx, cy));
         }
     }
-}
-
-/// Inject a reverse-video Meta block at `col` within the text portion of a line
-/// that is `[prefix "❯ ", text...]`.
-fn inject_block_cursor(line: &mut Line<'static>, col: usize) {
-    // Flatten text after first span (prefix).
-    if line.spans.is_empty() {
-        return;
-    }
-    let prefix = line.spans[0].clone();
-    let mut text = String::new();
-    for s in line.spans.iter().skip(1) {
-        text.push_str(&s.content);
-    }
-    let mut chars: Vec<char> = text.chars().collect();
-    let col = col.min(chars.len());
-    let before: String = chars.drain(..col).collect();
-    let under = chars.first().copied().unwrap_or(' ');
-    let after: String = if chars.is_empty() {
-        String::new()
-    } else {
-        chars[1..].iter().collect()
-    };
-
-    let mut spans = vec![prefix];
-    if !before.is_empty() {
-        spans.push(Span::styled(before, Style::default().fg(theme::FG)));
-    }
-    spans.push(Span::styled(under.to_string(), theme::style_cursor_on()));
-    if !after.is_empty() {
-        spans.push(Span::styled(after, Style::default().fg(theme::FG)));
-    } else if under == ' ' {
-        // trailing cursor already painted as space block
-    }
-    line.spans = spans;
 }
 
 // ── statusline ─────────────────────────────────────────────────────────────

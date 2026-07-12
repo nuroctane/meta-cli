@@ -13,7 +13,8 @@ use crate::tui::input::InputState;
 use crate::usage::{TokenUsage, UsageTracker};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -73,6 +74,17 @@ enum TurnMode {
     Compact,
 }
 
+/// What ↑/↓ do in the current UI state. Never `History` — see `arrow_action`.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum ArrowAction {
+    /// Move the selection in the slash-command palette.
+    Palette,
+    /// Move the caret inside a multi-line draft.
+    Caret,
+    /// Scroll the transcript.
+    Scroll,
+}
+
 pub struct ApprovalState {
     pub name: String,
     pub args: String,
@@ -120,7 +132,12 @@ pub struct App {
 
     pub cells: Vec<Cell>,
     tool_cells: HashMap<u64, usize>,
+    /// Lines scrolled back from the newest line (0 = following the bottom).
     pub scroll_from_bottom: u16,
+    /// Transcript viewport height + wrapped line count, refreshed each draw so
+    /// PageUp/Home can scroll in real pages instead of guessing.
+    pub view_h: u16,
+    pub view_total: u16,
 
     pub input: InputState,
     pub queue: VecDeque<String>,
@@ -156,6 +173,7 @@ impl Drop for TermGuard {
     fn drop(&mut self) {
         let _ = stdout().execute(Show);
         let _ = disable_raw_mode();
+        let _ = stdout().execute(DisableMouseCapture);
         let _ = stdout().execute(DisableBracketedPaste);
         let _ = stdout().execute(LeaveAlternateScreen);
     }
@@ -173,6 +191,8 @@ pub async fn run_tui(
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
+    // Wheel scrolls the transcript. Terminals keep Shift+drag for text selection.
+    stdout().execute(EnableMouseCapture)?;
     // Hardware cursor hidden — we paint a Meta blue block caret ourselves.
     stdout().execute(Hide)?;
     let _guard = TermGuard;
@@ -195,6 +215,8 @@ pub async fn run_tui(
         cells: vec![Cell::Banner],
         tool_cells: HashMap::new(),
         scroll_from_bottom: 0,
+        view_h: 20,
+        view_total: 0,
         input: InputState::new(),
         queue: VecDeque::new(),
         busy: false,
@@ -229,27 +251,56 @@ pub async fn run_tui(
         }
     }
 
+    // Redraw only when something actually changed (or while an animation is
+    // running). Repainting every tick makes the whole UI shimmer and pins a CPU
+    // core for nothing.
+    let mut dirty = true;
     loop {
         // Drain agent events first so the frame is fresh.
         while let Ok(ev) = app.rx.try_recv() {
             app.on_agent_event(ev);
+            dirty = true;
         }
 
-        terminal.draw(|f| super::ui::draw(f, &mut app))?;
+        // Spinners / streaming caret only animate while a turn is in flight.
+        if app.busy {
+            dirty = true;
+        }
+
+        if dirty {
+            terminal.draw(|f| super::ui::draw(f, &mut app))?;
+            dirty = false;
+        }
 
         if app.should_quit {
             break;
         }
 
-        // ~30fps so Meta spinners / caret blink stay smooth without burning CPU.
+        // ~30fps ceiling while animating; idle just parks on the poll.
         if event::poll(Duration::from_millis(32))? {
             match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => app.on_key(key),
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    app.on_key(key);
+                    dirty = true;
+                }
+                Event::Mouse(m) => match m.kind {
+                    MouseEventKind::ScrollUp => {
+                        app.scroll_up(3);
+                        dirty = true;
+                    }
+                    MouseEventKind::ScrollDown => {
+                        app.scroll_down(3);
+                        dirty = true;
+                    }
+                    _ => {}
+                },
                 Event::Paste(s) => {
                     if app.approval.is_none() {
                         app.input.insert_str(&s);
+                        dirty = true;
                     }
                 }
+                Event::Resize(_, _) => dirty = true,
                 _ => {}
             }
         }
@@ -283,6 +334,62 @@ impl App {
 
     fn palette_visible(&self) -> bool {
         !self.palette_matches().is_empty()
+    }
+
+    // ── arrow-key policy ───────────────────────────────────────────────
+    /// What ↑/↓ should do right now.
+    ///
+    /// Reading the chat is the common case, so arrows scroll the transcript.
+    /// They only move the caret when you are genuinely editing a multi-line
+    /// draft, and they never recall history — that lives on Ctrl+P / Ctrl+N,
+    /// because having a past prompt jump into the input box unbidden is
+    /// exactly the behavior we're avoiding.
+    fn arrow_action(&self, up: bool) -> ArrowAction {
+        if self.palette_visible() {
+            return ArrowAction::Palette;
+        }
+        if self.input.is_empty() {
+            return ArrowAction::Scroll;
+        }
+        let at_edge = if up {
+            self.input.on_first_line()
+        } else {
+            self.input.on_last_line()
+        };
+        if at_edge {
+            ArrowAction::Scroll
+        } else {
+            ArrowAction::Caret
+        }
+    }
+
+    // ── transcript scrolling ───────────────────────────────────────────
+    /// One page = a viewport minus two lines of overlap for context.
+    fn page(&self) -> u16 {
+        self.view_h.saturating_sub(2).max(1)
+    }
+
+    fn max_scroll(&self) -> u16 {
+        self.view_total.saturating_sub(self.view_h)
+    }
+
+    pub fn scroll_up(&mut self, n: u16) {
+        self.scroll_from_bottom = self
+            .scroll_from_bottom
+            .saturating_add(n)
+            .min(self.max_scroll());
+    }
+
+    pub fn scroll_down(&mut self, n: u16) {
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(n);
+    }
+
+    fn scroll_to_top(&mut self) {
+        self.scroll_from_bottom = self.max_scroll();
+    }
+
+    fn scroll_to_bottom(&mut self) {
+        self.scroll_from_bottom = 0;
     }
 
     // ── keys ───────────────────────────────────────────────────────────
@@ -380,39 +487,52 @@ impl App {
                     self.palette_idx = 0;
                 }
             }
-            KeyCode::Up => {
-                if self.palette_visible() {
-                    self.palette_idx = self.palette_idx.saturating_sub(1);
-                } else if self.input.on_first_line() {
-                    self.input.history_prev();
-                } else {
-                    self.input.move_up_line();
-                }
-            }
-            KeyCode::Down => {
-                if self.palette_visible() {
+            // Arrows scroll the transcript. They only move the caret when you
+            // are actually editing a multi-line draft; prompt history lives on
+            // Ctrl+P/N (and Alt+↑/↓) so reading back through the chat is the
+            // default, not a surprise recall into the input box.
+            KeyCode::Up if alt => self.input.history_prev(),
+            KeyCode::Down if alt => self.input.history_next(),
+            KeyCode::Up => match self.arrow_action(true) {
+                ArrowAction::Palette => self.palette_idx = self.palette_idx.saturating_sub(1),
+                ArrowAction::Caret => self.input.move_up_line(),
+                ArrowAction::Scroll => self.scroll_up(1),
+            },
+            KeyCode::Down => match self.arrow_action(false) {
+                ArrowAction::Palette => {
                     let n = self.palette_matches().len();
                     if self.palette_idx + 1 < n {
                         self.palette_idx += 1;
                     }
-                } else if self.input.on_last_line() {
-                    self.input.history_next();
-                } else {
-                    self.input.move_down_line();
                 }
-            }
+                ArrowAction::Caret => self.input.move_down_line(),
+                ArrowAction::Scroll => self.scroll_down(1),
+            },
+            KeyCode::Char('p') if ctrl => self.input.history_prev(),
+            KeyCode::Char('n') if ctrl => self.input.history_next(),
             KeyCode::Left if ctrl => self.input.word_left(),
             KeyCode::Right if ctrl => self.input.word_right(),
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
-            KeyCode::Home => self.input.move_line_home(),
-            KeyCode::End => self.input.move_line_end(),
+            // Home/End edit the draft when there is one, else jump the transcript.
+            KeyCode::Home => {
+                if self.input.is_empty() {
+                    self.scroll_to_top();
+                } else {
+                    self.input.move_line_home();
+                }
+            }
+            KeyCode::End => {
+                if self.input.is_empty() {
+                    self.scroll_to_bottom();
+                } else {
+                    self.input.move_line_end();
+                }
+            }
             KeyCode::Backspace => self.input.backspace(),
             KeyCode::Delete => self.input.delete(),
-            KeyCode::PageUp => self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(10),
-            KeyCode::PageDown => {
-                self.scroll_from_bottom = self.scroll_from_bottom.saturating_sub(10)
-            }
+            KeyCode::PageUp => self.scroll_up(self.page()),
+            KeyCode::PageDown => self.scroll_down(self.page()),
             KeyCode::Char('l') if ctrl => {
                 self.cells.retain(|c| matches!(c, Cell::Banner));
                 self.scroll_from_bottom = 0;
@@ -563,6 +683,8 @@ impl App {
             return;
         };
         self.cells.push(Cell::User(prompt.to_string()));
+        // Sending always snaps you back to the live end of the conversation.
+        self.scroll_to_bottom();
         self.busy = true;
         self.cancelling = false;
         self.turn_kind = TurnMode::Chat;
@@ -968,9 +1090,13 @@ impl App {
         let m = self.permission_mode.get();
         s.push_str(&format!(
             "\npermission mode now: {} — {}\n\
-             keys\n  Enter send · \\+Enter or Ctrl+J newline · ↑/↓ history\n  \
-             Shift+Tab cycle modes · Ctrl+R resume a session · Esc cancel turn · Ctrl+C twice quit\n  \
-             tool approvals (manual): y once · a always · n deny",
+             keys\n  \
+             ↑/↓ or wheel   scroll the chat   (PgUp/PgDn page · Home top · End latest)\n  \
+             Ctrl+P/Ctrl+N  prompt history    (also Alt+↑/↓)\n  \
+             Enter          send              (\\+Enter or Ctrl+J for a newline)\n  \
+             Shift+Tab      cycle modes  ·  Ctrl+R resume a session\n  \
+             Esc            cancel turn   ·  Ctrl+C twice quit  ·  Ctrl+L clear\n  \
+             approvals (manual): y once · a always · n deny",
             m.badge(),
             m.description()
         ));
@@ -1209,6 +1335,81 @@ impl App {
 
     fn push_error(&mut self, s: String) {
         self.cells.push(Cell::Error(s));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tui::input::InputState;
+
+    /// Mirrors `App::arrow_action` against a bare InputState (App needs a live
+    /// client to construct). Keep the two in step — the assertions below are the
+    /// contract: arrows read the chat, they never recall history.
+    fn arrow_action(input: &InputState, palette: bool, up: bool) -> ArrowAction {
+        if palette {
+            return ArrowAction::Palette;
+        }
+        if input.is_empty() {
+            return ArrowAction::Scroll;
+        }
+        let at_edge = if up {
+            input.on_first_line()
+        } else {
+            input.on_last_line()
+        };
+        if at_edge {
+            ArrowAction::Scroll
+        } else {
+            ArrowAction::Caret
+        }
+    }
+
+    #[test]
+    fn empty_input_arrows_scroll_the_chat() {
+        let i = InputState::empty_for_test();
+        assert_eq!(arrow_action(&i, false, true), ArrowAction::Scroll);
+        assert_eq!(arrow_action(&i, false, false), ArrowAction::Scroll);
+    }
+
+    #[test]
+    fn single_line_draft_still_scrolls() {
+        // A draft in the box must not turn ↑ into "replace my draft with history".
+        let mut i = InputState::empty_for_test();
+        i.insert_str("hello draft");
+        assert_eq!(arrow_action(&i, false, true), ArrowAction::Scroll);
+        assert_eq!(arrow_action(&i, false, false), ArrowAction::Scroll);
+    }
+
+    #[test]
+    fn multi_line_draft_moves_the_caret_inside_it() {
+        let mut i = InputState::empty_for_test();
+        i.insert_str("line one\nline two");
+        // Cursor on the last line: ↑ edits, ↓ falls through to scroll.
+        assert_eq!(arrow_action(&i, false, true), ArrowAction::Caret);
+        assert_eq!(arrow_action(&i, false, false), ArrowAction::Scroll);
+        i.move_up_line();
+        // Now on the first line: ↓ edits, ↑ falls through to scroll.
+        assert_eq!(arrow_action(&i, false, false), ArrowAction::Caret);
+        assert_eq!(arrow_action(&i, false, true), ArrowAction::Scroll);
+    }
+
+    #[test]
+    fn palette_owns_the_arrows_while_open() {
+        let mut i = InputState::empty_for_test();
+        i.insert_str("/mo");
+        assert_eq!(arrow_action(&i, true, true), ArrowAction::Palette);
+        assert_eq!(arrow_action(&i, true, false), ArrowAction::Palette);
+    }
+
+    #[test]
+    fn history_is_reachable_only_from_explicit_keys() {
+        // Ctrl+P / Alt+↑ call history_prev directly; the arrow policy never does.
+        let mut i = InputState::empty_for_test();
+        i.insert_str("first");
+        let _ = i.submit();
+        i.history_prev();
+        assert_eq!(i.text(), "first");
     }
 }
 
