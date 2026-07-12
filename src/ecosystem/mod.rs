@@ -20,7 +20,8 @@ pub use skills::install_bundled_skills;
 
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 2;
+/// Bump when spawn/install logic changes so markers re-run ensure.
+const ECOSYSTEM_SCHEMA: u32 = 3;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -371,13 +372,17 @@ fn ensure_ruflo(node_ok: bool) -> ComponentStatus {
 
 // ── Public helpers for tools ──────────────────────────────────────────────
 
+/// Resolve a CLI to an **absolute** path when possible.
+///
+/// On Windows we never return a bare name like `"npm"` / `"skills"` — those
+/// are `.cmd` shims and `std::process::Command` cannot CreateProcess them
+/// without going through `cmd /C`. Returning `…\npm.cmd` (or `where`’s path)
+/// makes spawns reliable.
 pub fn find_bin(name: &str) -> Option<String> {
-    if which(name) {
-        return Some(name.to_string());
-    }
     let home = dirs::home_dir()?;
-    let mut candidates = vec![
+    let mut candidates: Vec<PathBuf> = vec![
         home.join(".local").join("bin").join(format!("{name}.exe")),
+        home.join(".local").join("bin").join(format!("{name}.cmd")),
         home.join(".local").join("bin").join(name),
         home.join("AppData")
             .join("Roaming")
@@ -386,32 +391,61 @@ pub fn find_bin(name: &str) -> Option<String> {
         home.join("AppData")
             .join("Roaming")
             .join("npm")
+            .join(format!("{name}.exe")),
+        home.join("AppData")
+            .join("Roaming")
+            .join("npm")
             .join(name),
+        PathBuf::from(r"C:\Program Files\nodejs").join(format!("{name}.cmd")),
+        PathBuf::from(r"C:\Program Files\nodejs").join(format!("{name}.exe")),
+        PathBuf::from(r"C:\Program Files\nodejs").join(name),
     ];
-    // npm global prefix
-    if let Ok(out) = Command::new("npm")
-        .args(["prefix", "-g"])
-        .output()
-    {
-        if out.status.success() {
-            let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !p.is_empty() {
-                candidates.push(PathBuf::from(&p).join(format!("{name}.cmd")));
-                candidates.push(PathBuf::from(&p).join(name));
-                candidates.push(PathBuf::from(&p).join("bin").join(name));
+
+    // npm global prefix (use cmd-safe npm resolution to avoid recursion)
+    if let Some(npm) = resolve_where("npm") {
+        if let Ok(out) = spawn_program(&npm, &["prefix", "-g"]).output() {
+            if out.status.success() {
+                let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !p.is_empty() {
+                    candidates.push(PathBuf::from(&p).join(format!("{name}.cmd")));
+                    candidates.push(PathBuf::from(&p).join(format!("{name}.exe")));
+                    candidates.push(PathBuf::from(&p).join(name));
+                    candidates.push(PathBuf::from(&p).join("bin").join(name));
+                }
             }
         }
     }
-    if let Ok(out) = Command::new("uv").args(["tool", "dir", "--bin"]).output() {
-        if out.status.success() {
-            let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if !dir.is_empty() {
-                candidates.push(PathBuf::from(&dir).join(format!("{name}.exe")));
-                candidates.push(PathBuf::from(&dir).join(name));
+
+    if let Some(uv) = resolve_where("uv").or_else(|| find_file_only("uv")) {
+        if let Ok(out) = spawn_program(&uv, &["tool", "dir", "--bin"]).output() {
+            if out.status.success() {
+                let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if !dir.is_empty() {
+                    candidates.push(PathBuf::from(&dir).join(format!("{name}.exe")));
+                    candidates.push(PathBuf::from(&dir).join(format!("{name}.cmd")));
+                    candidates.push(PathBuf::from(&dir).join(name));
+                }
             }
         }
     }
-    for c in candidates {
+
+    for c in &candidates {
+        if c.is_file() {
+            return Some(c.to_string_lossy().into_owned());
+        }
+    }
+
+    // `where` / `which` last — returns absolute paths on modern Windows.
+    resolve_where(name)
+}
+
+fn find_file_only(name: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    for c in [
+        home.join(".local").join("bin").join(format!("{name}.exe")),
+        home.join(".cargo").join("bin").join(format!("{name}.exe")),
+        home.join(".local").join("bin").join(name),
+    ] {
         if c.is_file() {
             return Some(c.to_string_lossy().into_owned());
         }
@@ -419,14 +453,74 @@ pub fn find_bin(name: &str) -> Option<String> {
     None
 }
 
+/// First absolute path from `where name` (Windows) or `which -a` (Unix).
+fn resolve_where(name: &str) -> Option<String> {
+    #[cfg(windows)]
+    {
+        let out = Command::new("where.exe")
+            .arg(name)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        // Prefer .cmd / .exe over extensionless shim scripts.
+        let mut first: Option<String> = None;
+        for line in text.lines() {
+            let p = line.trim();
+            if p.is_empty() {
+                continue;
+            }
+            let lower = p.to_ascii_lowercase();
+            if lower.ends_with(".cmd") || lower.ends_with(".exe") || lower.ends_with(".bat") {
+                return Some(p.to_string());
+            }
+            if first.is_none() {
+                first = Some(p.to_string());
+            }
+        }
+        first
+    }
+    #[cfg(not(windows))]
+    {
+        let out = Command::new("which").arg(name).output().ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let p = String::from_utf8_lossy(&out.stdout).lines().next()?.trim().to_string();
+        if p.is_empty() {
+            None
+        } else {
+            Some(p)
+        }
+    }
+}
+
 pub fn which(name: &str) -> bool {
-    Command::new(if cfg!(windows) { "where" } else { "which" })
-        .arg(name)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    find_bin(name).is_some()
+}
+
+/// Build a Command that can actually start npm/skills/executor shims on Windows.
+fn spawn_program(bin: &str, args: &[&str]) -> Command {
+    #[cfg(windows)]
+    {
+        let lower = bin.to_ascii_lowercase();
+        let needs_cmd = lower.ends_with(".cmd")
+            || lower.ends_with(".bat")
+            || (!bin.contains('\\') && !bin.contains('/'));
+        if needs_cmd {
+            let mut c = Command::new("cmd.exe");
+            c.arg("/D").arg("/C").arg(bin);
+            for a in args {
+                c.arg(a);
+            }
+            return c;
+        }
+    }
+    let mut c = Command::new(bin);
+    c.args(args);
+    c
 }
 
 pub fn run_capture(
@@ -435,8 +529,14 @@ pub fn run_capture(
     cwd: Option<&Path>,
     _timeout_ms: u64,
 ) -> std::result::Result<String, String> {
-    let mut cmd = Command::new(bin);
-    cmd.args(args);
+    // Re-resolve bare names to absolute paths (Windows .cmd safety).
+    let resolved = if bin.contains('\\') || bin.contains('/') || bin.ends_with(".cmd") || bin.ends_with(".exe") {
+        bin.to_string()
+    } else {
+        find_bin(bin).unwrap_or_else(|| bin.to_string())
+    };
+
+    let mut cmd = spawn_program(&resolved, args);
     if let Some(c) = cwd {
         cmd.current_dir(c);
     }
@@ -445,9 +545,21 @@ pub fn run_capture(
         cmd.env("CLAUDE_FLOW_DB_PATH", &db);
         cmd.env("CLAUDE_FLOW_MEMORY_PATH", ruflo_home());
     }
+    // Ensure npm global bin is on PATH for child processes.
+    if let Some(home) = dirs::home_dir() {
+        let npm_bin = home.join("AppData").join("Roaming").join("npm");
+        if npm_bin.is_dir() {
+            let path = std::env::var_os("PATH").unwrap_or_default();
+            let mut paths = std::env::split_paths(&path).collect::<Vec<_>>();
+            paths.insert(0, npm_bin);
+            if let Ok(joined) = std::env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
+        }
+    }
     let output = cmd
         .output()
-        .map_err(|e| format!("failed to spawn {bin}: {e}"))?;
+        .map_err(|e| format!("failed to spawn {resolved}: {e}"))?;
     let mut out = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if !err.is_empty() {
@@ -464,7 +576,7 @@ pub fn run_capture(
         }
     }
     if !output.status.success() && out.is_empty() {
-        return Err(format!("{bin} exited with {}", output.status));
+        return Err(format!("{resolved} exited with {}", output.status));
     }
     if !output.status.success() {
         return Err(out);

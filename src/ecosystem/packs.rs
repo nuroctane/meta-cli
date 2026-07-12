@@ -125,18 +125,33 @@ pub fn ensure_executor(node_ok: bool) -> ComponentStatus {
         c.detail = "needs Node.js 20+".into();
         return c;
     }
+
+    // Install if missing (use resolved npm path — bare "npm" fails on Windows).
     if find_bin("executor").is_none() {
-        let _ = run_quiet("npm", &["install", "-g", "executor@latest"], None, 300_000);
+        let npm = find_bin("npm").unwrap_or_else(|| "npm".into());
+        match run_capture(
+            &npm,
+            &["install", "-g", "executor@latest"],
+            None,
+            300_000,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                c.detail = format!("npm install failed: {}", e.chars().take(200).collect::<String>());
+                // Still try to locate a partial install.
+            }
+        }
     }
+
     if let Some(bin) = find_bin("executor") {
         c.available = true;
         c.path = Some(bin.clone());
         c.version = super::cmd_version_pub(&bin, &["--version"]);
-        // Install durable local service (best-effort; non-fatal).
-        let _ = run_quiet(&bin, &["install"], None, 60_000);
-        c.detail = "MCP gateway ready (executor install · MCP at :4788/mcp)".into();
-    } else {
-        c.detail = "not found — npm i -g executor".into();
+        // Durable local service (best-effort — non-fatal if service already running).
+        let _ = run_quiet(&bin, &["install"], None, 90_000);
+        c.detail = "MCP gateway ready (executor · local :4788/mcp)".into();
+    } else if c.detail.is_empty() {
+        c.detail = "not found after npm install — try: npm i -g executor".into();
     }
     c
 }
