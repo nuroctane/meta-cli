@@ -623,6 +623,25 @@ mod tests {
         ));
         assert!(!is_parallel_safe("graphify", r#"{"action":"extract"}"#));
     }
+
+    #[test]
+    fn plur_and_ruflo_gates() {
+        assert!(is_read_only_call("plur", r#"{"action":"recall","query":"x"}"#));
+        assert!(is_read_only_call("plur", r#"{"action":"status"}"#));
+        assert!(!is_read_only_call(
+            "plur",
+            r#"{"action":"learn","statement":"prefer tabs"}"#
+        ));
+        assert!(is_read_only_call(
+            "ruflo",
+            r#"{"action":"memory_search","query":"auth"}"#
+        ));
+        assert!(!is_read_only_call(
+            "ruflo",
+            r#"{"action":"memory_store","key":"k","value":"v"}"#
+        ));
+        assert!(!is_read_only_call("ruflo", r#"{"action":"swarm_init"}"#));
+    }
 }
 
 pub(crate) const INTERRUPT_OUTPUT: &str = "[interrupted by user]";
@@ -663,6 +682,12 @@ fn is_read_only_call(name: &str, args: &str) -> bool {
     if name == "graphify" {
         return crate::tools::graphify::is_read_only_action(args);
     }
+    if name == "plur" {
+        return crate::tools::plur::is_read_only_action(args);
+    }
+    if name == "ruflo" {
+        return crate::tools::ruflo::is_read_only_action(args);
+    }
     if name == "agent" {
         return false;
     }
@@ -686,6 +711,8 @@ fn is_parallel_safe(name: &str, args: &str) -> bool {
             | "git_diff"
             | "skill"
             | "graphify"
+            | "plur"
+            | "ruflo"
     )
 }
 

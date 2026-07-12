@@ -137,14 +137,14 @@ all at matched lightness:
 | web | teal | `web_fetch` `web_search` |
 | git | cyan | `git_status` `git_diff` |
 | delegate | pink | `agent` |
-| knowledge | indigo / orange | `skill` `todo_write` `graphify` · `memory` |
+| knowledge | indigo / orange | `skill` `todo_write` `graphify` `plur` `ruflo` · `memory` |
 
 Model *thinking* is violet-italic, so it never reads as an answer. System notices
 carry their own glyph + hue (`◈` mode · `✦` plan · `☰` todos · `∑` usage · `⟲` session),
 and the statusline segments (tokens · cost · ctx% · model · mode · state) each get a
 distinct colour so it's scannable at a glance.
 
-### Safety & tools (v0.4.3)
+### Safety & tools (v0.5.0)
 
 - **Workspace sandbox** — paths cannot escape session cwd (junction/symlink-aware); refuse filesystem-root workspaces  
 - **Shell** — prefers Git Bash → pwsh → PowerShell → cmd (labeled in tool output; set `MUSE_SHELL`); Esc/timeout kills the whole process tree  
@@ -153,28 +153,55 @@ distinct colour so it's scannable at a glance.
 - **web_fetch** — public HTTP(S) only: every redirect hop DNS-validated + IP-pinned, size-capped  
 - **web_search** — DuckDuckGo, no API key  
 - **git_status / git_diff** — approval-free repo inspection (diff|staged|log|show)  
-- **skills** — SKILL.md packs in `~/.muse/skills/`, `~/.agents/skills/`, or project `.muse` / `.agents` skills dirs; agent loads them via the `skill` tool  
-- **graphify** — [Graphify](https://github.com/Graphify-Labs/graphify) knowledge graph over the workspace (`graphify-out/`). Query/path/explain are approval-free; extract/update write the graph and need approval in manual mode. Slash: `/graphify`  
+- **skills** — SKILL.md packs in `~/.muse/skills/`, `~/.agents/skills/`, or project dirs; plur/ruflo/graphify skills pre-installed  
+- **graphify · plur · ruflo** — full ecosystem auto-provisioned on install and on every open (see below)  
 - **subagents** — scoped usage tracking, tokens rolled up into the parent session
 
-### Graphify (knowledge graph)
+### Agent ecosystem (zero extra setup)
 
-Turn the workspace into a queryable code graph instead of grepping blindly.
+One-shot install provisions three external systems and Meta re-ensures them on
+every open. You do **not** need to run their own quick-starts.
+
+| System | What it is | Store | Tools / slash |
+|--------|------------|-------|---------------|
+| **[Graphify](https://github.com/Graphify-Labs/graphify)** | Code knowledge graph (tree-sitter AST) | `graphify-out/` | `graphify` · `/graphify` |
+| **[PLUR](https://github.com/plur-ai/plur)** | Shared engram memory (preferences, corrections) | `~/.plur/` | `plur` · `/plur` |
+| **[Ruflo](https://github.com/ruvnet/ruflo)** | Vector memory + swarm harness | `~/.muse/ruflo/` | `ruflo` · `/ruflo` |
 
 ```powershell
-# one-time (PyPI package is graphifyy — double-y; command is still `graphify`)
-uv tool install graphifyy
-graphify install --platform agents   # → ~/.agents/skills/graphify/ (meta discovers this)
+# install.ps1 / install.sh already does this; also safe to re-run:
+meta ecosystem ensure --force
+meta ecosystem status
 
-# inside meta
-/graphify                            # CLI + graph status
-/graphify extract .                  # local AST extract → graphify-out/{graph.json,GRAPH_REPORT.md,graph.html}
+# inside the TUI (optional — agent tools work without these)
+/ecosystem
+/plur learn always prefer apply_patch for multi-hunk edits
+/plur recall patch edits
+/ruflo store pattern/auth "JWT refresh in middleware"
+/ruflo search auth patterns
+/graphify extract .
 /graphify query "how does auth work?"
-/graphify path UserService DatabasePool
-/graphify explain RateLimiter
 ```
 
-The agent also has a `graphify` tool and will prefer it when `graphify-out/graph.json` exists. Full multi-step pipeline (docs/PDF semantic pass, wiki, hooks): `skill(action=read, name=graphify)` or see the [upstream README](https://github.com/Graphify-Labs/graphify).
+On open, Meta:
+
+1. Installs missing CLIs (`graphifyy` via uv, `@plur-ai/cli` + `ruflo` via npm)
+2. Writes skills to `~/.muse/skills/{plur,ruflo,graphify}/`
+3. Seeds a few default PLUR engrams if the store is empty
+4. Initialises Ruflo's global AgentDB under `~/.muse/ruflo/`
+5. **Auto-injects** relevant PLUR engrams into the system prompt every turn
+
+Requires **Node.js 20+** (plur/ruflo) and **uv** or Python (graphify). If Node/uv
+are missing at install time, Meta still builds; the next open retries provisioning.
+
+**How they complement each other**
+
+| Need | Use |
+|------|-----|
+| Code structure / “what calls X?” | **graphify** |
+| “Remember my preferences / corrections” | **plur** |
+| Semantic pattern memory / swarm status | **ruflo** |
+| Local markdown scratchpad | built-in `memory` (`~/.muse/memory.md`) |
 
 ---
 

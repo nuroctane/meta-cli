@@ -90,7 +90,7 @@ pub fn tool_color(name: &str) -> Color {
         "git_status" | "git_diff" => CYAN,
         "agent" => PINK,
         "memory" => ORANGE,
-        "skill" | "todo_write" | "graphify" => INDIGO,
+        "skill" | "todo_write" | "graphify" | "plur" | "ruflo" => INDIGO,
         "submit_plan" => VIOLET,
         _ => BLUE_200,
     }
@@ -109,6 +109,8 @@ pub fn tool_family(name: &str) -> &'static str {
         "skill" => "skill",
         "todo_write" => "todo",
         "graphify" => "graph",
+        "plur" => "plur",
+        "ruflo" => "ruflo",
         "submit_plan" => "plan",
         _ => "tool",
     }

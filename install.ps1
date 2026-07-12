@@ -145,6 +145,29 @@ if ($userPath -notlike "*$destDir*") {
 $ver = & $dest --version
 Write-Ok "Installed $dest ($ver)"
 
+# ── Ecosystem: Graphify · PLUR · Ruflo (works on first open) ─────────────
+# Node is required for plur/ruflo; uv for graphify. Best-effort — meta also
+# re-ensures on every session start if anything is missing.
+Write-Step "Provisioning agent ecosystem (graphify · plur · ruflo)…"
+try {
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Write-Warn "Node.js not on PATH — plur/ruflo need Node 20+. Install from https://nodejs.org then re-run: meta ecosystem ensure"
+    }
+    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
+        Write-Step "Installing uv (for graphify)…"
+        try {
+            irm https://astral.sh/uv/install.ps1 | iex
+            $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+        } catch {
+            Write-Warn "uv install skipped — graphify may need: winget install astral-sh.uv"
+        }
+    }
+    & $dest ecosystem ensure --force 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    Write-Ok "Ecosystem provisioned (or scheduled for first open)"
+} catch {
+    Write-Warn "Ecosystem ensure deferred to first meta open: $($_.Exception.Message)"
+}
+
 # ── Orca hook (best-effort) ───────────────────────────────────────────────
 if (-not $SkipHook) {
     try {
@@ -181,6 +204,7 @@ Write-Host ""
 Write-Host "  Done." -ForegroundColor Green
 Write-Host "  Run:   meta" -ForegroundColor White
 Write-Host "  Auth:  meta auth login     (key stays in ~/.muse only)" -ForegroundColor DarkGray
+Write-Host "  Stack: graphify + plur + ruflo auto-ready on open" -ForegroundColor DarkGray
 Write-Host "  Orca:  orca terminal create --command meta" -ForegroundColor DarkGray
 Write-Host "  Docs:  https://github.com/nuroctane/meta-cli" -ForegroundColor DarkGray
 Write-Host ""

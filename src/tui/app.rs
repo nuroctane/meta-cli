@@ -44,6 +44,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/memory", "show ~/.muse/memory.md excerpt"),
     ("/skills", "list installed skills"),
     ("/graphify", "knowledge graph: status | query | path | explain | extract"),
+    ("/plur", "shared engram memory: status | learn | recall | inject"),
+    ("/ruflo", "vector memory / swarm: status | search | store"),
+    ("/ecosystem", "graphify · plur · ruflo readiness"),
     ("/usage", "token usage + cost for this session"),
     ("/cost", "alias for /usage"),
     ("/model", "show or switch model"),
@@ -209,6 +212,7 @@ pub async fn run_tui(
     session: Session,
     usage: UsageTracker,
     initial_prompt: Option<String>,
+    ecosystem_summary: String,
 ) -> Result<()> {
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
@@ -270,6 +274,9 @@ pub async fn run_tui(
     app.push_info(format!(
         "mode · {mode_label}  ·  Shift+Tab cycles  manual → plan → auto  ·  /mode"
     ));
+    if !ecosystem_summary.is_empty() {
+        app.push_note(Tone::Skill, ecosystem_summary);
+    }
 
     if let Some(p) = initial_prompt {
         if !p.trim().is_empty() {
@@ -1080,7 +1087,120 @@ impl App {
             }
             "/mouse" => self.cmd_mouse(),
             "/graphify" => self.cmd_graphify(&arg),
+            "/plur" => self.cmd_plur(&arg),
+            "/ruflo" => self.cmd_ruflo(&arg),
+            "/ecosystem" => {
+                self.push_note(Tone::Skill, crate::ecosystem::quick_status());
+            }
             other => self.push_error(format!("unknown command: {other} — try /help")),
+        }
+    }
+
+    fn cmd_plur(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let json = if arg.is_empty() || arg == "status" || arg == "help" {
+            r#"{"action":"status"}"#.to_string()
+        } else {
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let action = parts.next().unwrap_or("status").trim();
+            let rest = parts.next().unwrap_or("").trim();
+            match action {
+                "learn" => {
+                    if rest.is_empty() {
+                        self.push_error("usage: /plur learn <statement>".into());
+                        return;
+                    }
+                    serde_json::json!({"action":"learn","statement": rest}).to_string()
+                }
+                "recall" | "search" => {
+                    if rest.is_empty() {
+                        self.push_error("usage: /plur recall <query>".into());
+                        return;
+                    }
+                    serde_json::json!({"action":"recall","query": rest}).to_string()
+                }
+                "inject" => {
+                    let task = if rest.is_empty() { "coding task" } else { rest };
+                    serde_json::json!({"action":"inject","task": task}).to_string()
+                }
+                "list" => r#"{"action":"list"}"#.to_string(),
+                "capture" => {
+                    if rest.is_empty() {
+                        self.push_error("usage: /plur capture <summary>".into());
+                        return;
+                    }
+                    serde_json::json!({"action":"capture","summary": rest}).to_string()
+                }
+                "timeline" => r#"{"action":"timeline"}"#.to_string(),
+                "status" | "help" => r#"{"action":"status"}"#.to_string(),
+                other => {
+                    // Free text → learn
+                    serde_json::json!({"action":"learn","statement": format!("{other} {rest}").trim()})
+                        .to_string()
+                }
+            }
+        };
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        match host.dispatch("plur", &json, &ctx) {
+            Ok(s) => self.push_note(Tone::Memory, s),
+            Err(e) => self.push_error(e.to_string()),
+        }
+    }
+
+    fn cmd_ruflo(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let json = if arg.is_empty() || arg == "status" || arg == "help" {
+            r#"{"action":"status"}"#.to_string()
+        } else {
+            let mut parts = arg.splitn(2, char::is_whitespace);
+            let action = parts.next().unwrap_or("status").trim();
+            let rest = parts.next().unwrap_or("").trim();
+            match action {
+                "search" | "memory_search" => {
+                    if rest.is_empty() {
+                        self.push_error("usage: /ruflo search <query>".into());
+                        return;
+                    }
+                    serde_json::json!({"action":"memory_search","query": rest}).to_string()
+                }
+                "store" | "memory_store" => {
+                    // /ruflo store key=value or /ruflo store key value
+                    let (k, v) = if let Some((a, b)) = rest.split_once('=') {
+                        (a.trim(), b.trim())
+                    } else {
+                        let mut sp = rest.splitn(2, char::is_whitespace);
+                        (sp.next().unwrap_or("").trim(), sp.next().unwrap_or("").trim())
+                    };
+                    if k.is_empty() || v.is_empty() {
+                        self.push_error("usage: /ruflo store <key> <value>".into());
+                        return;
+                    }
+                    serde_json::json!({"action":"memory_store","key": k, "value": v}).to_string()
+                }
+                "stats" => r#"{"action":"memory_stats"}"#.to_string(),
+                "list" => r#"{"action":"memory_list"}"#.to_string(),
+                "agents" | "agent_list" => r#"{"action":"agent_list"}"#.to_string(),
+                "swarm" => r#"{"action":"swarm_status"}"#.to_string(),
+                "doctor" => r#"{"action":"doctor"}"#.to_string(),
+                "status" => r#"{"action":"status"}"#.to_string(),
+                other => {
+                    serde_json::json!({"action":"memory_search","query": format!("{other} {rest}").trim()})
+                        .to_string()
+                }
+            }
+        };
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        match host.dispatch("ruflo", &json, &ctx) {
+            Ok(s) => self.push_note(Tone::Skill, s),
+            Err(e) => self.push_error(e.to_string()),
         }
     }
 

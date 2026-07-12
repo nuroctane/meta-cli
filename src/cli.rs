@@ -78,6 +78,23 @@ pub enum Commands {
     },
     /// Install Orca agent hook for usage/status reporting
     InstallHook,
+    /// Graphify · PLUR · Ruflo ecosystem (auto-provisioned on open)
+    Ecosystem {
+        #[command(subcommand)]
+        action: EcosystemCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EcosystemCmd {
+    /// Install/repair graphify, plur, ruflo + skills (also runs automatically on open)
+    Ensure {
+        /// Force re-install even if marker is fresh
+        #[arg(long, short)]
+        force: bool,
+    },
+    /// Show ecosystem readiness
+    Status,
 }
 
 #[derive(Subcommand, Debug)]

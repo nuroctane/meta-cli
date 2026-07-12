@@ -4,6 +4,7 @@ mod api;
 mod auth;
 mod cli;
 mod config;
+mod ecosystem;
 mod error;
 mod theme;
 mod tools;
@@ -65,6 +66,32 @@ async fn real_main() -> Result<()> {
         }
         Some(Commands::InstallHook) => {
             ade::install_orca_hook()?;
+            return Ok(());
+        }
+        Some(Commands::Ecosystem { action }) => {
+            match action {
+                cli::EcosystemCmd::Ensure { force } => {
+                    theme::print_info("provisioning graphify · plur · ruflo (one-shot)…");
+                    let st = ecosystem::ensure_ecosystem(*force);
+                    println!("{}", st.report());
+                    if !(st.graphify.available && st.plur.available && st.ruflo.available) {
+                        // Partial success still exits 0 if at least one works;
+                        // exit 1 only when everything failed.
+                        if !st.graphify.available && !st.plur.available && !st.ruflo.available {
+                            return Err(error::MuseError::Other(
+                                "ecosystem ensure failed — install Node.js 20+ and uv, then re-run meta ecosystem ensure"
+                                    .into(),
+                            ));
+                        }
+                        theme::print_info("partial ecosystem — missing components noted above");
+                    } else {
+                        theme::print_ok("ecosystem ready");
+                    }
+                }
+                cli::EcosystemCmd::Status => {
+                    print!("{}", ecosystem::quick_status());
+                }
+            }
             return Ok(());
         }
         _ => {}
@@ -155,9 +182,25 @@ async fn real_main() -> Result<()> {
     std::env::set_var("MUSE_MODEL", &cfg.model);
     std::env::set_var("MUSE_PROVIDER", "meta");
     std::env::set_var("MUSE_HOME", config::muse_home().display().to_string());
+    // Ruflo global memory (so child CLIs share Meta's store without polluting projects).
+    std::env::set_var(
+        "CLAUDE_FLOW_DB_PATH",
+        ecosystem::ruflo_db_path().display().to_string(),
+    );
+    std::env::set_var(
+        "CLAUDE_FLOW_MEMORY_PATH",
+        ecosystem::ruflo_home().display().to_string(),
+    );
 
     ade::write_ade_manifest(&session.id, &cfg.model, &cwd_str, usage.session_usage());
     let _ = session.save();
+
+    // Provision graphify / plur / ruflo on every session start (cached 24h).
+    // First install can take a few minutes; subsequent opens are a marker hit.
+    let eco = ecosystem::ensure_ecosystem(false);
+    if !eco.graphify.available || !eco.plur.available || !eco.ruflo.available {
+        theme::print_info(&eco.summary_line());
+    }
 
     let start_mode = if cli.yes {
         PermissionMode::Auto
@@ -199,13 +242,15 @@ async fn real_main() -> Result<()> {
                 session,
                 usage,
                 cli.prompt.clone(),
+                eco.summary_line(),
             )
             .await?;
         }
         Some(Commands::Auth { .. })
         | Some(Commands::Usage)
         | Some(Commands::Sessions { .. })
-        | Some(Commands::InstallHook) => unreachable!(),
+        | Some(Commands::InstallHook)
+        | Some(Commands::Ecosystem { .. }) => unreachable!(),
     }
 
     Ok(())

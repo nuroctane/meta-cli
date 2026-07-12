@@ -82,6 +82,19 @@ done
 
 ok "Installed ${DEST_DIR}/meta ($("${DEST_DIR}/meta" --version))"
 
+# ── Ecosystem: Graphify · PLUR · Ruflo ────────────────────────────────────
+step "Provisioning agent ecosystem (graphify · plur · ruflo)…"
+if ! command -v node >/dev/null 2>&1; then
+  warn "Node.js not on PATH — plur/ruflo need Node 20+. Install then: meta ecosystem ensure"
+fi
+if ! command -v uv >/dev/null 2>&1; then
+  step "Installing uv (for graphify)…"
+  curl -LsSf https://astral.sh/uv/install.sh | sh || warn "uv install skipped"
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+"${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure deferred to first meta open"
+ok "Ecosystem ready (or will finish on first open)"
+
 if [[ "${SKIP_HOOK}" != "1" ]]; then
   "${DEST_DIR}/meta" install-hook >/dev/null 2>&1 && ok "Orca ADE hook installed (if applicable)" || true
 fi
@@ -100,6 +113,7 @@ echo ""
 echo "  Done."
 echo "  Run:   meta"
 echo "  Auth:  meta auth login     (key stays in ~/.muse only)"
+echo "  Stack: graphify + plur + ruflo auto-ready on open"
 echo "  Orca:  orca terminal create --command meta"
 echo "  Docs:  https://github.com/nuroctane/meta-cli"
 echo ""

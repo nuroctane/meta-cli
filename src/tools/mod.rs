@@ -9,7 +9,9 @@ mod grep;
 mod list_dir;
 mod memory_tool;
 mod multi_edit;
+pub mod plur;
 mod read_file;
+pub mod ruflo;
 mod sandbox;
 mod search_util;
 mod shell;
@@ -77,6 +79,8 @@ impl ToolHost {
             Box::new(git_status::GitStatus),
             Box::new(git_diff::GitDiff),
             Box::new(graphify::Graphify),
+            Box::new(plur::Plur),
+            Box::new(ruflo::Ruflo),
             Box::new(skill_tool::SkillTool),
             Box::new(memory_tool::MemoryTool),
             Box::new(todo_write::TodoWrite {

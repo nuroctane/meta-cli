@@ -1,6 +1,7 @@
 use super::memory::memory_prompt_excerpt;
 use super::mode::PermissionMode;
 use super::skills::{load_skills, skills_prompt_section};
+use crate::ecosystem;
 use crate::tools::shell_backend;
 use std::path::{Path, PathBuf};
 
@@ -32,10 +33,24 @@ pub struct PromptContext {
     project: Option<(String, String)>,
     memory: String,
     skills: String,
+    /// PLUR inject block — auto-loaded so the agent remembers past corrections.
+    plur: String,
 }
 
 impl PromptContext {
     pub fn build(cwd: &Path, is_subagent: bool) -> Self {
+        let plur = if is_subagent {
+            String::new()
+        } else {
+            ecosystem::plur_inject(&format!(
+                "coding agent session in {}",
+                cwd.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("workspace")
+            ))
+            .map(|s| format!("\n# PLUR shared memory (auto-injected)\n{s}\n"))
+            .unwrap_or_default()
+        };
         Self {
             cwd: cwd.to_path_buf(),
             is_subagent,
@@ -43,6 +58,7 @@ impl PromptContext {
             project: find_project_instructions(cwd),
             memory: memory_prompt_excerpt(3000),
             skills: skills_prompt_section(&load_skills(cwd)),
+            plur,
         }
     }
 
@@ -54,8 +70,11 @@ impl PromptContext {
 # Permission mode: PLAN
 Research/design only. Tools: read_file, list_dir, grep, glob, web_fetch, web_search,
 git_status, git_diff, skill, memory(read), todo_write, submit_plan,
-graphify(query|path|explain|status|report|affected).
-No write_file/edit_file/multi_edit/apply_patch/bash/agent/graphify(extract|update).
+graphify(query|path|explain|status|report|affected),
+plur(status|recall|inject|list|timeline),
+ruflo(status|memory_search|memory_stats|memory_list|agent_list|swarm_status|hive_status|doctor).
+No write_file/edit_file/multi_edit/apply_patch/bash/agent/graphify(extract|update)/
+plur(learn|capture|forget|ingest)/ruflo(memory_store|swarm_init).
 Deliver plans via submit_plan.
 "#,
             PermissionMode::Manual => r#"
@@ -83,8 +102,8 @@ OS: {} · shell: {}
 {mode_block}
 # Tools
 read_file, list_dir, write_file, edit_file, multi_edit, apply_patch, bash, grep, glob,
-web_fetch, web_search, git_status, git_diff, graphify, skill, memory, todo_write,
-submit_plan, agent
+web_fetch, web_search, git_status, git_diff, graphify, plur, ruflo, skill, memory,
+todo_write, submit_plan, agent
 
 ## Tool policy
 - grep/glob: ripgrep-backed; pass narrow paths — never scan drive roots
@@ -93,16 +112,17 @@ submit_plan, agent
 - bash: real shell when available (Git Bash/pwsh); output header labels the backend
 - git_status/git_diff (diff|staged|log|show): approval-free repo inspection — prefer over bash git
 - web_search → find docs/errors; web_fetch → read a result url
-- graphify: knowledge graph over the workspace (graphify-out/). Prefer graphify query/path/explain
-  over broad grep when graphify-out/graph.json exists. action=extract builds a local code AST graph
-  (no API key). Install CLI: `uv tool install graphifyy` then `graphify install --platform agents`.
-  Full pipeline skill: skill(action=read, name=graphify).
-- skill: action=list shows installed skill packs; action=read loads full instructions —
-  check before starting a task a skill covers
+- graphify: code knowledge graph (graphify-out/). Prefer query/path/explain over broad grep when
+  the graph exists. extract defaults to code-only AST (local, free). Auto-installed with meta.
+- plur: shared engram memory (~/.plur/). learn corrections/preferences; inject/recall across
+  sessions. Auto-injected at session start. Never store secrets.
+- ruflo: vector memory + swarm harness. Global DB at ~/.muse/ruflo/. Prefer plur for preferences,
+  ruflo for pattern/embedding memory, graphify for code structure.
+- skill: action=list / action=read — plur, ruflo, graphify skills are pre-installed
 - agent: spawn explore (read-only) or general subagent for parallel research
 - todo_write: maintain a live task list for multi-step work (always keep one in_progress)
 - submit_plan: formal plan artifact in plan mode
-- memory: durable notes in ~/.muse/memory.md (never store secrets)
+- memory: local markdown journal ~/.muse/memory.md (never store secrets) — complementary to plur
 - Prefer edit_file / multi_edit / apply_patch over full rewrites
 
 # Workflow (Claude-class)
@@ -129,6 +149,7 @@ Unofficial community software — not Meta Platforms, Inc.
         }
 
         s.push_str(&self.memory);
+        s.push_str(&self.plur);
         s.push_str(&self.skills);
         s
     }
