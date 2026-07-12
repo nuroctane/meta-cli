@@ -1,8 +1,8 @@
 [package]
 name = "meta-cli"
-version = "0.5.3"
+version = "0.5.4"
 edition = "2021"
-description = "Meta CLI (unofficial) - Muse Spark coding agent for Meta Model API"
+description = "Meta CLI (unofficial) - coding agent for Meta Model API"
 license = "MIT"
 authors = ["meta-cli contributors"]
 repository = "https://github.com/nuroctane/meta-cli"

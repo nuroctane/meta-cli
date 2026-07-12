@@ -37,7 +37,7 @@ function Write-Warn($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 
 Write-Host ""
 Write-Host "  Meta CLI (unofficial) installer" -ForegroundColor Blue
-Write-Host "  Muse Spark agent · not affiliated with Meta" -ForegroundColor DarkGray
+Write-Host "  Meta Model API agent · not affiliated with Meta" -ForegroundColor DarkGray
 Write-Host ""
 
 # ── locate or clone source ────────────────────────────────────────────────

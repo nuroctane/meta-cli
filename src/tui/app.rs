@@ -5,7 +5,7 @@ use crate::agent::{
     self, AgentEvent, AgentRunner, ApprovalDecision, PermissionMode, Session, SharedMode,
     SharedTodos,
 };
-use crate::theme::Tone;
+use crate::theme::{self, Tone};
 use crate::tools::ToolHost;
 use crate::api::MetaClient;
 use crate::config::Config;
@@ -63,17 +63,51 @@ pub enum Cell {
     Banner,
     User(String),
     Assistant { text: String, streaming: bool },
-    Thinking { text: String, active: bool },
+    /// Model reasoning stream. Collapsed by default when finished — click or
+    /// press `e` (empty input) to expand. `duration` set when the thought ends.
+    Thinking {
+        text: String,
+        active: bool,
+        started: Instant,
+        duration: Option<Duration>,
+        expanded: bool,
+    },
+    /// Tool / bash / command card. Header always visible with duration;
+    /// body expands for full output.
     Tool {
         name: String,
         args: String,
         result: Option<String>,
         ok: Option<bool>,
+        started: Instant,
+        duration: Option<Duration>,
+        expanded: bool,
+    },
+    /// End-of-turn timing strip (how long the whole agent turn took).
+    TurnDone {
+        duration: Duration,
+        interrupted: bool,
     },
     /// System notice. `tone` picks the colour + glyph so a mode switch, a plan,
     /// a todo update and a usage dump don't all read as the same blue blob.
     Info { text: String, tone: Tone },
     Error(String),
+}
+
+impl Cell {
+    /// Whether this cell can be expanded/collapsed in the transcript.
+    pub fn is_collapsible(&self) -> bool {
+        matches!(self, Cell::Thinking { .. } | Cell::Tool { .. })
+    }
+
+    pub fn toggle_expanded(&mut self) {
+        match self {
+            Cell::Thinking { expanded, .. } | Cell::Tool { expanded, .. } => {
+                *expanded = !*expanded;
+            }
+            _ => {}
+        }
+    }
 }
 
 #[derive(PartialEq)]
@@ -174,6 +208,13 @@ pub struct App {
     pub scrollbar_track: ratatui::layout::Rect,
     /// True while the user is dragging the scrollbar thumb.
     pub scrollbar_drag: bool,
+    /// Per wrapped transcript line: `Some(cell_idx)` when that line is a
+    /// collapsible card header (click to expand/collapse).
+    pub hit_headers: Vec<Option<usize>>,
+    /// First visible wrapped-line index in the transcript body (for hit-tests).
+    pub transcript_top: u16,
+    /// Brief highlight after toggle: (cell_idx, when).
+    pub expand_flash: Option<(usize, Instant)>,
 
     pub input: InputState,
     pub queue: VecDeque<String>,
@@ -263,6 +304,9 @@ pub async fn run_tui(
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         scrollbar_drag: false,
+        hit_headers: Vec::new(),
+        transcript_top: 0,
+        expand_flash: None,
         input: InputState::new(),
         queue: VecDeque::new(),
         busy: false,
@@ -314,6 +358,14 @@ pub async fn run_tui(
         // Spinners / streaming caret only animate while a turn is in flight.
         if app.busy {
             dirty = true;
+        }
+        // Brief expand/collapse settle highlight (ease-out, < 200ms).
+        if let Some((_, t)) = app.expand_flash {
+            if t.elapsed().as_millis() < theme::SETTLE_MS + 20 {
+                dirty = true;
+            } else {
+                app.expand_flash = None;
+            }
         }
 
         if dirty {
@@ -594,6 +646,11 @@ impl App {
             KeyCode::Char('u') if ctrl => self.input.delete_to_line_start(),
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
             KeyCode::Char('j') if ctrl => self.input.insert_char('\n'),
+            // `e` with empty draft: expand/collapse the latest thought or tool card.
+            // (High-frequency path is unanimated — design-eng: no motion on keys.)
+            KeyCode::Char('e') if !ctrl && !alt && self.input.is_empty() && !self.busy => {
+                self.toggle_last_collapsible();
+            }
             KeyCode::Char(c) if !ctrl && !alt => {
                 self.input.insert_char(c);
                 self.palette_idx = 0;
@@ -618,7 +675,18 @@ impl App {
                     self.scroll_from_scrollbar_y(m.row);
                 } else {
                     self.scrollbar_drag = false;
-                    self.click_input(m.column, m.row);
+                    // Prefer transcript header hits (expand/collapse); else caret.
+                    let body = self.transcript_body;
+                    let in_transcript = body.width > 0
+                        && m.column >= body.x
+                        && m.column < body.right()
+                        && m.row >= body.y
+                        && m.row < body.bottom();
+                    if in_transcript {
+                        self.click_transcript(m.column, m.row);
+                    } else {
+                        self.click_input(m.column, m.row);
+                    }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -934,20 +1002,32 @@ impl App {
                 Cell::Assistant { streaming, .. } => {
                     *streaming = false;
                 }
-                Cell::Thinking { active, text } => {
+                Cell::Thinking {
+                    active,
+                    text,
+                    started,
+                    duration,
+                    ..
+                } => {
                     if *active {
                         *active = false;
+                        *duration = Some(started.elapsed());
                         if !text.is_empty() {
                             text.push_str("  · cancelled");
                         }
                     }
                 }
                 Cell::Tool {
-                    result, ok, ..
+                    result,
+                    ok,
+                    started,
+                    duration,
+                    ..
                 } => {
                     if result.is_none() {
                         *result = Some("cancelled".into());
                         *ok = Some(false);
+                        *duration = Some(started.elapsed());
                     }
                 }
                 _ => {}
@@ -969,12 +1049,20 @@ impl App {
                 if self.cancelling {
                     return;
                 }
-                if let Some(Cell::Thinking { text, active: true }) = self.cells.last_mut() {
+                if let Some(Cell::Thinking {
+                    text,
+                    active: true,
+                    ..
+                }) = self.cells.last_mut()
+                {
                     text.push_str(&d);
                 } else {
                     self.cells.push(Cell::Thinking {
                         text: d,
                         active: true,
+                        started: Instant::now(),
+                        duration: None,
+                        expanded: true, // live thoughts stream open; collapse on finish
                     });
                 }
             }
@@ -1019,6 +1107,9 @@ impl App {
                     args,
                     result: None,
                     ok: None,
+                    started: Instant::now(),
+                    duration: None,
+                    expanded: true, // show live output; collapse when done
                 });
                 self.tool_cells.insert(id, self.cells.len() - 1);
                 self.status = "running tool".into();
@@ -1028,11 +1119,20 @@ impl App {
             } => {
                 if let Some(&idx) = self.tool_cells.get(&id) {
                     if let Some(Cell::Tool {
-                        result: r, ok: o, ..
+                        result: r,
+                        ok: o,
+                        started,
+                        duration,
+                        expanded,
+                        ..
                     }) = self.cells.get_mut(idx)
                     {
                         *r = Some(result);
                         *o = Some(ok);
+                        *duration = Some(started.elapsed());
+                        // Collapse finished cards so the transcript stays scannable;
+                        // user expands dropdowns for full bash/tool output.
+                        *expanded = false;
                     }
                 }
             }
@@ -1070,6 +1170,7 @@ impl App {
                 self.finish_streaming();
                 // Ensure no cell still looks "running".
                 self.freeze_live_cells_as_cancelled();
+                let turn_dur = self.turn_started.elapsed();
                 self.u_session = usage.session_usage().clone();
                 self.session_id = session.id.clone();
                 self.session = Some(session);
@@ -1090,24 +1191,40 @@ impl App {
                         {
                             self.push_info("cancelled".into());
                         }
+                        self.cells.push(Cell::TurnDone {
+                            duration: turn_dur,
+                            interrupted: true,
+                        });
                     }
                     (TurnMode::Compact, Ok(summary), _) => {
                         self.push_info(format!(
                             "context compacted — summary:\n{summary}"
                         ));
+                        self.cells.push(Cell::TurnDone {
+                            duration: turn_dur,
+                            interrupted: false,
+                        });
                     }
                     (TurnMode::Compact, Err(e), _) => {
                         self.push_error(format!("compaction failed: {e}"))
                     }
                     (TurnMode::Chat, Err(e), _) => {
                         // Interrupted surfaces as Err("interrupted") sometimes.
-                        if e.contains("interrupted") {
-                            // quiet — UI already shows cancelled
-                        } else {
+                        let was_interrupt = e.contains("interrupted");
+                        if !was_interrupt {
                             self.push_error(e);
                         }
+                        self.cells.push(Cell::TurnDone {
+                            duration: turn_dur,
+                            interrupted: was_interrupt,
+                        });
                     }
-                    (TurnMode::Chat, Ok(_), _) => {}
+                    (TurnMode::Chat, Ok(_), _) => {
+                        self.cells.push(Cell::TurnDone {
+                            duration: turn_dur,
+                            interrupted: false,
+                        });
+                    }
                 }
                 self.turn_kind = TurnMode::Chat;
                 // Drop queued prompts after cancel so we don't surprise-run them.
@@ -1128,10 +1245,62 @@ impl App {
 
     fn finish_thinking(&mut self) {
         for c in self.cells.iter_mut().rev() {
-            if let Cell::Thinking { active, .. } = c {
-                *active = false;
+            if let Cell::Thinking {
+                active,
+                started,
+                duration,
+                expanded,
+                ..
+            } = c
+            {
+                if *active {
+                    *active = false;
+                    *duration = Some(started.elapsed());
+                    // Collapse finished thoughts; expand to read full stream.
+                    *expanded = false;
+                }
                 break;
             }
+        }
+    }
+
+    /// Toggle expand on a collapsible cell (thinking / tool / bash).
+    pub fn toggle_cell_expand(&mut self, cell_idx: usize) {
+        if let Some(c) = self.cells.get_mut(cell_idx) {
+            if c.is_collapsible() {
+                c.toggle_expanded();
+                self.expand_flash = Some((cell_idx, Instant::now()));
+            }
+        }
+    }
+
+    /// Expand/collapse the most recent collapsible card (keyboard: `e` when idle).
+    fn toggle_last_collapsible(&mut self) {
+        if let Some(idx) = self
+            .cells
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| c.is_collapsible())
+            .map(|(i, _)| i)
+        {
+            self.toggle_cell_expand(idx);
+        }
+    }
+
+    /// Map a click in the transcript body onto a collapsible header.
+    fn click_transcript(&mut self, col: u16, row: u16) {
+        let body = self.transcript_body;
+        if body.width == 0 || body.height == 0 {
+            return;
+        }
+        if col < body.x || col >= body.right() || row < body.y || row >= body.bottom() {
+            return;
+        }
+        let local_y = row.saturating_sub(body.y) as usize;
+        let line_idx = self.transcript_top as usize + local_y;
+        if let Some(Some(cell_idx)) = self.hit_headers.get(line_idx).copied() {
+            self.toggle_cell_expand(cell_idx);
         }
     }
 
@@ -1463,8 +1632,11 @@ impl App {
         let m = self.permission_mode.get();
         s.push_str(&format!(
             "\npermission mode now: {} — {}\n\
+             model: {}  ·  /model <id> to switch\n\
              keys\n  \
              ↑/↓ · wheel · drag scrollbar   scroll the chat\n  \
+             click ▸/▾ card headers         expand/collapse thought · tool · bash\n  \
+             e (empty input)                toggle latest collapsible card\n  \
              click in input                 place caret where you click\n  \
              Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X   select-all · copy · paste · cut\n  \
              Ctrl+P/Ctrl+N  prompt history    (also Alt+↑/↓)\n  \
@@ -1473,7 +1645,8 @@ impl App {
              Esc            cancel turn   ·  Ctrl+C (no selection) twice quit  ·  Ctrl+L clear\n  \
              approvals (manual): y once · a always · n deny",
             m.badge(),
-            m.description()
+            m.description(),
+            self.cfg.model,
         ));
         self.push_info(s);
     }

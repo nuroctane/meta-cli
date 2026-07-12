@@ -1,6 +1,6 @@
 # Meta CLI (unofficial)
 
-**Unofficial** terminal coding agent for [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/) via [Meta Model API](https://dev.meta.ai/).
+**Unofficial** terminal coding agent for [Meta Model API](https://dev.meta.ai/) (default: [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/); switch with `--model` / `/model`).
 
 > Not affiliated with Meta Platforms, Inc. · Community project · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
@@ -9,7 +9,7 @@ meta          # Meta-blue interactive TUI
 muse          # alias (same binary)
 ```
 
-**v0.5.3** — Claude-class agent harness + zero-setup ecosystem (Graphify · PLUR · Ruflo · Executor · skill packs) + a polished TUI (sticky PROMPT banner, click-to-caret, clipboard, draggable scrollbar).
+**v0.5.4** — Timed thoughts/turns with expandable tool · bash · thought cards, design-eng TUI motion, model-agnostic nomenclature, zero-setup ecosystem (Graphify · PLUR · Ruflo · Executor · skill packs), sticky PROMPT banner, click-to-caret, clipboard, draggable scrollbar.
 
 ---
 
@@ -17,11 +17,11 @@ muse          # alias (same binary)
 
 | | |
 |--|--|
-| **Real Muse Spark agent** | Full custom Rust harness — not a thin wrapper. Modes, tools, sandbox, streaming, cancel. |
+| **Real Meta Model agent** | Full custom Rust harness for Meta Model API — not a thin wrapper. Any model id via `/model`. |
 | **One-shot install** | One command builds, installs, and provisions the ecosystem. No multi-step “quick starts.” |
 | **Opens instantly** | Ecosystem repair runs in the **background** so the TUI never hangs on npm/uv. |
 | **Knowledge stack** | Code graph + shared engrams + vector memory + MCP gateway, all auto-wired. |
-| **Tasteful TUI** | Colour = meaning, sticky prompt banner, scrollbar you can drag, normal editor keys. |
+| **Tasteful TUI** | Durations on thoughts/tools/turns, expandable cards, snappy motion, sticky prompt, drag scrollbar. |
 | **Secrets stay local** | API key only in `~/.muse/auth.json` — never in the repo. |
 
 ---
@@ -134,8 +134,12 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 
 ### Highlights
 
-- **Streaming** assistant text + violet-italic model thinking (never reads as the answer)
-- **Tool cards** colour-coded by family (read / edit / shell / web / git / agent / knowledge)
+- **Timed thoughts & turns** — every thought, tool/bash, and finished turn shows how long it took  
+- **Expandable cards** — click `▸`/`▾` headers (or press `e` with empty input) for full thinking / tool / bash output  
+- **Streaming** assistant text + violet-italic model thinking (never reads as the answer)  
+- **Tool cards** colour-coded by family (read / edit / shell / web / git / agent / knowledge)  
+- **Design-eng motion** — snappy spinner, ease-out pulse, activity strip, brief expand settle highlight  
+- **Model-agnostic UI** — banner and prompts use the selected Meta model id (`/model`, `--model`)  
 - **Approvals** — `y` once · `a` always this session · `n` deny  
 - **Esc cancel** — freezes stream/thinking; status shows *cancelling…* until work stops  
 - **Markdown** rendering, multi-line input, usage + cost + **ctx%** on the statusline  
@@ -153,6 +157,8 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
 | `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
 | Wheel · drag scrollbar | Scroll transcript |
+| Click `▸`/`▾` card header | Expand / collapse thought · tool · bash |
+| `e` (empty input) | Toggle latest collapsible card |
 | Click in input | **Place caret** where you click |
 | `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Select all · copy · paste · cut (system clipboard) |
 | `Ctrl+P` `Ctrl+N` (or `Alt+↑/↓`) | Prompt history |

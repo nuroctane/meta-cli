@@ -201,22 +201,38 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut prompts: Vec<String> = Vec::new();
     let mut current: Option<usize> = None;
 
-    for cell in &app.cells {
+    // Rebuild hit-test map: wrapped-line index → collapsible cell header.
+    let mut hit_headers: Vec<Option<usize>> = Vec::new();
+
+    for (cell_idx, cell) in app.cells.iter().enumerate() {
         if let Cell::User(text) = cell {
             prompts.push(text.clone());
             current = Some(prompts.len() - 1);
         }
         let mut cell_out: Vec<Line<'static>> = Vec::new();
-        cell_lines(app, cell, &mut cell_out);
+        cell_lines(app, cell, cell_idx, &mut cell_out);
         let w = wrap::wrap_lines(&cell_out, inner_w);
+        let collapsible = cell.is_collapsible();
+        let mut header_marked = false;
         for (i, line) in w.into_iter().enumerate() {
+            // First non-empty line of a collapsible card is the click target.
+            let empty = line
+                .spans
+                .iter()
+                .all(|s| s.content.chars().all(|c| c.is_whitespace()));
+            let is_header = collapsible && !header_marked && !empty;
+            if is_header {
+                header_marked = true;
+            }
             wrapped.push(line);
             owner.push(current);
             // A User cell renders a blank spacer line then the prompt; either
             // being on screen means the prompt itself is visible.
             is_prompt_head.push(matches!(cell, Cell::User(_)) && i <= 1);
+            hit_headers.push(if is_header { Some(cell_idx) } else { None });
         }
     }
+    app.hit_headers = hit_headers;
 
     let total = wrapped.len() as u16;
     let viewport = area.height;
@@ -230,6 +246,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         app.scroll_from_bottom = max_scroll;
     }
     let top = max_scroll.saturating_sub(app.scroll_from_bottom);
+    app.transcript_top = top;
 
     // Sticky header: if the prompt that owns the top of the viewport has itself
     // scrolled out of sight, pin it so you always know what you're looking at.
@@ -481,8 +498,13 @@ fn draw_scrollbar(
     f.render_widget(Paragraph::new(lines), track);
 }
 
-fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
+fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'static>>) {
     let tick = app.spinner_epoch.elapsed();
+    let flash = app
+        .expand_flash
+        .as_ref()
+        .filter(|(i, t)| *i == cell_idx && t.elapsed().as_millis() < theme::SETTLE_MS)
+        .map(|(_, t)| theme::settle_progress(t.elapsed(), theme::SETTLE_MS));
     match cell {
         Cell::Banner => banner_lines(app, out),
         Cell::User(text) => {
@@ -542,40 +564,98 @@ fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
                 }
             }
         }
-        Cell::Thinking { text, active } => {
+        Cell::Thinking {
+            text,
+            active,
+            started,
+            duration,
+            expanded,
+        } => {
             out.push(Line::default());
-            let display: String = if *active {
-                text.clone()
+            let dur_label = if *active {
+                theme::fmt_elapsed_live(started.elapsed())
             } else {
-                text.lines().last().unwrap_or("").to_string()
+                duration
+                    .map(theme::fmt_duration)
+                    .unwrap_or_else(|| "—".into())
             };
-            let head = if *active {
+            let chevron = if *active {
                 theme::spinner_frame(tick)
+            } else if *expanded {
+                theme::CHEVRON_EXPANDED
             } else {
-                "·"
+                theme::CHEVRON_COLLAPSED
             };
-            let head_style = if *active {
-                Style::default().fg(theme::VIOLET)
+            let head_hue = if flash.is_some() {
+                theme::BLUE_100
+            } else if *active {
+                theme::VIOLET
             } else {
-                theme::style_faint()
+                theme::MUTED
             };
-            if display.is_empty() && *active {
-                out.push(Line::from(vec![
-                    Span::styled(format!("{head} "), head_style),
-                    Span::styled("thinking".to_string(), theme::style_thinking_violet()),
-                ]));
-            } else {
-                for (i, l) in display.lines().enumerate() {
-                    let prefix = if i == 0 {
-                        format!("{head} ")
-                    } else {
-                        "  ".into()
-                    };
-                    out.push(Line::from(vec![
-                        Span::styled(prefix, head_style),
-                        Span::styled(l.to_string(), theme::style_thinking_violet()),
-                    ]));
+            let mut head = vec![
+                Span::styled(
+                    format!("{chevron} "),
+                    Style::default().fg(head_hue).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "thought".to_string(),
+                    Style::default()
+                        .fg(if *active { theme::VIOLET } else { theme::MUTED })
+                        .add_modifier(if *active {
+                            Modifier::ITALIC
+                        } else {
+                            Modifier::empty()
+                        }),
+                ),
+                Span::styled(
+                    format!("  ·  {dur_label}"),
+                    Style::default().fg(theme::FAINT),
+                ),
+            ];
+            if !*active {
+                let lines_n = text.lines().filter(|l| !l.trim().is_empty()).count();
+                if lines_n > 0 && !*expanded {
+                    head.push(Span::styled(
+                        format!("  ·  {lines_n} lines · click / e"),
+                        Style::default().fg(theme::FAINT),
+                    ));
+                } else if *expanded {
+                    head.push(Span::styled(
+                        "  ·  click to collapse".to_string(),
+                        Style::default().fg(theme::FAINT),
+                    ));
                 }
+            }
+            out.push(Line::from(head));
+
+            // Body: full stream when active or expanded; one-line preview when collapsed.
+            let show_full = *active || *expanded;
+            if show_full {
+                if text.is_empty() && *active {
+                    out.push(Line::from(vec![
+                        Span::raw("  ".to_string()),
+                        Span::styled(
+                            format!("{} thinking", theme::pulse_frame(tick)),
+                            theme::style_thinking_violet(),
+                        ),
+                    ]));
+                } else {
+                    for l in text.lines() {
+                        out.push(Line::from(vec![
+                            Span::raw("  ".to_string()),
+                            Span::styled(l.to_string(), theme::style_thinking_violet()),
+                        ]));
+                    }
+                }
+            } else if let Some(preview) = text.lines().rev().find(|l| !l.trim().is_empty()) {
+                out.push(Line::from(vec![
+                    Span::raw("  ".to_string()),
+                    Span::styled(
+                        format!("└ {}", truncate(preview, 120)),
+                        theme::style_faint(),
+                    ),
+                ]));
             }
         }
         Cell::Tool {
@@ -583,19 +663,52 @@ fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
             args,
             result,
             ok,
+            started,
+            duration,
+            expanded,
         } => {
             out.push(Line::default());
             // Colour by tool family (read/edit/shell/web/git/agent/…) so a glance
             // tells you what kind of thing ran; the status glyph carries success.
             let hue = theme::tool_color(name);
-            let mut head_spans = Vec::new();
-            match ok {
-                None => head_spans.push(Span::styled(
-                    format!("{} ", theme::spinner_frame(tick)),
-                    Style::default().fg(hue),
-                )),
-                Some(true) => head_spans.push(Span::styled("✓ ".to_string(), theme::style_success())),
-                Some(false) => head_spans.push(Span::styled("✗ ".to_string(), theme::style_error())),
+            let running = ok.is_none();
+            let dur_label = if running {
+                theme::fmt_elapsed_live(started.elapsed())
+            } else {
+                duration
+                    .map(theme::fmt_duration)
+                    .unwrap_or_else(|| "—".into())
+            };
+            let chevron = if running {
+                theme::spinner_frame(tick)
+            } else if *expanded {
+                theme::CHEVRON_EXPANDED
+            } else {
+                theme::CHEVRON_COLLAPSED
+            };
+            let status_glyph = match ok {
+                None => None,
+                Some(true) => Some(("✓", theme::SUCCESS)),
+                Some(false) => Some(("✗", theme::ERROR)),
+            };
+            let chev_hue = if flash.is_some() {
+                theme::BLUE_100
+            } else if running {
+                hue
+            } else {
+                theme::MUTED
+            };
+            let mut head_spans = vec![
+                Span::styled(
+                    format!("{chevron} "),
+                    Style::default().fg(chev_hue).add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if let Some((g, c)) = status_glyph {
+                head_spans.push(Span::styled(
+                    format!("{g} "),
+                    Style::default().fg(c),
+                ));
             }
             head_spans.push(Span::styled(
                 name.clone(),
@@ -609,6 +722,10 @@ fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
                 format!("  ·  {}", theme::tool_family(name)),
                 Style::default().fg(theme::FAINT),
             ));
+            head_spans.push(Span::styled(
+                format!("  ·  {dur_label}"),
+                Style::default().fg(theme::FAINT),
+            ));
             out.push(Line::from(head_spans));
             match result {
                 None => out.push(Line::from(vec![
@@ -620,8 +737,13 @@ fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
                 ])),
                 Some(r) => {
                     let all: Vec<&str> = r.lines().filter(|l| !l.trim().is_empty()).collect();
-                    let shown = 3usize;
-                    for (i, l) in all.iter().take(shown).enumerate() {
+                    let preview_n = 3usize;
+                    let show_n = if *expanded {
+                        all.len()
+                    } else {
+                        preview_n.min(all.len())
+                    };
+                    for (i, l) in all.iter().take(show_n).enumerate() {
                         let prefix = if i == 0 { "└ " } else { "  " };
                         out.push(Line::from(vec![
                             Span::raw("  ".to_string()),
@@ -629,17 +751,53 @@ fn cell_lines(app: &App, cell: &Cell, out: &mut Vec<Line<'static>>) {
                             Span::styled(truncate(l, 200), theme::style_faint()),
                         ]));
                     }
-                    if all.len() > shown {
+                    if !*expanded && all.len() > preview_n {
                         out.push(Line::from(vec![
                             Span::raw("    ".to_string()),
                             Span::styled(
-                                format!("… +{} lines", all.len() - shown),
+                                format!(
+                                    "… +{} lines · click header / e to expand",
+                                    all.len() - preview_n
+                                ),
+                                theme::style_faint(),
+                            ),
+                        ]));
+                    } else if *expanded && all.len() > preview_n {
+                        out.push(Line::from(vec![
+                            Span::raw("    ".to_string()),
+                            Span::styled(
+                                "click header to collapse".to_string(),
                                 theme::style_faint(),
                             ),
                         ]));
                     }
                 }
             }
+        }
+        Cell::TurnDone {
+            duration,
+            interrupted,
+        } => {
+            out.push(Line::default());
+            let (glyph, hue, label) = if *interrupted {
+                ("◼", theme::WARN, "turn cancelled")
+            } else {
+                ("✓", theme::SUCCESS, "turn")
+            };
+            out.push(Line::from(vec![
+                Span::styled(
+                    format!("{glyph} "),
+                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    label.to_string(),
+                    Style::default().fg(theme::MUTED),
+                ),
+                Span::styled(
+                    format!("  ·  {}", theme::fmt_duration(*duration)),
+                    Style::default().fg(theme::FAINT),
+                ),
+            ]));
         }
         Cell::Info { text, tone } => {
             out.push(Line::default());
@@ -690,9 +848,11 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
             Style::default().fg(Color::Rgb(r, g, b)),
         )));
     }
+    // Model-agnostic subtitle: shows whatever Meta model is selected.
+    let model_label = crate::config::model_display_name(&app.cfg.model);
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
-        Span::styled("Spark".to_string(), theme::style_title()),
+        Span::styled(model_label, theme::style_title()),
         Span::styled("  ·  ".to_string(), theme::style_faint()),
         Span::styled("Meta Model API".to_string(), theme::style_status()),
         Span::styled("  ·  ".to_string(), theme::style_faint()),
@@ -719,7 +879,7 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  ↑↓ scroll  ·  Ctrl+P history  ·  Shift+Tab modes  ·  Esc cancel"
+            "/help  ·  ↑↓ scroll  ·  click ▸ cards  ·  e expand  ·  Shift+Tab modes  ·  Esc cancel"
                 .to_string(),
             theme::style_faint(),
         ),
@@ -741,7 +901,8 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
 // ── busy line ──────────────────────────────────────────────────────────────
 fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
     let tick = app.spinner_epoch.elapsed();
-    let secs = app.turn_started.elapsed().as_secs();
+    let elapsed = app.turn_started.elapsed();
+    let live = theme::fmt_elapsed_live(elapsed);
     let mut spans = vec![Span::raw(" ".to_string())];
 
     if app.cancelling {
@@ -751,7 +912,7 @@ fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            format!("cancelling…  {secs}s  "),
+            format!("cancelling…  {live}  "),
             Style::default().fg(theme::WARN),
         ));
         spans.push(Span::styled(
@@ -770,7 +931,16 @@ fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
             format!("  {}  ", capitalize(&app.status)),
             Style::default().fg(theme::META_BLUE_SKY),
         ));
-        spans.push(Span::styled(format!("{secs}s"), theme::style_faint()));
+        spans.push(Span::styled(live, theme::style_faint()));
+        // Decorative ease-out activity strip (perceived motion, not real %).
+        let bar_w = 12usize.min(area.width.saturating_sub(48) as usize);
+        if bar_w >= 6 {
+            spans.push(Span::styled("  ".to_string(), theme::style_faint()));
+            spans.push(Span::styled(
+                theme::activity_bar(elapsed, bar_w),
+                Style::default().fg(theme::BLUE_500),
+            ));
+        }
         spans.push(Span::styled(
             "  ·  esc cancel".to_string(),
             theme::style_faint(),

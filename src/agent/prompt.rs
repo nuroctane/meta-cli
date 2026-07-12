@@ -29,6 +29,8 @@ pub fn find_project_instructions(cwd: &Path) -> Option<(String, String)> {
 pub struct PromptContext {
     cwd: PathBuf,
     is_subagent: bool,
+    /// Selected Meta Model API model id — used for role/nomenclature only.
+    model: String,
     shell_label: String,
     project: Option<(String, String)>,
     memory: String,
@@ -38,7 +40,7 @@ pub struct PromptContext {
 }
 
 impl PromptContext {
-    pub fn build(cwd: &Path, is_subagent: bool) -> Self {
+    pub fn build(cwd: &Path, is_subagent: bool, model: &str) -> Self {
         let plur = if is_subagent {
             String::new()
         } else {
@@ -54,6 +56,7 @@ impl PromptContext {
         Self {
             cwd: cwd.to_path_buf(),
             is_subagent,
+            model: model.to_string(),
             shell_label: shell_backend().label.clone(),
             project: find_project_instructions(cwd),
             memory: memory_prompt_excerpt(3000),
@@ -88,10 +91,16 @@ Tools auto-approved. Prefer minimal safe diffs; avoid destructive shell.
 "#,
         };
 
+        // Model-agnostic role: works for muse-spark, future Meta models, or overrides.
+        let model_label = crate::config::model_display_name(&self.model);
         let role = if self.is_subagent {
-            "You are a focused SUBAGENT. Complete the delegated task and return a concise report. Do not ask the user questions."
+            format!(
+                "You are a focused SUBAGENT ({model_label}). Complete the delegated task and return a concise report. Do not ask the user questions."
+            )
         } else {
-            "You are Muse — a Claude-class coding agent for Meta CLI (unofficial), powered by Muse Spark on Meta Model API."
+            format!(
+                "You are Meta — a coding agent for Meta CLI (unofficial), powered by {model_label} on Meta Model API."
+            )
         };
 
         let mut s = format!(
@@ -169,6 +178,7 @@ pub fn system_instructions(
     mode: PermissionMode,
     is_subagent: bool,
     todos_render: &str,
+    model: &str,
 ) -> String {
-    PromptContext::build(cwd, is_subagent).render(mode, todos_render)
+    PromptContext::build(cwd, is_subagent, model).render(mode, todos_render)
 }

@@ -4,15 +4,15 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "meta",
     version,
-    about = "Meta CLI (unofficial) — Muse Spark agent for Meta Model API",
-    long_about = "Meta CLI is an unofficial community coding agent for Muse Spark 1.1 via Meta Model API.\nNot affiliated with Meta Platforms, Inc. Repo: github.com/nuroctane/meta-cli\n\nInvoke as: meta   (alias: muse)"
+    about = "Meta CLI (unofficial) — coding agent for Meta Model API",
+    long_about = "Meta CLI is an unofficial community coding agent for Meta Model API.\nDefault model: muse-spark-1.1 (switch with --model / /model). Not affiliated with Meta Platforms, Inc.\nRepo: github.com/nuroctane/meta-cli\n\nInvoke as: meta   (alias: muse)"
 )]
 pub struct Cli {
     /// Initial prompt for interactive session
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
-    /// Model id (default: muse-spark-1.1)
+    /// Meta Model API model id (default from config / muse-spark-1.1)
     #[arg(short, long, env = "META_MODEL")]
     pub model: Option<String>,
 

@@ -126,7 +126,7 @@ impl AgentRunner {
         let tools = self.tools.tool_defs();
         // Disk-backed prompt parts (skills, MUSE.md, memory, shell) — read once
         // per user turn, not once per model request.
-        let prompt_ctx = PromptContext::build(&self.cwd, self.is_subagent);
+        let prompt_ctx = PromptContext::build(&self.cwd, self.is_subagent, &self.config.model);
         let mut turns = 0u32;
         let mut tool_seq: u64 = 0;
         // Prevent compact→still-hot→compact infinite loop within one user turn.

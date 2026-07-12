@@ -161,14 +161,27 @@ impl Tone {
 }
 
 // ── Motion ─────────────────────────────────────────────────────────────────
+// Motion taste (Emil Kowalski / design-eng):
+//   · Fast spinner → perceived speed (same wait, feels snappier)
+//   · Ease-out curves for entry feedback; never ease-in for UI
+//   · UI feedback < 300ms; no motion on high-frequency keyboard actions
+//   · Only "animate" glyphs/opacity in TUI — never layout thrash
+
 /// Braille spinner — smooth, dense, Meta-blue tinted in UI.
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-/// Soft pulse dots for quieter states (thinking complete, etc.).
+/// Soft pulse dots for quieter states (thinking complete, idle accent).
 pub const PULSE: &[&str] = &["·", "•", "●", "•"];
-/// Frame interval for spinner (ms).
-pub const SPINNER_MS: u128 = 70;
+/// Expand chevrons (collapsed → expanded).
+pub const CHEVRON_COLLAPSED: &str = "▸";
+pub const CHEVRON_EXPANDED: &str = "▾";
+/// Frame interval for spinner (ms). Faster = feels more responsive.
+pub const SPINNER_MS: u128 = 48;
+/// Soft pulse base interval (ms).
+pub const PULSE_MS: u128 = 220;
 /// Cursor / stream caret blink half-period (ms).
 pub const BLINK_MS: u128 = 530;
+/// Brief highlight after expand/collapse toggle (ms) — ease-out settle.
+pub const SETTLE_MS: u128 = 180;
 
 /// Spinner glyph for elapsed time.
 pub fn spinner_frame(elapsed: Duration) -> &'static str {
@@ -176,15 +189,81 @@ pub fn spinner_frame(elapsed: Duration) -> &'static str {
     SPINNER[i]
 }
 
-/// Soft pulse glyph.
+/// Soft pulse glyph — slight ease-out cadence (spend less time on the bright frame).
 pub fn pulse_frame(elapsed: Duration) -> &'static str {
-    let i = (elapsed.as_millis() / 280) as usize % PULSE.len();
-    PULSE[i]
+    // Non-uniform dwell: dim frames hold longer (ease-out feel without CSS).
+    let phase = (elapsed.as_millis() / PULSE_MS) as usize;
+    let dwell = [0, 0, 1, 2, 3, 3, 2, 1]; // index into PULSE via cycle
+    let i = dwell[phase % dwell.len()];
+    PULSE[i.min(PULSE.len() - 1)]
 }
 
 /// True during the "on" half of a blink cycle.
 pub fn blink_on(elapsed: Duration) -> bool {
     (elapsed.as_millis() / BLINK_MS) % 2 == 0
+}
+
+/// Cubic ease-out: 1 - (1-t)³. `t` in 0..=1.
+pub fn ease_out(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Progress 0.0→1.0 over `ms` milliseconds of `elapsed`, ease-out shaped.
+pub fn settle_progress(elapsed: Duration, ms: u128) -> f64 {
+    if ms == 0 {
+        return 1.0;
+    }
+    ease_out(elapsed.as_millis() as f64 / ms as f64)
+}
+
+/// Compact duration for thought/tool/turn cards (`842ms`, `1.2s`, `1m04s`).
+pub fn fmt_duration(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        let s = ms as f64 / 1000.0;
+        if s < 10.0 {
+            format!("{s:.1}s")
+        } else {
+            format!("{:.0}s", s)
+        }
+    } else {
+        let secs = d.as_secs();
+        format!("{}m{:02}s", secs / 60, secs % 60)
+    }
+}
+
+/// Live elapsed while a turn/tool is still running (tenths under a minute).
+pub fn fmt_elapsed_live(d: Duration) -> String {
+    let ms = d.as_millis();
+    if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        fmt_duration(d)
+    }
+}
+
+/// Decorative activity strip for the busy line (perceived progress, not real %).
+pub fn activity_bar(elapsed: Duration, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    // Sweep a bright segment with ease-out restarts every ~1.6s.
+    let cycle_ms = 1600u128;
+    let t = (elapsed.as_millis() % cycle_ms) as f64 / cycle_ms as f64;
+    let head = (ease_out(t) * (width as f64 + 2.0)) as isize;
+    let mut out = String::with_capacity(width);
+    for i in 0..width as isize {
+        let dist = (i - head).abs();
+        out.push(match dist {
+            0 => '━',
+            1 => '─',
+            _ => '·',
+        });
+    }
+    out
 }
 
 // ── ratatui styles ─────────────────────────────────────────────────────────
@@ -274,7 +353,7 @@ pub fn banner() {
     }
     println!(
         "  {}  {}  {}   {}",
-        "Spark".truecolor(0, 130, 251).bold(),
+        "Meta CLI".truecolor(0, 130, 251).bold(),
         "·".truecolor(138, 146, 158),
         "Meta Model API".truecolor(180, 190, 200),
         format!("v{}", env!("CARGO_PKG_VERSION")).truecolor(86, 94, 106)

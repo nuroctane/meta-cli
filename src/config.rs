@@ -4,8 +4,39 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.meta.ai/v1";
+/// Default Meta Model API model id. Swap via `/model`, `--model`, or config —
+/// UI and prompts use [`model_display_name`] so any future Meta model works.
 pub const DEFAULT_MODEL: &str = "muse-spark-1.1";
 pub const DEFAULT_REASONING: &str = "high";
+
+/// Pretty-print a Meta model id for banners, status, and system prompts.
+/// Works for any future model string (`muse-spark-1.1` → `Muse Spark 1.1`).
+pub fn model_display_name(model_id: &str) -> String {
+    let s = model_id.trim();
+    if s.is_empty() {
+        return "Meta model".into();
+    }
+    if s.contains(' ') {
+        return s.to_string();
+    }
+    s.split(|c| c == '-' || c == '_')
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            // Keep version-like tokens (1.1, v2, 70b) mostly as-is.
+            let first = p.chars().next().unwrap_or(' ');
+            if first.is_ascii_digit() || (p.len() > 1 && first == 'v' && p[1..].chars().all(|c| c.is_ascii_digit() || c == '.')) {
+                p.to_string()
+            } else {
+                let mut chars = p.chars();
+                match chars.next() {
+                    None => String::new(),
+                    Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Approximate Meta Model API list prices (USD per 1M tokens) for ADE cost display.
 /// Update when Meta publishes new rates: https://dev.meta.ai/docs/getting-started/pricing-rate-limits

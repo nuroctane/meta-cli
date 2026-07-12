@@ -23,7 +23,7 @@ warn() { printf '  ! %s\n' "$*"; }
 
 echo ""
 echo "  Meta CLI (unofficial) installer"
-echo "  command: meta  ·  Muse Spark agent · not affiliated with Meta"
+echo "  command: meta  ·  Meta Model API agent · not affiliated with Meta"
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
