@@ -9,7 +9,7 @@ meta          # Meta-blue interactive TUI
 muse          # alias (same binary)
 ```
 
-**v0.5.4** — Timed thoughts/turns with expandable tool · bash · thought cards, design-eng TUI motion, model-agnostic nomenclature, zero-setup ecosystem (Graphify · PLUR · Ruflo · Executor · skill packs), sticky PROMPT banner, click-to-caret, clipboard, draggable scrollbar.
+**v0.5.5** — Duration chips on every thought/tool/turn, fully collapsed cards by default, **hover peek dialogue** for full content, fixed scrollbar drag, design-eng motion, model-agnostic labels, zero-setup ecosystem.
 
 ---
 
@@ -134,8 +134,9 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 
 ### Highlights
 
-- **Timed thoughts & turns** — every thought, tool/bash, and finished turn shows how long it took  
-- **Expandable cards** — click `▸`/`▾` headers (or press `e` with empty input) for full thinking / tool / bash output  
+- **Duration chips** — high-contrast `took 1.2s` badges on every thought, tool/bash, and finished turn  
+- **Collapsed by default** — cards start fully closed; click `▸` (or `e` with empty input) to expand in place  
+- **Hover peek** — float a dialogue over a card to read full thought / command output without expanding  
 - **Streaming** assistant text + violet-italic model thinking (never reads as the answer)  
 - **Tool cards** colour-coded by family (read / edit / shell / web / git / agent / knowledge)  
 - **Design-eng motion** — snappy spinner, ease-out pulse, activity strip, brief expand settle highlight  
@@ -157,8 +158,10 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
 | `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
 | Wheel · drag scrollbar | Scroll transcript |
-| Click `▸`/`▾` card header | Expand / collapse thought · tool · bash |
+| Hover thought / tool / turn | Peek full content in a floating dialogue |
+| Click `▸`/`▾` card header | Expand / collapse thought · tool · bash in place |
 | `e` (empty input) | Toggle latest collapsible card |
+| Drag right-edge scrollbar | Jump through history (wide hit target) |
 | Click in input | **Place caret** where you click |
 | `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Select all · copy · paste · cut (system clipboard) |
 | `Ctrl+P` `Ctrl+N` (or `Alt+↑/↓`) | Prompt history |

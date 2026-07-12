@@ -47,6 +47,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         draw_session_picker(f, app, area);
     }
+    // Grok-style hover dialogue over thoughts / tools / turns (above everything
+    // except approval/picker, which already short-circuit interaction).
+    if app.approval.is_none() && app.picker.is_none() {
+        draw_hover_peek(f, app, area);
+    }
 }
 
 // ── session picker ─────────────────────────────────────────────────────────
@@ -201,8 +206,9 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut prompts: Vec<String> = Vec::new();
     let mut current: Option<usize> = None;
 
-    // Rebuild hit-test map: wrapped-line index → collapsible cell header.
+    // Rebuild hit-test maps: headers (click) + any peekable line (hover).
     let mut hit_headers: Vec<Option<usize>> = Vec::new();
+    let mut line_cells: Vec<Option<usize>> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
         if let Cell::User(text) = cell {
@@ -213,6 +219,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         cell_lines(app, cell, cell_idx, &mut cell_out);
         let w = wrap::wrap_lines(&cell_out, inner_w);
         let collapsible = cell.is_collapsible();
+        let peekable = cell.is_peekable();
         let mut header_marked = false;
         for (i, line) in w.into_iter().enumerate() {
             // First non-empty line of a collapsible card is the click target.
@@ -230,49 +237,73 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             // being on screen means the prompt itself is visible.
             is_prompt_head.push(matches!(cell, Cell::User(_)) && i <= 1);
             hit_headers.push(if is_header { Some(cell_idx) } else { None });
+            // Hover any non-blank line of a peekable card (incl. turn strip).
+            line_cells.push(if peekable && !empty {
+                Some(cell_idx)
+            } else {
+                None
+            });
         }
     }
     app.hit_headers = hit_headers;
+    app.line_cells = line_cells;
 
     let total = wrapped.len() as u16;
     let viewport = area.height;
 
-    // Publish real metrics so PageUp/Home scroll in true pages.
-    app.view_h = viewport;
+    // Sticky banner takes rows off the body — max_scroll must use body height
+    // or the thumb/drag math fights the sticky and feels janky.
+    const STICKY_H: u16 = 3;
+    // Pre-pass sticky using full viewport estimate, then refine.
+    let max_scroll_full = total.saturating_sub(viewport);
+    let top_guess = max_scroll_full.saturating_sub(app.scroll_from_bottom.min(max_scroll_full));
+    let sticky_guess: bool = sticky_owner(
+        &owner,
+        &is_prompt_head,
+        top_guess as usize,
+        (top_guess as usize + viewport as usize).min(wrapped.len()),
+    )
+    .is_some();
+    let sticky_h = if sticky_guess { STICKY_H } else { 0 };
+    let body_h = viewport.saturating_sub(sticky_h);
+    // Wide scrollbar rail (2 cols) so drag is easy to grab.
+    let sb_w: u16 = 2;
+
+    // Publish metrics for PageUp/Home + scrollbar drag (body, not full viewport).
+    app.view_h = body_h;
     app.view_total = total;
 
-    let max_scroll = total.saturating_sub(viewport);
+    let max_scroll = total.saturating_sub(body_h);
     if app.scroll_from_bottom > max_scroll {
         app.scroll_from_bottom = max_scroll;
     }
     let top = max_scroll.saturating_sub(app.scroll_from_bottom);
     app.transcript_top = top;
 
-    // Sticky header: if the prompt that owns the top of the viewport has itself
-    // scrolled out of sight, pin it so you always know what you're looking at.
     let vis_lo = top as usize;
-    let vis_hi = (vis_lo + viewport as usize).min(wrapped.len());
+    let vis_hi = (vis_lo + body_h as usize).min(wrapped.len());
     let sticky: Option<String> = sticky_owner(&owner, &is_prompt_head, vis_lo, vis_hi)
         .map(|oi| prompts[oi].clone());
-
-    // Full-width banner (3 rows) — much more visible than a single dim line.
-    const STICKY_H: u16 = 3;
     let sticky_h = if sticky.is_some() { STICKY_H } else { 0 };
-    // Reserve 1 column on the right for the draggable scrollbar.
-    let sb_w: u16 = 1;
     let body_y = area.y + sticky_h;
     let body_h = viewport.saturating_sub(sticky_h);
+    // Re-sync if sticky appearance changed body height.
+    app.view_h = body_h;
+    let max_scroll = total.saturating_sub(body_h);
+    if app.scroll_from_bottom > max_scroll {
+        app.scroll_from_bottom = max_scroll;
+    }
+    let top = max_scroll.saturating_sub(app.scroll_from_bottom);
+    app.transcript_top = top;
+
     let text_w = area.width.saturating_sub(2 + sb_w).max(10);
 
-    // Body may be shorter because of the banner; re-clamp visible window.
-    // Banner consumes viewport rows; body shows `body_h` lines starting at `top`.
     let visible: Vec<Line> = wrapped
         .into_iter()
         .skip(top as usize)
         .take(body_h as usize)
         .collect();
 
-    // Re-wrap wasn't needed — sticky takes fixed rows off the body only.
     let body_rect = Rect {
         x: area.x + 1,
         y: body_y,
@@ -303,7 +334,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
         height: body_h,
     };
     app.scrollbar_track = track;
-    draw_scrollbar(f, app, track, max_scroll, top, total, viewport);
+    draw_scrollbar(f, app, track, max_scroll, top, total, body_h);
 
     // Floating "jump to latest" chip when scrolled back.
     if app.scroll_from_bottom > 0 && body_h > 0 {
@@ -572,14 +603,16 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             expanded,
         } => {
             out.push(Line::default());
-            let dur_label = if *active {
+            let live = *active;
+            let dur_label = if live {
                 theme::fmt_elapsed_live(started.elapsed())
             } else {
                 duration
                     .map(theme::fmt_duration)
                     .unwrap_or_else(|| "—".into())
             };
-            let chevron = if *active {
+            // Always show a real chevron when finished; spinner only while active.
+            let chevron = if live {
                 theme::spinner_frame(tick)
             } else if *expanded {
                 theme::CHEVRON_EXPANDED
@@ -588,11 +621,12 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             };
             let head_hue = if flash.is_some() {
                 theme::BLUE_100
-            } else if *active {
+            } else if live {
                 theme::VIOLET
             } else {
                 theme::MUTED
             };
+            let lines_n = text.lines().filter(|l| !l.trim().is_empty()).count();
             let mut head = vec![
                 Span::styled(
                     format!("{chevron} "),
@@ -601,42 +635,52 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                 Span::styled(
                     "thought".to_string(),
                     Style::default()
-                        .fg(if *active { theme::VIOLET } else { theme::MUTED })
-                        .add_modifier(if *active {
+                        .fg(if live { theme::VIOLET } else { theme::MUTED })
+                        .add_modifier(if live {
                             Modifier::ITALIC
                         } else {
                             Modifier::empty()
                         }),
                 ),
+                Span::raw(" ".to_string()),
+                // High-contrast duration chip — impossible to miss.
                 Span::styled(
-                    format!("  ·  {dur_label}"),
-                    Style::default().fg(theme::FAINT),
+                    if live {
+                        format!(" {dur_label} ")
+                    } else {
+                        format!(" took {dur_label} ")
+                    },
+                    theme::style_duration_chip(live),
                 ),
             ];
-            if !*active {
-                let lines_n = text.lines().filter(|l| !l.trim().is_empty()).count();
-                if lines_n > 0 && !*expanded {
-                    head.push(Span::styled(
-                        format!("  ·  {lines_n} lines · click / e"),
-                        Style::default().fg(theme::FAINT),
-                    ));
-                } else if *expanded {
-                    head.push(Span::styled(
-                        "  ·  click to collapse".to_string(),
-                        Style::default().fg(theme::FAINT),
-                    ));
-                }
+            if !*expanded {
+                head.push(Span::styled(
+                    if lines_n > 0 {
+                        format!("  ·  {lines_n} lines · hover peek · click ▸")
+                    } else {
+                        "  ·  hover peek · click ▸".to_string()
+                    },
+                    Style::default().fg(theme::FAINT),
+                ));
+            } else {
+                head.push(Span::styled(
+                    "  ·  click ▾ to collapse".to_string(),
+                    Style::default().fg(theme::FAINT),
+                ));
             }
             out.push(Line::from(head));
 
-            // Body: full stream when active or expanded; one-line preview when collapsed.
-            let show_full = *active || *expanded;
-            if show_full {
-                if text.is_empty() && *active {
+            // Completely collapsed by default: header only. Body only when expanded.
+            if *expanded {
+                if text.is_empty() {
                     out.push(Line::from(vec![
                         Span::raw("  ".to_string()),
                         Span::styled(
-                            format!("{} thinking", theme::pulse_frame(tick)),
+                            if live {
+                                format!("{} thinking…", theme::pulse_frame(tick))
+                            } else {
+                                "(empty)".into()
+                            },
                             theme::style_thinking_violet(),
                         ),
                     ]));
@@ -648,14 +692,6 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                         ]));
                     }
                 }
-            } else if let Some(preview) = text.lines().rev().find(|l| !l.trim().is_empty()) {
-                out.push(Line::from(vec![
-                    Span::raw("  ".to_string()),
-                    Span::styled(
-                        format!("└ {}", truncate(preview, 120)),
-                        theme::style_faint(),
-                    ),
-                ]));
             }
         }
         Cell::Tool {
@@ -668,8 +704,6 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             expanded,
         } => {
             out.push(Line::default());
-            // Colour by tool family (read/edit/shell/web/git/agent/…) so a glance
-            // tells you what kind of thing ran; the status glyph carries success.
             let hue = theme::tool_color(name);
             let running = ok.is_none();
             let dur_label = if running {
@@ -698,17 +732,12 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             } else {
                 theme::MUTED
             };
-            let mut head_spans = vec![
-                Span::styled(
-                    format!("{chevron} "),
-                    Style::default().fg(chev_hue).add_modifier(Modifier::BOLD),
-                ),
-            ];
+            let mut head_spans = vec![Span::styled(
+                format!("{chevron} "),
+                Style::default().fg(chev_hue).add_modifier(Modifier::BOLD),
+            )];
             if let Some((g, c)) = status_glyph {
-                head_spans.push(Span::styled(
-                    format!("{g} "),
-                    Style::default().fg(c),
-                ));
+                head_spans.push(Span::styled(format!("{g} "), Style::default().fg(c)));
             }
             head_spans.push(Span::styled(
                 name.clone(),
@@ -722,54 +751,63 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                 format!("  ·  {}", theme::tool_family(name)),
                 Style::default().fg(theme::FAINT),
             ));
+            head_spans.push(Span::raw(" ".to_string()));
             head_spans.push(Span::styled(
-                format!("  ·  {dur_label}"),
-                Style::default().fg(theme::FAINT),
+                if running {
+                    format!(" {dur_label} ")
+                } else {
+                    format!(" took {dur_label} ")
+                },
+                theme::style_duration_chip(running),
             ));
-            out.push(Line::from(head_spans));
-            match result {
-                None => out.push(Line::from(vec![
-                    Span::raw("  ".to_string()),
-                    Span::styled(
-                        format!("{} running", theme::pulse_frame(tick)),
-                        Style::default().fg(theme::META_BLUE_SKY),
-                    ),
-                ])),
-                Some(r) => {
-                    let all: Vec<&str> = r.lines().filter(|l| !l.trim().is_empty()).collect();
-                    let preview_n = 3usize;
-                    let show_n = if *expanded {
-                        all.len()
-                    } else {
-                        preview_n.min(all.len())
-                    };
-                    for (i, l) in all.iter().take(show_n).enumerate() {
-                        let prefix = if i == 0 { "└ " } else { "  " };
-                        out.push(Line::from(vec![
-                            Span::raw("  ".to_string()),
-                            Span::styled(prefix.to_string(), theme::style_faint()),
-                            Span::styled(truncate(l, 200), theme::style_faint()),
-                        ]));
+            if !*expanded {
+                let extra = match result {
+                    Some(r) => {
+                        let n = r.lines().filter(|l| !l.trim().is_empty()).count();
+                        if n > 0 {
+                            format!("  ·  {n} lines · hover peek · click ▸")
+                        } else {
+                            "  ·  hover peek · click ▸".into()
+                        }
                     }
-                    if !*expanded && all.len() > preview_n {
-                        out.push(Line::from(vec![
-                            Span::raw("    ".to_string()),
-                            Span::styled(
-                                format!(
-                                    "… +{} lines · click header / e to expand",
-                                    all.len() - preview_n
-                                ),
-                                theme::style_faint(),
-                            ),
-                        ]));
-                    } else if *expanded && all.len() > preview_n {
-                        out.push(Line::from(vec![
-                            Span::raw("    ".to_string()),
-                            Span::styled(
-                                "click header to collapse".to_string(),
-                                theme::style_faint(),
-                            ),
-                        ]));
+                    None => "  ·  hover peek · click ▸".into(),
+                };
+                head_spans.push(Span::styled(extra, Style::default().fg(theme::FAINT)));
+            } else {
+                head_spans.push(Span::styled(
+                    "  ·  click ▾ to collapse".to_string(),
+                    Style::default().fg(theme::FAINT),
+                ));
+            }
+            out.push(Line::from(head_spans));
+
+            // Completely collapsed by default — no preview rows.
+            if *expanded {
+                match result {
+                    None => out.push(Line::from(vec![
+                        Span::raw("  ".to_string()),
+                        Span::styled(
+                            format!("{} running", theme::pulse_frame(tick)),
+                            Style::default().fg(theme::META_BLUE_SKY),
+                        ),
+                    ])),
+                    Some(r) => {
+                        let all: Vec<&str> = r.lines().filter(|l| !l.trim().is_empty()).collect();
+                        if all.is_empty() {
+                            out.push(Line::from(vec![
+                                Span::raw("  ".to_string()),
+                                Span::styled("(no output)".to_string(), theme::style_faint()),
+                            ]));
+                        } else {
+                            for (i, l) in all.iter().enumerate() {
+                                let prefix = if i == 0 { "└ " } else { "  " };
+                                out.push(Line::from(vec![
+                                    Span::raw("  ".to_string()),
+                                    Span::styled(prefix.to_string(), theme::style_faint()),
+                                    Span::styled(truncate(l, 200), theme::style_faint()),
+                                ]));
+                            }
+                        }
                     }
                 }
             }
@@ -779,22 +817,31 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             interrupted,
         } => {
             out.push(Line::default());
-            let (glyph, hue, label) = if *interrupted {
-                ("◼", theme::WARN, "turn cancelled")
+            let (glyph, label) = if *interrupted {
+                ("◼", "turn cancelled")
             } else {
-                ("✓", theme::SUCCESS, "turn")
+                ("✓", "turn")
             };
+            let d = theme::fmt_duration(*duration);
             out.push(Line::from(vec![
                 Span::styled(
                     format!("{glyph} "),
-                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(if *interrupted {
+                            theme::WARN
+                        } else {
+                            theme::SUCCESS
+                        })
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(label.to_string(), Style::default().fg(theme::MUTED)),
+                Span::raw(" ".to_string()),
+                Span::styled(
+                    format!(" took {d} "),
+                    theme::style_turn_chip(*interrupted),
                 ),
                 Span::styled(
-                    label.to_string(),
-                    Style::default().fg(theme::MUTED),
-                ),
-                Span::styled(
-                    format!("  ·  {}", theme::fmt_duration(*duration)),
+                    "  ·  hover for details".to_string(),
                     Style::default().fg(theme::FAINT),
                 ),
             ]));
@@ -829,6 +876,143 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             }
         }
     }
+}
+
+/// Grok-style floating dialogue: full thought / tool / turn content on hover.
+fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
+    let Some(idx) = app.hover_cell else { return };
+    let Some(cell) = app.cells.get(idx) else { return };
+    if !cell.is_peekable() {
+        return;
+    }
+    // If already expanded in-place, skip the floating box (content is visible).
+    if cell.is_collapsible() && cell.expanded() {
+        return;
+    }
+    let Some(title) = cell.peek_title() else { return };
+    let body = cell.peek_body().unwrap_or_default();
+
+    let max_w = (area.width.saturating_mul(7) / 10).clamp(40, 96);
+    let max_h = (area.height.saturating_mul(6) / 10).clamp(8, 28);
+    let w = max_w.min(area.width.saturating_sub(4));
+    let h = max_h.min(area.height.saturating_sub(2));
+    if w < 20 || h < 5 {
+        return;
+    }
+
+    // Anchor near the mouse, prefer below-right; flip to stay on-screen.
+    let mut x = app.mouse_col.saturating_add(2);
+    let mut y = app.mouse_row.saturating_add(1);
+    if x + w > area.width {
+        x = area.width.saturating_sub(w);
+    }
+    if y + h > area.height {
+        y = app.mouse_row.saturating_sub(h).max(0);
+    }
+    if y + h > area.height {
+        y = area.height.saturating_sub(h);
+    }
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+
+    let border_hue = match cell {
+        Cell::Thinking { .. } => theme::VIOLET,
+        Cell::Tool { name, .. } => theme::tool_color(name),
+        Cell::TurnDone { interrupted, .. } => {
+            if *interrupted {
+                theme::WARN
+            } else {
+                theme::SUCCESS
+            }
+        }
+        _ => theme::META_BLUE,
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_hue))
+        .style(Style::default().bg(theme::SURFACE_2))
+        .title(Span::styled(
+            format!("  {title}  "),
+            Style::default()
+                .fg(border_hue)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            "  hover to keep · click ▸ expands in place  ",
+            Style::default().fg(theme::FAINT),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    let mut lines: Vec<Line> = Vec::new();
+    let max_lines = inner.height as usize;
+    let max_cols = (inner.width as usize).saturating_sub(1).max(8);
+    for (i, raw) in body.lines().enumerate() {
+        if i >= max_lines.saturating_sub(1) {
+            lines.push(Line::from(Span::styled(
+                format!("… +more · click ▸ to expand"),
+                Style::default().fg(theme::FAINT),
+            )));
+            break;
+        }
+        // Soft wrap long lines into the dialogue.
+        let mut rest = raw;
+        let mut first = true;
+        while !rest.is_empty() {
+            if lines.len() >= max_lines.saturating_sub(1) {
+                lines.push(Line::from(Span::styled(
+                    "…".to_string(),
+                    Style::default().fg(theme::FAINT),
+                )));
+                break;
+            }
+            let take = rest
+                .chars()
+                .take(max_cols)
+                .collect::<String>()
+                .chars()
+                .count();
+            let chunk: String = rest.chars().take(take).collect();
+            let advanced = chunk.len();
+            rest = if advanced >= rest.len() {
+                ""
+            } else {
+                &rest[advanced..]
+            };
+            let style = if matches!(cell, Cell::Thinking { .. }) {
+                theme::style_thinking_violet()
+            } else {
+                Style::default().fg(theme::FG)
+            };
+            lines.push(Line::from(Span::styled(
+                if first {
+                    chunk
+                } else {
+                    format!("  {chunk}")
+                },
+                style,
+            )));
+            first = false;
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(empty)".to_string(),
+            theme::style_faint(),
+        )));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+        inner,
+    );
 }
 
 fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
@@ -879,7 +1063,7 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  ↑↓ scroll  ·  click ▸ cards  ·  e expand  ·  Shift+Tab modes  ·  Esc cancel"
+            "/help  ·  hover peek cards  ·  click ▸ expand  ·  drag scrollbar  ·  Shift+Tab  ·  Esc"
                 .to_string(),
             theme::style_faint(),
         ),

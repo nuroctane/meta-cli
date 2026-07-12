@@ -245,6 +245,37 @@ pub fn fmt_elapsed_live(d: Duration) -> String {
     }
 }
 
+/// Accent for duration chips (steps slightly out of the blue spine on purpose —
+/// timing should be impossible to miss).
+pub fn style_duration_chip(live: bool) -> Style {
+    if live {
+        Style::default()
+            .fg(BG)
+            .bg(VIOLET)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(BG)
+            .bg(META_BLUE_SKY)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
+/// Style for turn-complete duration chip.
+pub fn style_turn_chip(interrupted: bool) -> Style {
+    if interrupted {
+        Style::default()
+            .fg(BG)
+            .bg(WARN)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(BG)
+            .bg(SUCCESS)
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
 /// Decorative activity strip for the busy line (perceived progress, not real %).
 pub fn activity_bar(elapsed: Duration, width: usize) -> String {
     if width == 0 {

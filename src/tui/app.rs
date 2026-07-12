@@ -100,12 +100,142 @@ impl Cell {
         matches!(self, Cell::Thinking { .. } | Cell::Tool { .. })
     }
 
+    /// Hover peek / expand target — thoughts, tools/bash, and turn timing strips.
+    pub fn is_peekable(&self) -> bool {
+        matches!(
+            self,
+            Cell::Thinking { .. } | Cell::Tool { .. } | Cell::TurnDone { .. }
+        )
+    }
+
+    pub fn expanded(&self) -> bool {
+        match self {
+            Cell::Thinking { expanded, .. } | Cell::Tool { expanded, .. } => *expanded,
+            _ => false,
+        }
+    }
+
     pub fn toggle_expanded(&mut self) {
         match self {
             Cell::Thinking { expanded, .. } | Cell::Tool { expanded, .. } => {
                 *expanded = !*expanded;
             }
             _ => {}
+        }
+    }
+
+    /// Title for the hover dialogue.
+    pub fn peek_title(&self) -> Option<String> {
+        match self {
+            Cell::Thinking {
+                active,
+                duration,
+                started,
+                ..
+            } => {
+                let d = if *active {
+                    theme::fmt_elapsed_live(started.elapsed())
+                } else {
+                    duration
+                        .map(theme::fmt_duration)
+                        .unwrap_or_else(|| "—".into())
+                };
+                Some(if *active {
+                    format!("thought · {d} (live)")
+                } else {
+                    format!("thought · took {d}")
+                })
+            }
+            Cell::Tool {
+                name,
+                ok,
+                duration,
+                started,
+                ..
+            } => {
+                let d = if ok.is_none() {
+                    theme::fmt_elapsed_live(started.elapsed())
+                } else {
+                    duration
+                        .map(theme::fmt_duration)
+                        .unwrap_or_else(|| "—".into())
+                };
+                let status = match ok {
+                    None => "running",
+                    Some(true) => "ok",
+                    Some(false) => "failed",
+                };
+                Some(format!("{name} · {status} · {d}"))
+            }
+            Cell::TurnDone {
+                duration,
+                interrupted,
+            } => Some(if *interrupted {
+                format!("turn cancelled · {}", theme::fmt_duration(*duration))
+            } else {
+                format!("turn · took {}", theme::fmt_duration(*duration))
+            }),
+            _ => None,
+        }
+    }
+
+    /// Full body for the hover dialogue (and in-place expand).
+    pub fn peek_body(&self) -> Option<String> {
+        match self {
+            Cell::Thinking { text, active, .. } => {
+                if text.trim().is_empty() {
+                    Some(if *active {
+                        "…thinking".into()
+                    } else {
+                        "(empty thought)".into()
+                    })
+                } else {
+                    Some(text.clone())
+                }
+            }
+            Cell::Tool {
+                name,
+                args,
+                result,
+                ok,
+                duration,
+                started,
+                ..
+            } => {
+                let mut s = String::new();
+                s.push_str(&format!("tool: {name}\n"));
+                s.push_str(&format!("args: {args}\n"));
+                let d = if ok.is_none() {
+                    theme::fmt_elapsed_live(started.elapsed())
+                } else {
+                    duration
+                        .map(theme::fmt_duration)
+                        .unwrap_or_else(|| "—".into())
+                };
+                s.push_str(&format!("duration: {d}\n"));
+                s.push_str("---\n");
+                match result {
+                    None => s.push_str("…running"),
+                    Some(r) if r.trim().is_empty() => s.push_str("(no output)"),
+                    Some(r) => s.push_str(r),
+                }
+                Some(s)
+            }
+            Cell::TurnDone {
+                duration,
+                interrupted,
+            } => Some(if *interrupted {
+                format!(
+                    "This turn was cancelled after {}.",
+                    theme::fmt_duration(*duration)
+                )
+            } else {
+                format!(
+                    "This turn completed in {}.\n\nHover cards or click ▸ on thoughts/tools to read full content. Press e (empty input) to toggle the latest card.",
+                    theme::fmt_duration(*duration)
+                )
+            }),
+            _ => None,
         }
     }
 }
@@ -211,10 +341,17 @@ pub struct App {
     /// Per wrapped transcript line: `Some(cell_idx)` when that line is a
     /// collapsible card header (click to expand/collapse).
     pub hit_headers: Vec<Option<usize>>,
+    /// Per wrapped line → owning peekable cell (hover dialogue).
+    pub line_cells: Vec<Option<usize>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
     pub expand_flash: Option<(usize, Instant)>,
+    /// Cell under the mouse for the Grok-style hover peek dialogue.
+    pub hover_cell: Option<usize>,
+    /// Last known mouse position (for anchoring the peek box).
+    pub mouse_col: u16,
+    pub mouse_row: u16,
 
     pub input: InputState,
     pub queue: VecDeque<String>,
@@ -305,8 +442,12 @@ pub async fn run_tui(
         scrollbar_track: ratatui::layout::Rect::default(),
         scrollbar_drag: false,
         hit_headers: Vec::new(),
+        line_cells: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
+        hover_cell: None,
+        mouse_col: 0,
+        mouse_row: 0,
         input: InputState::new(),
         queue: VecDeque::new(),
         busy: false,
@@ -451,10 +592,8 @@ impl App {
     }
 
     pub fn scroll_up(&mut self, n: u16) {
-        self.scroll_from_bottom = self
-            .scroll_from_bottom
-            .saturating_add(n)
-            .min(self.max_scroll());
+        let max = self.max_scroll();
+        self.scroll_from_bottom = self.scroll_from_bottom.saturating_add(n).min(max);
     }
 
     pub fn scroll_down(&mut self, n: u16) {
@@ -467,6 +606,11 @@ impl App {
 
     fn scroll_to_bottom(&mut self) {
         self.scroll_from_bottom = 0;
+    }
+
+    /// Absolute jump used by scrollbar thumb drag (0 = latest, max = oldest).
+    pub fn set_scroll_from_bottom(&mut self, v: u16) {
+        self.scroll_from_bottom = v.min(self.max_scroll());
     }
 
     // ── keys ───────────────────────────────────────────────────────────
@@ -666,9 +810,22 @@ impl App {
             self.scrollbar_drag = false;
             return;
         }
+        // Always track pointer for hover peeks (even during drag/scroll).
+        self.mouse_col = m.column;
+        self.mouse_row = m.row;
         match m.kind {
-            MouseEventKind::ScrollUp => self.scroll_up(3),
-            MouseEventKind::ScrollDown => self.scroll_down(3),
+            // Larger steps — wheel felt laggy at 3 lines per notch.
+            MouseEventKind::ScrollUp => {
+                self.scroll_up(5);
+                self.update_hover_from_mouse();
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_down(5);
+                self.update_hover_from_mouse();
+            }
+            MouseEventKind::Moved => {
+                self.update_hover_from_mouse();
+            }
             MouseEventKind::Down(MouseButton::Left) => {
                 if self.hit_scrollbar(m.column, m.row) {
                     self.scrollbar_drag = true;
@@ -688,8 +845,11 @@ impl App {
                         self.click_input(m.column, m.row);
                     }
                 }
+                self.update_hover_from_mouse();
             }
             MouseEventKind::Drag(MouseButton::Left) => {
+                // Once dragging, follow the pointer anywhere on screen (not only
+                // the 2-col track) so fast scrubbing works like a real scrollbar.
                 if self.scrollbar_drag {
                     self.scroll_from_scrollbar_y(m.row);
                 }
@@ -697,17 +857,38 @@ impl App {
             MouseEventKind::Up(MouseButton::Left) => {
                 self.scrollbar_drag = false;
             }
-            _ => {}
+            _ => {
+                self.update_hover_from_mouse();
+            }
         }
+    }
+
+    /// Resolve `hover_cell` from mouse position over the transcript body.
+    fn update_hover_from_mouse(&mut self) {
+        let body = self.transcript_body;
+        if body.width == 0
+            || body.height == 0
+            || self.mouse_col < body.x
+            || self.mouse_col >= body.right()
+            || self.mouse_row < body.y
+            || self.mouse_row >= body.bottom()
+        {
+            self.hover_cell = None;
+            return;
+        }
+        let local_y = self.mouse_row.saturating_sub(body.y) as usize;
+        let line_idx = self.transcript_top as usize + local_y;
+        self.hover_cell = self.line_cells.get(line_idx).copied().flatten();
     }
 
     fn hit_scrollbar(&self, col: u16, row: u16) -> bool {
         let t = self.scrollbar_track;
-        t.width > 0
-            && col >= t.x
-            && col < t.right()
-            && row >= t.y
-            && row < t.bottom()
+        if t.width == 0 || t.height == 0 {
+            return false;
+        }
+        // Generous hit target: full track height + 2 columns left of the rail.
+        let left = t.x.saturating_sub(2);
+        col >= left && col < t.right() && row >= t.y && row < t.bottom()
     }
 
     /// Map a Y position on the scrollbar track to `scroll_from_bottom`.
@@ -723,12 +904,18 @@ impl App {
             self.scroll_from_bottom = 0;
             return;
         }
-        let y = row.saturating_sub(t.y).min(t.height.saturating_sub(1));
-        // Fraction from top of track (0 = top/oldest, 1 = bottom/newest).
-        let frac = y as f64 / t.height.saturating_sub(1).max(1) as f64;
-        // scroll_from_bottom is high when looking at old content (top).
-        self.scroll_from_bottom = ((1.0 - frac) * max as f64).round() as u16;
-        self.scroll_from_bottom = self.scroll_from_bottom.min(max);
+        // Clamp row to track; if pointer is above/below, pin to ends.
+        let y = if row <= t.y {
+            0u16
+        } else if row >= t.bottom().saturating_sub(1) {
+            t.height.saturating_sub(1)
+        } else {
+            row.saturating_sub(t.y).min(t.height.saturating_sub(1))
+        };
+        let denom = t.height.saturating_sub(1).max(1) as f64;
+        let frac = (y as f64 / denom).clamp(0.0, 1.0);
+        // scroll_from_bottom is high when looking at old content (top of track).
+        self.set_scroll_from_bottom(((1.0 - frac) * max as f64).round() as u16);
     }
 
     /// Map a terminal (column, row) click onto the input buffer caret.
@@ -1062,7 +1249,8 @@ impl App {
                         active: true,
                         started: Instant::now(),
                         duration: None,
-                        expanded: true, // live thoughts stream open; collapse on finish
+                        // Always start collapsed — user clicks ▸ to open body.
+                        expanded: false,
                     });
                 }
             }
@@ -1109,7 +1297,8 @@ impl App {
                     ok: None,
                     started: Instant::now(),
                     duration: None,
-                    expanded: true, // show live output; collapse when done
+                    // Always start collapsed — user clicks ▸ to open full output.
+                    expanded: false,
                 });
                 self.tool_cells.insert(id, self.cells.len() - 1);
                 self.status = "running tool".into();
@@ -1130,9 +1319,8 @@ impl App {
                         *r = Some(result);
                         *o = Some(ok);
                         *duration = Some(started.elapsed());
-                        // Collapse finished cards so the transcript stays scannable;
-                        // user expands dropdowns for full bash/tool output.
-                        *expanded = false;
+                        // Stay collapsed unless the user already opened it.
+                        let _ = expanded;
                     }
                 }
             }
@@ -1256,7 +1444,7 @@ impl App {
                 if *active {
                     *active = false;
                     *duration = Some(started.elapsed());
-                    // Collapse finished thoughts; expand to read full stream.
+                    // Never auto-expand — duration lives on the header chip.
                     *expanded = false;
                 }
                 break;
