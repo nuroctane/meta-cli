@@ -58,11 +58,12 @@ pub struct Config {
     /// Model context window (tokens) — used for the ctx% meter in the TUI.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
-    /// Capture the mouse so the wheel scrolls the transcript.
+    /// When true, the TUI captures the mouse (wheel scroll, scrollbar drag,
+    /// click-to-peek, click-to-caret). When false (default), the host terminal
+    /// keeps native drag-select + copy — this is what most users want.
     ///
-    /// Off by default: a terminal can either hand mouse events to the app or
-    /// let you select text with it, never both. Off keeps click-drag selection
-    /// and copy working. Toggle live with `/mouse` (Shift+drag selects while on).
+    /// A terminal cannot do both at once. Toggle live with `/mouse`; value is
+    /// persisted to `~/.muse/config.toml`.
     #[serde(default)]
     pub mouse: bool,
 }

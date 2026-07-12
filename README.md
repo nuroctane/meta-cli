@@ -9,7 +9,7 @@ meta          # primary command — Meta-blue interactive TUI
 muse          # optional legacy alias (same binary; prefer `meta`)
 ```
 
-**v0.5.6** — **`meta` is the primary command.** Duration chips, fully collapsed cards, **click-to-peek** dialogue (hover when the terminal supports it), reliable scrollbar drag, design-eng motion, model-agnostic labels.
+**v0.5.7** — **`meta` is the primary command.** **Native text selection works by default** (`/mouse` opts into wheel/scrollbar/click-peek). Duration chips, collapsed cards, click-to-peek when mouse is on, design-eng motion.
 
 ---
 
@@ -158,12 +158,11 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
 | `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
 | Wheel · drag scrollbar | Scroll transcript |
-| Click thought / tool / turn card | **Pin peek** dialogue with full content |
-| Click `▸` chevron (left edge) | Expand / collapse in place |
-| Hover card (if terminal supports free mouse-move) | Temporary peek |
-| `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest |
+| Drag-select text | **Works by default** (native terminal selection + copy) |
+| `/mouse` | Toggle app mouse ⇄ text selection (persists in config) |
+| `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest (no mouse needed) |
+| With `/mouse` on: click card / `▸` / drag scrollbar | Peek · expand · scrub history |
 | `Esc` | Close peek first |
-| Drag right-edge scrollbar | Jump through history (wide hit target) |
 | Click in input | **Place caret** where you click |
 | `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Select all · copy · paste · cut (system clipboard) |
 | `Ctrl+P` `Ctrl+N` (or `Alt+↑/↓`) | Prompt history |
