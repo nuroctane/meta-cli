@@ -1,0 +1,8 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.pdb
+.env
+.env.*
+auth.json
+.muse/
