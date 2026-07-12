@@ -348,7 +348,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     app.scrollbar_track = track;
     draw_scrollbar(f, app, track, max_scroll, top, total, body_h);
 
-    // Floating "jump to latest" chip when scrolled back.
+    // Floating "↓ N · End" chip — click jumps to latest (hit-tested in App).
     if app.scroll_from_bottom > 0 && body_h > 0 {
         let tag = format!(" ↓ {} · End ", app.scroll_from_bottom);
         let w = tag.width() as u16;
@@ -358,6 +358,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             width: w.min(area.width.saturating_sub(sb_w)),
             height: 1,
         };
+        app.jump_chip = r;
         f.render_widget(
             Paragraph::new(Span::styled(
                 tag,
@@ -368,6 +369,8 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             )),
             r,
         );
+    } else {
+        app.jump_chip = Rect::default();
     }
 }
 
@@ -826,6 +829,7 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
         }
         Cell::TurnDone {
             duration,
+            thought,
             interrupted,
         } => {
             out.push(Line::default());
@@ -835,7 +839,8 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                 ("✓", "turn")
             };
             let d = theme::fmt_duration(*duration);
-            out.push(Line::from(vec![
+            let th = theme::fmt_duration(*thought);
+            let mut spans = vec![
                 Span::styled(
                     format!("{glyph} "),
                     Style::default()
@@ -852,11 +857,18 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                     format!(" took {d} "),
                     theme::style_turn_chip(*interrupted),
                 ),
-                Span::styled(
-                    "  ·  click to peek".to_string(),
-                    Style::default().fg(theme::FAINT),
-                ),
-            ]));
+            ];
+            // Always post thought timer at end of finished output.
+            spans.push(Span::raw(" ".to_string()));
+            spans.push(Span::styled(
+                format!(" thought {th} "),
+                theme::style_duration_chip(false),
+            ));
+            spans.push(Span::styled(
+                "  ·  click to peek".to_string(),
+                Style::default().fg(theme::FAINT),
+            ));
+            out.push(Line::from(spans));
         }
         Cell::Info { text, tone } => {
             out.push(Line::default());

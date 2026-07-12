@@ -83,9 +83,11 @@ pub enum Cell {
         duration: Option<Duration>,
         expanded: bool,
     },
-    /// End-of-turn timing strip (how long the whole agent turn took).
+    /// End-of-turn timing strip — always includes wall time + thought time.
     TurnDone {
         duration: Duration,
+        /// Sum of model thinking time during this turn (0 if none).
+        thought: Duration,
         interrupted: bool,
     },
     /// System notice. `tone` picks the colour + glyph so a mode switch, a plan,
@@ -169,12 +171,17 @@ impl Cell {
             }
             Cell::TurnDone {
                 duration,
+                thought,
                 interrupted,
-            } => Some(if *interrupted {
-                format!("turn cancelled · {}", theme::fmt_duration(*duration))
-            } else {
-                format!("turn · took {}", theme::fmt_duration(*duration))
-            }),
+            } => {
+                let t = theme::fmt_duration(*duration);
+                let th = theme::fmt_duration(*thought);
+                Some(if *interrupted {
+                    format!("turn cancelled · {t} · thought {th}")
+                } else {
+                    format!("turn · took {t} · thought {th}")
+                })
+            }
             _ => None,
         }
     }
@@ -223,16 +230,19 @@ impl Cell {
             }
             Cell::TurnDone {
                 duration,
+                thought,
                 interrupted,
             } => Some(if *interrupted {
                 format!(
-                    "This turn was cancelled after {}.",
-                    theme::fmt_duration(*duration)
+                    "This turn was cancelled after {} (thought {}).",
+                    theme::fmt_duration(*duration),
+                    theme::fmt_duration(*thought)
                 )
             } else {
                 format!(
-                    "This turn completed in {}.\n\nClick a thought/tool card to peek full content. Click the ▸ chevron (or press e) to expand in place.",
-                    theme::fmt_duration(*duration)
+                    "This turn completed in {}.\nThought time: {}.\n\nClick a thought/tool card to peek full content. Click ▸ to expand in place. Click ↓ End to jump to latest.",
+                    theme::fmt_duration(*duration),
+                    theme::fmt_duration(*thought)
                 )
             }),
             _ => None,
@@ -366,6 +376,8 @@ pub struct App {
     pub transcript_body: ratatui::layout::Rect,
     /// Right-edge scrollbar track (1 column).
     pub scrollbar_track: ratatui::layout::Rect,
+    /// Floating "↓ End" jump chip (hit-tested on click). Empty when hidden.
+    pub jump_chip: ratatui::layout::Rect,
     /// True while the user is dragging the scrollbar thumb.
     pub scrollbar_drag: bool,
     /// True while drag-selecting transcript text (not scrollbar).
@@ -401,6 +413,8 @@ pub struct App {
     pub cancelling: bool,
     turn_kind: TurnMode,
     pub turn_started: Instant,
+    /// Accumulated model-thinking time for the current turn (for end-of-output strip).
+    thought_accum: Duration,
     pub status: String,
     pub spinner_epoch: Instant,
 
@@ -501,6 +515,7 @@ pub async fn run_tui(
         input_x_off: 0,
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
+        jump_chip: ratatui::layout::Rect::default(),
         scrollbar_drag: false,
         selecting: false,
         select_anchor: None,
@@ -520,6 +535,7 @@ pub async fn run_tui(
         cancelling: false,
         turn_kind: TurnMode::Chat,
         turn_started: Instant::now(),
+        thought_accum: Duration::ZERO,
         status: "idle".into(),
         spinner_epoch: Instant::now(),
         session: Some(Box::new(session)),
@@ -917,6 +933,15 @@ impl App {
                 self.update_hover_from_mouse();
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                // "↓ N · End" chip — one click jumps to latest.
+                if self.hit_jump_chip(m.column, m.row) {
+                    self.scroll_to_bottom();
+                    self.selection = None;
+                    self.select_anchor = None;
+                    self.selecting = false;
+                    self.scrollbar_drag = false;
+                    return;
+                }
                 if self.hit_scrollbar(m.column, m.row) {
                     self.scrollbar_drag = true;
                     self.selecting = false;
@@ -1111,6 +1136,16 @@ impl App {
         // Generous hit target: full track height + 2 columns left of the rail.
         let left = t.x.saturating_sub(2);
         col >= left && col < t.right() && row >= t.y && row < t.bottom()
+    }
+
+    fn hit_jump_chip(&self, col: u16, row: u16) -> bool {
+        let t = self.jump_chip;
+        t.width > 0
+            && t.height > 0
+            && col >= t.x
+            && col < t.right()
+            && row >= t.y
+            && row < t.bottom()
     }
 
     /// Map a Y position on the scrollbar track to `scroll_from_bottom`.
@@ -1312,6 +1347,7 @@ impl App {
         self.cancelling = false;
         self.turn_kind = TurnMode::Chat;
         self.turn_started = Instant::now();
+        self.thought_accum = Duration::ZERO;
         self.status = format!("thinking · {}", self.permission_mode.get().label());
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel.clone());
@@ -1419,8 +1455,10 @@ impl App {
                     ..
                 } => {
                     if *active {
+                        let d = started.elapsed();
                         *active = false;
-                        *duration = Some(started.elapsed());
+                        *duration = Some(d);
+                        self.thought_accum = self.thought_accum.saturating_add(d);
                         if !text.is_empty() {
                             text.push_str("  · cancelled");
                         }
@@ -1601,19 +1639,13 @@ impl App {
                         {
                             self.push_info("cancelled".into());
                         }
-                        self.cells.push(Cell::TurnDone {
-                            duration: turn_dur,
-                            interrupted: true,
-                        });
+                        self.push_turn_done(turn_dur, true);
                     }
                     (TurnMode::Compact, Ok(summary), _) => {
                         self.push_info(format!(
                             "context compacted — summary:\n{summary}"
                         ));
-                        self.cells.push(Cell::TurnDone {
-                            duration: turn_dur,
-                            interrupted: false,
-                        });
+                        self.push_turn_done(turn_dur, false);
                     }
                     (TurnMode::Compact, Err(e), _) => {
                         self.push_error(format!("compaction failed: {e}"))
@@ -1624,16 +1656,11 @@ impl App {
                         if !was_interrupt {
                             self.push_error(e);
                         }
-                        self.cells.push(Cell::TurnDone {
-                            duration: turn_dur,
-                            interrupted: was_interrupt,
-                        });
+                        self.push_turn_done(turn_dur, was_interrupt);
                     }
                     (TurnMode::Chat, Ok(_), _) => {
-                        self.cells.push(Cell::TurnDone {
-                            duration: turn_dur,
-                            interrupted: false,
-                        });
+                        // Always post turn + thought timers at end of finished output.
+                        self.push_turn_done(turn_dur, false);
                     }
                 }
                 self.turn_kind = TurnMode::Chat;
@@ -1664,13 +1691,29 @@ impl App {
             } = c
             {
                 if *active {
+                    let d = started.elapsed();
                     *active = false;
-                    *duration = Some(started.elapsed());
+                    *duration = Some(d);
+                    self.thought_accum = self.thought_accum.saturating_add(d);
                     // Never auto-expand — duration lives on the header chip.
                     *expanded = false;
                 }
                 break;
             }
+        }
+    }
+
+    fn push_turn_done(&mut self, duration: Duration, interrupted: bool) {
+        // Ensure any still-open thought is closed and counted.
+        self.finish_thinking();
+        self.cells.push(Cell::TurnDone {
+            duration,
+            thought: self.thought_accum,
+            interrupted,
+        });
+        // Snap to latest so the timing strip is always visible at end of output.
+        if !interrupted {
+            self.scroll_to_bottom();
         }
     }
 
@@ -2079,6 +2122,7 @@ impl App {
              ↑/↓ · wheel · drag scrollbar   scroll the chat\n  \
              drag on chat text              select (highlights + auto-copies)\n  \
              drag right scrollbar · wheel   scroll the transcript (always on)\n  \
+             click ↓ End chip               jump to latest immediately\n  \
              click card · ▸ chevron         pin peek · expand in place\n  \
              e / p (empty input)            expand · pin-peek latest\n  \
              esc                            close peek (then cancel / clear)\n  \
@@ -2134,6 +2178,7 @@ impl App {
         self.cancelling = false;
         self.turn_kind = TurnMode::Compact;
         self.turn_started = Instant::now();
+        self.thought_accum = Duration::ZERO;
         self.status = "compacting".into();
         let runner = self.make_runner();
         let tx = self.tx.clone();

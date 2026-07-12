@@ -9,7 +9,7 @@ meta          # primary command — Meta-blue interactive TUI
 muse          # optional legacy alias (same binary; prefer `meta`)
 ```
 
-**v0.5.9** — **`meta` primary.** **Drag text to select** (in-app highlight + auto-copy). **Drag scrollbar / wheel always on.** Click-peek, duration chips, collapsed cards.
+**v0.5.10** — **`meta` primary.** Click **↓ End** to jump to latest. Turn strip always posts **thought + turn timers**. Drag-select text, always-on scrollbar, click-peek.
 
 ---
 
@@ -160,6 +160,8 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | Wheel · drag scrollbar | Scroll transcript |
 | **Drag on chat text** | Select text (blue highlight) — **auto-copies** on release; Ctrl+C too |
 | **Drag right scrollbar · wheel** | Scroll / jump history — **always on** |
+| **Click `↓ N · End` chip** | Jump to latest immediately |
+| End-of-turn strip | Always shows `took …` + `thought …` after finished output |
 | Click card / `▸` chevron | Pin peek · expand in place |
 | `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest |
 | `Esc` | Close peek first |
