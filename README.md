@@ -2,106 +2,118 @@
 
 **Unofficial** terminal coding agent for [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/) via [Meta Model API](https://dev.meta.ai/).
 
-> Not affiliated with Meta Platforms, Inc. Community project under `nuroctane/meta-cli`.
+> Not affiliated with Meta Platforms, Inc. · Community project · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
-The installed command is **`muse`** (Muse Spark agent).
+The command you run is **`muse`**.
 
-```
-muse                      # interactive TUI (Meta blue theme)
-muse "fix the bug"        # start with a prompt
-muse -c                   # continue last session in this directory
-muse -r <session-id>      # resume a session
-muse run "…" -y           # headless agent turn (streams output)
-muse sessions             # list sessions
-muse usage                # token / cost snapshot for ADEs
-muse auth login
-muse install-hook         # install Orca ADE hook
-```
+---
 
-## TUI
+## Install (one shot)
 
-- **Live streaming** — assistant text and reasoning summaries render token-by-token
-- **Tool approvals** — mutating tools (`bash`, `write_file`, `edit_file`) pop a modal:
-  `y` allow once · `a` always allow this session · `n` deny. Read-only tools run freely.
-  `-y` / `--yes` auto-approves everything (headless loops).
-- **Slash commands** with autocomplete palette (type `/`):
-  `/help` `/clear` `/new` `/compact` `/usage` `/cost` `/model` `/effort`
-  `/sessions` `/resume` `/init` `/config` `/exit`
-- **Statusline** — live usage bottom-left (`tokens · $cost · ctx %`), model/session/state bottom-right
-- **Markdown rendering** — headings, bullets, fenced code, inline bold/italic/code
-- **Input** — multi-line (`\`+Enter or Ctrl+J), ↑/↓ history (persisted), readline keys
-  (Ctrl+A/E/U/W, Ctrl+←/→), bracketed paste
-- **Esc interrupts** a running turn; prompts typed while busy are queued
-- Ctrl+C twice quits · PgUp/PgDn scroll · Ctrl+L clear
-
-`/init` asks the agent to generate a `MUSE.md`. Project instructions are loaded automatically
-from `MUSE.md`, `AGENTS.md`, or `CLAUDE.md` (first found) in the workspace root.
-
-## Install
-
-### Windows
+### Windows (PowerShell)
 
 ```powershell
-cd path\to\meta-cli
-.\install.ps1
+irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
 ```
 
 ### macOS / Linux
 
 ```bash
-./install.sh
-# or
-cargo install --path .
+curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
 ```
 
-Requires [Rust](https://rustup.rs) / cargo.
+That single command will:
 
-## Auth
+1. Install Rust if needed  
+2. Clone this repo (or update it)  
+3. `cargo build --release`  
+4. Put `muse` on your PATH (`~/.local/bin`)  
+5. Install the Orca ADE hook when possible  
+6. If `MODEL_API_KEY` is already set, save auth under `~/.muse/` **on your machine only**
 
-```bash
-export MODEL_API_KEY="your-key"   # or MUSE_API_KEY
-muse auth login                   # stores in ~/.muse/auth.json
+Then:
+
+```powershell
+muse auth login    # paste your Meta Model API key (stored only in ~/.muse)
+muse               # open the TUI
+```
+
+Get a key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
+
+### Already cloned?
+
+```powershell
+cd meta-cli
+.\install.ps1          # Windows
+# ./install.sh         # macOS / Linux
+```
+
+### Windows: Laboratory clone script
+
+```text
+C:\Users\david\Scripts\clone meta-cli main to Laboratory local.cmd
+```
+
+Then `cd` into the folder and run `.\install.ps1`.
+
+---
+
+## Secrets (important)
+
+| On GitHub | On your PC only |
+|-----------|-----------------|
+| Source code, README, install scripts | `~/.muse/auth.json` (API key) |
+| No API keys, no `.env`, no sessions | `~/.muse/sessions/`, usage logs |
+
+`.gitignore` excludes `.env*`, `auth.json`, `.muse/`, and common key material.  
+See [SECURITY.md](./SECURITY.md).
+
+**Never commit your Meta API key. Never paste it into issues or PRs.**
+
+---
+
+## Quick use
+
+```
+muse                      # interactive Meta-blue TUI
+muse "fix the bug"       # start with a prompt
+muse -c                   # continue last session in this directory
+muse -r <session-id>      # resume a session
+muse run "…" -y           # headless agent turn (streams; auto-approve tools)
+muse sessions
+muse usage                # token / cost for ADEs
 muse auth status
 ```
 
-Env overrides the file. Get a key at [dev.meta.ai](https://dev.meta.ai/).
+### TUI highlights
 
-## ADE / Orca usage (your Meta API key)
+- Live streaming · tool approvals (`y` / `a` / `n`) · slash commands (`/help`)  
+- Markdown · multi-line input · usage statusline · Esc interrupts  
+- Project instructions from `MUSE.md`, `AGENTS.md`, or `CLAUDE.md`  
+- `/init` generates a `MUSE.md`
 
-Meta CLI writes **machine-readable usage** so host tools can show tokens/cost for Meta/Muse traffic:
+---
+
+## ADE / Orca
+
+Usage is written for host tools (never includes your API key):
 
 | Path | Purpose |
 |------|---------|
-| `~/.muse/status.json` | Live snapshot: model, session, tokens, est. USD, state |
-| `~/.muse/usage.jsonl` | Append-only per-request log |
-| `~/.muse/ade.json` | Discovery manifest for ADEs |
-| `~/.muse/latest_session.json` | Last active session pointer |
-| `~/.muse/sessions/<id>.json` | Full session + cumulative usage |
-
-Process env (for hooks / child tools):
-
-- `MUSE_STATUS_PATH`, `MUSE_USAGE_LOG_PATH`, `MUSE_HOME`
-- `MUSE_SESSION_ID`, `MUSE_MODEL`, `MUSE_PROVIDER=meta`
-- `MUSE_USAGE_INPUT_TOKENS` / `OUTPUT` / `TOTAL` / `MUSE_USAGE_COST_USD`
-
-```bash
-muse usage
-muse install-hook    # ~/.orca/agent-hooks/muse-hook.cmd
-```
-
-### Orca
+| `~/.muse/status.json` | Live tokens / est. USD / model / state |
+| `~/.muse/usage.jsonl` | Per-request log |
+| `~/.muse/ade.json` | Discovery manifest |
 
 ```powershell
 muse install-hook
 orca terminal create --worktree active --command "muse" --title "Meta CLI" --json
 ```
 
-Poll `%USERPROFILE%\.muse\status.json` for live Meta token usage tied to the user's key.
-The same numbers are shown live in the TUI statusline (bottom-left).
+---
 
 ## Config
 
-`~/.muse/config.toml`:
+`~/.muse/config.toml` (created on first run):
 
 ```toml
 model = "muse-spark-1.1"
@@ -109,25 +121,16 @@ base_url = "https://api.meta.ai/v1"
 reasoning_effort = "high"
 max_turns = 40
 stream = true
-context_window = 1000000   # for the ctx% meter
+context_window = 1000000
 ```
 
 ## Tools
 
 `read_file` · `write_file` · `edit_file` · `bash` · `grep` · `glob`
 
-Read-only tools are auto-approved; mutating tools require approval in the TUI
-(or `-y` / `--yes` for unattended runs).
-
 ## Model API
 
-**Responses API** (`POST /v1/responses`) with:
-
-- `store: false`
-- `include: ["reasoning.encrypted_content"]`
-- SSE streaming (`stream: true`) with graceful fallback to plain JSON
-- default model `muse-spark-1.1`
-
+Responses API (`POST /v1/responses`), `muse-spark-1.1`, streaming + reasoning continuity.  
 Docs: https://dev.meta.ai/docs/getting-started/overview
 
 ## License

@@ -1,8 +1,28 @@
+# Build
 /target
 **/*.rs.bk
-.DS_Store
 *.pdb
+.DS_Store
+
+# Secrets & local agent state (NEVER commit)
 .env
 .env.*
+.envrc
+*.pem
+*.key
+*.p12
 auth.json
+**/auth.json
 .muse/
+**/.muse/
+credentials*
+**/credentials*
+secrets*
+**/secrets*
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+Thumbs.db
