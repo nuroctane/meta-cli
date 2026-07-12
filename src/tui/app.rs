@@ -3,7 +3,9 @@
 
 use crate::agent::{
     self, AgentEvent, AgentRunner, ApprovalDecision, PermissionMode, Session, SharedMode,
+    SharedTodos,
 };
+use crate::tools::ToolHost;
 use crate::api::MetaClient;
 use crate::config::Config;
 use crate::error::Result;
@@ -36,6 +38,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/plan", "switch to plan mode (read-only)"),
     ("/manual", "switch to manual mode (approve tools)"),
     ("/auto", "switch to auto-approve mode"),
+    ("/todos", "show session task list"),
+    ("/memory", "show ~/.muse/memory.md excerpt"),
+    ("/skills", "list installed skills"),
     ("/usage", "token usage + cost for this session"),
     ("/cost", "alias for /usage"),
     ("/model", "show or switch model"),
@@ -81,6 +86,8 @@ pub struct App {
     /// Live permission mode (manual / plan / auto) — Arc, mid-turn safe.
     pub permission_mode: SharedMode,
     pub approved_tools: Arc<Mutex<HashSet<String>>>,
+    pub tool_host: ToolHost,
+    pub todos: SharedTodos,
 
     pub cells: Vec<Cell>,
     tool_cells: HashMap<u64, usize>,
@@ -153,6 +160,8 @@ pub async fn run_tui(
         cwd,
         permission_mode,
         approved_tools: Arc::new(Mutex::new(HashSet::new())),
+        tool_host: ToolHost::default(),
+        todos: agent::shared_empty(),
         cells: vec![Cell::Banner],
         tool_cells: HashMap::new(),
         scroll_from_bottom: 0,
@@ -448,6 +457,10 @@ impl App {
     }
 
     fn make_runner(&self) -> AgentRunner {
+        let host = ToolHost {
+            todos: self.todos.clone(),
+            plan: self.tool_host.plan.clone(),
+        };
         AgentRunner {
             client: self.client.clone(),
             config: self.cfg.clone(),
@@ -455,6 +468,8 @@ impl App {
             permission_mode: self.permission_mode.clone(),
             verbose: false,
             approved_tools: self.approved_tools.clone(),
+            tools: host,
+            is_subagent: false,
         }
     }
 
@@ -664,6 +679,14 @@ impl App {
                 self.u_session = session;
                 self.u_last = last;
             }
+            AgentEvent::TodosChanged(text) => {
+                self.push_info(format!("todos\n{text}"));
+            }
+            AgentEvent::PlanSubmitted(text) => {
+                self.push_info(format!(
+                    "plan saved — Shift+Tab to manual/auto, then implement\n{text}"
+                ));
+            }
             AgentEvent::Done {
                 session,
                 usage,
@@ -758,6 +781,41 @@ impl App {
             "/plan" => self.set_permission_mode(PermissionMode::Plan),
             "/manual" => self.set_permission_mode(PermissionMode::Manual),
             "/auto" => self.set_permission_mode(PermissionMode::Auto),
+            "/todos" => {
+                let t = self
+                    .todos
+                    .lock()
+                    .map(|g| g.render())
+                    .unwrap_or_else(|_| "(lock error)".into());
+                self.push_info(format!("todos\n{t}"));
+            }
+            "/memory" => {
+                self.push_info(format!(
+                    "memory\n{}",
+                    agent::memory::read_memory()
+                        .chars()
+                        .rev()
+                        .take(2000)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>()
+                ));
+            }
+            "/skills" => {
+                let skills = agent::skills::load_skills(&self.cwd);
+                if skills.is_empty() {
+                    self.push_info(
+                        "no skills found — add ~/.muse/skills/<name>/SKILL.md".into(),
+                    );
+                } else {
+                    let mut s = String::from("skills\n");
+                    for sk in skills {
+                        s.push_str(&format!("  · {} — {}\n", sk.name, sk.description));
+                    }
+                    self.push_info(s);
+                }
+            }
             "/usage" | "/cost" => self.cmd_usage(),
             "/model" => self.cmd_model(&arg),
             "/effort" => self.cmd_effort(&arg),

@@ -1,26 +1,33 @@
 mod apply_patch;
 mod bash;
 mod edit_file;
+mod git_status;
 mod glob;
 mod grep;
+mod memory_tool;
+mod multi_edit;
 mod read_file;
 mod sandbox;
 mod search_util;
 mod shell;
+mod submit_plan;
+mod todo_write;
 mod web_fetch;
 mod write_file;
 
+use crate::agent::todos::{shared_empty, SharedTodos, TodoList};
 use crate::api::types::ToolDef;
 use crate::error::{MuseError, Result};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 pub use sandbox::{is_dangerous_workspace, prefer_git_root, sandbox_warning};
 pub use shell::detect_shell;
+pub use submit_plan::{SharedPlan, SubmitPlan};
 
 pub struct ToolContext {
     pub cwd: PathBuf,
-    /// When false, bash may refuse extra-dangerous patterns (legacy).
     pub auto_approve: bool,
 }
 
@@ -31,54 +38,135 @@ pub trait Tool: Send + Sync {
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String>;
 }
 
-pub fn all_tools() -> Vec<Box<dyn Tool>> {
-    vec![
-        Box::new(read_file::ReadFile),
-        Box::new(write_file::WriteFile),
-        Box::new(edit_file::EditFile),
-        Box::new(apply_patch::ApplyPatch),
-        Box::new(bash::Bash),
-        Box::new(grep::Grep),
-        Box::new(glob::GlobTool),
-        Box::new(web_fetch::WebFetch),
-    ]
+/// Stateful tool host (todos/plan share with TUI).
+pub struct ToolHost {
+    pub todos: SharedTodos,
+    pub plan: SharedPlan,
 }
 
-pub fn tool_defs() -> Vec<ToolDef> {
-    all_tools()
-        .into_iter()
-        .map(|t| ToolDef {
-            type_: "function".into(),
-            name: t.name().into(),
-            description: Some(t.description().into()),
-            parameters: Some(t.parameters_schema()),
-        })
-        .collect()
+impl Default for ToolHost {
+    fn default() -> Self {
+        Self {
+            todos: shared_empty(),
+            plan: Arc::new(Mutex::new(None)),
+        }
+    }
 }
 
-pub fn dispatch(name: &str, arguments: &str, ctx: &ToolContext) -> Result<String> {
-    if is_dangerous_workspace(&ctx.cwd) && !matches!(name, "web_fetch") {
-        // Allow only if somehow called — prefer hard fail for file tools
-        if matches!(
-            name,
-            "read_file" | "write_file" | "edit_file" | "apply_patch" | "bash" | "grep" | "glob"
-        ) {
+impl ToolHost {
+    pub fn with_todos(todos: SharedTodos) -> Self {
+        Self {
+            todos,
+            plan: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn boxed_tools(&self) -> Vec<Box<dyn Tool>> {
+        vec![
+            Box::new(read_file::ReadFile),
+            Box::new(write_file::WriteFile),
+            Box::new(edit_file::EditFile),
+            Box::new(multi_edit::MultiEdit),
+            Box::new(apply_patch::ApplyPatch),
+            Box::new(bash::Bash),
+            Box::new(grep::Grep),
+            Box::new(glob::GlobTool),
+            Box::new(web_fetch::WebFetch),
+            Box::new(git_status::GitStatus),
+            Box::new(memory_tool::MemoryTool),
+            Box::new(todo_write::TodoWrite {
+                todos: self.todos.clone(),
+            }),
+            Box::new(SubmitPlan {
+                plan: self.plan.clone(),
+            }),
+            // `agent` is handled asynchronously in the agent loop (nested runner).
+            Box::new(AgentStub),
+        ]
+    }
+
+    pub fn tool_defs(&self) -> Vec<ToolDef> {
+        self.boxed_tools()
+            .into_iter()
+            .map(|t| ToolDef {
+                type_: "function".into(),
+                name: t.name().into(),
+                description: Some(t.description().into()),
+                parameters: Some(t.parameters_schema()),
+            })
+            .collect()
+    }
+
+    pub fn dispatch(&self, name: &str, arguments: &str, ctx: &ToolContext) -> Result<String> {
+        if name == "agent" {
+            return Err(MuseError::Tool(
+                "agent tool must be executed by the runtime (internal error)".into(),
+            ));
+        }
+        if is_dangerous_workspace(&ctx.cwd) && name != "web_fetch" && name != "memory" {
             return Err(MuseError::Tool(
                 "workspace is filesystem root — refuse tools. Re-run from a project dir or pass --cwd"
                     .into(),
             ));
         }
-    }
-    let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
-    for tool in all_tools() {
-        if tool.name() == name {
-            return tool.execute(&args, ctx);
+        let args: Value = serde_json::from_str(arguments).unwrap_or_else(|_| serde_json::json!({}));
+        for tool in self.boxed_tools() {
+            if tool.name() == name {
+                return tool.execute(&args, ctx);
+            }
         }
+        Err(MuseError::Tool(format!("unknown tool: {name}")))
     }
-    Err(MuseError::Tool(format!("unknown tool: {name}")))
+
+    pub fn todos_snapshot(&self) -> TodoList {
+        self.todos.lock().map(|g| g.clone()).unwrap_or_default()
+    }
 }
 
-/// Resolve path inside workspace sandbox (errors if path escapes cwd).
+/// Placeholder so the model sees the agent tool schema; execution is in loop.rs.
+struct AgentStub;
+
+impl Tool for AgentStub {
+    fn name(&self) -> &str {
+        "agent"
+    }
+
+    fn description(&self) -> &str {
+        "Spawn a subagent for a focused subtask. \
+         subagent_type: explore (read-only research) | general (same tools as parent). \
+         Returns a text report. Use for parallel research or isolated investigation."
+    }
+
+    fn parameters_schema(&self) -> Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "description": {"type": "string", "description": "Short 3-7 word label"},
+                "prompt": {"type": "string", "description": "Full task for the subagent"},
+                "subagent_type": {
+                    "type": "string",
+                    "enum": ["explore", "general"],
+                    "default": "explore"
+                }
+            },
+            "required": ["prompt"]
+        })
+    }
+
+    fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<String> {
+        Err(MuseError::Tool("agent is runtime-handled".into()))
+    }
+}
+
+// Back-compat free functions used by older call sites
+pub fn tool_defs() -> Vec<ToolDef> {
+    ToolHost::default().tool_defs()
+}
+
+pub fn dispatch(name: &str, arguments: &str, ctx: &ToolContext) -> Result<String> {
+    ToolHost::default().dispatch(name, arguments, ctx)
+}
+
 pub(crate) fn resolve_path(cwd: &PathBuf, path: &str) -> Result<PathBuf> {
     sandbox::resolve_in_workspace(cwd, path)
 }

@@ -1,6 +1,6 @@
 [package]
 name = "meta-cli"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2021"
 description = "Meta CLI (unofficial) - Muse Spark coding agent for Meta Model API"
 license = "MIT"
@@ -10,6 +10,11 @@ readme = "README.md"
 keywords = ["meta", "muse", "ai", "cli", "agent"]
 categories = ["command-line-utilities", "development-tools"]
 
+[[bin]]
+name = "meta"
+path = "src/main.rs"
+
+# Back-compat shim: same binary as `meta`
 [[bin]]
 name = "muse"
 path = "src/main.rs"

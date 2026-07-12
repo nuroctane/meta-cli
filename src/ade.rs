@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 
-/// Set terminal title so Orca/agent detection can see "muse".
+/// Set terminal title so Orca/agent detection can see "meta".
 pub fn set_terminal_title(title: &str) {
     // OSC 0 / 2 title
     print!("\x1b]0;{title}\x07");
@@ -19,9 +19,9 @@ pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &Toke
     let _ = crate::config::ensure_dirs();
     let body = json!({
         "schema_version": 1,
-        "agent": "muse",
+        "agent": "meta",
         "provider": "meta",
-        "product": "Muse Spark",
+        "product": "Meta CLI (Muse Spark)",
         "model": model,
         "session_id": session_id,
         "cwd": cwd,
@@ -68,11 +68,11 @@ pub fn notify_orca_hook(payload_json: &str) {
     }
 
     let muse_home = muse_home().display().to_string();
-    let url = format!("http://127.0.0.1:{port}/hook/muse");
+    let url = format!("http://127.0.0.1:{port}/hook/meta");
 
     // Prefer packaged hook script if present
     let hook = dirs::home_dir()
-        .map(|h| h.join(".orca").join("agent-hooks").join("muse-hook.cmd"))
+        .map(|h| h.join(".orca").join("agent-hooks").join("meta-hook.cmd"))
         .filter(|p| p.exists());
 
     if let Some(hook) = hook {
@@ -141,19 +141,21 @@ pub fn install_orca_hook() -> crate::error::Result<()> {
         .join(".orca")
         .join("agent-hooks");
     fs::create_dir_all(&dir)?;
-    let path = dir.join("muse-hook.cmd");
+    let path = dir.join("meta-hook.cmd");
     fs::write(&path, ORCA_HOOK_CMD)?;
-    // Also copy beside other Orca user hooks if Roaming exists
+    // Compat alias for older docs
+    let _ = fs::write(dir.join("muse-hook.cmd"), ORCA_HOOK_CMD);
     if let Some(roaming) = dirs::data_dir() {
-        // data_dir is often AppData/Roaming
         let alt = roaming.join("Orca").join("agent-hooks");
         if alt.exists() || roaming.join("Orca").exists() {
             let _ = fs::create_dir_all(&alt);
+            let _ = fs::write(alt.join("meta-hook.cmd"), ORCA_HOOK_CMD);
             let _ = fs::write(alt.join("muse-hook.cmd"), ORCA_HOOK_CMD);
         }
     }
     println!("installed Orca hook: {}", path.display());
     println!("Orca can poll: {}", status_path().display());
+    println!("Launch with:  orca terminal create --command meta");
     Ok(())
 }
 
@@ -163,9 +165,10 @@ if defined ORCA_AGENT_HOOK_ENDPOINT if exist "%ORCA_AGENT_HOOK_ENDPOINT%" call "
 if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0
 if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0
 if "%ORCA_PANE_KEY%"=="" exit /b 0
-set "ORCA_MUSE_HOME=%USERPROFILE%\.muse"
-if not "%MUSE_HOME%"=="" set "ORCA_MUSE_HOME=%MUSE_HOME%"
-"%SystemRoot%\System32\curl.exe" -sS -X POST "http://127.0.0.1:%ORCA_AGENT_HOOK_PORT%/hook/muse" ^
+set "ORCA_META_HOME=%USERPROFILE%\.muse"
+if not "%MUSE_HOME%"=="" set "ORCA_META_HOME=%MUSE_HOME%"
+if not "%META_HOME%"=="" set "ORCA_META_HOME=%META_HOME%"
+"%SystemRoot%\System32\curl.exe" -sS -X POST "http://127.0.0.1:%ORCA_AGENT_HOOK_PORT%/hook/meta" ^
   --connect-timeout 0.5 --max-time 1.5 ^
   -H "Content-Type: application/x-www-form-urlencoded" ^
   -H "X-Orca-Agent-Hook-Token: %ORCA_AGENT_HOOK_TOKEN%" ^
@@ -175,8 +178,8 @@ if not "%MUSE_HOME%"=="" set "ORCA_MUSE_HOME=%MUSE_HOME%"
   --data-urlencode "worktreeId=%ORCA_WORKTREE_ID%" ^
   --data-urlencode "env=%ORCA_AGENT_HOOK_ENV%" ^
   --data-urlencode "version=%ORCA_AGENT_HOOK_VERSION%" ^
-  --data-urlencode "museHome=%ORCA_MUSE_HOME%" ^
-  --data-urlencode "statusPath=%ORCA_MUSE_HOME%\status.json" ^
+  --data-urlencode "metaHome=%ORCA_META_HOME%" ^
+  --data-urlencode "statusPath=%ORCA_META_HOME%\status.json" ^
   --data-urlencode "payload@-" >nul 2>nul
 exit /b 0
 "#;

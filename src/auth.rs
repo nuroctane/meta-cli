@@ -11,18 +11,14 @@ pub struct Auth {
     pub source: String,
 }
 
-/// Resolve API key: MUSE_API_KEY → MODEL_API_KEY → ~/.muse/auth.json
+/// Resolve API key: META_API_KEY → MUSE_API_KEY → MODEL_API_KEY → ~/.muse/auth.json
 pub fn resolve_api_key() -> Result<String> {
-    if let Ok(k) = std::env::var("MUSE_API_KEY") {
-        let k = k.trim().to_string();
-        if !k.is_empty() {
-            return Ok(k);
-        }
-    }
-    if let Ok(k) = std::env::var("MODEL_API_KEY") {
-        let k = k.trim().to_string();
-        if !k.is_empty() {
-            return Ok(k);
+    for var in ["META_API_KEY", "MUSE_API_KEY", "MODEL_API_KEY"] {
+        if let Ok(k) = std::env::var(var) {
+            let k = k.trim().to_string();
+            if !k.is_empty() {
+                return Ok(k);
+            }
         }
     }
     let path = auth_path();
@@ -74,7 +70,9 @@ pub fn key_fingerprint(key: &str) -> String {
 pub fn auth_status() -> Result<()> {
     match resolve_api_key() {
         Ok(key) => {
-            let source = if std::env::var("MUSE_API_KEY").is_ok() {
+            let source = if std::env::var("META_API_KEY").is_ok() {
+                "META_API_KEY env"
+            } else if std::env::var("MUSE_API_KEY").is_ok() {
                 "MUSE_API_KEY env"
             } else if std::env::var("MODEL_API_KEY").is_ok() {
                 "MODEL_API_KEY env"

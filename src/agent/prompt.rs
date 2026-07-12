@@ -1,9 +1,11 @@
+use super::skills::{load_skills, skills_prompt_section};
+use super::memory::memory_prompt_excerpt;
+use super::mode::PermissionMode;
+use crate::tools::detect_shell;
 use std::path::Path;
 
-/// Project instruction files, in priority order (first found wins).
 pub const PROJECT_INSTRUCTION_FILES: &[&str] = &["MUSE.md", "AGENTS.md", "CLAUDE.md"];
 
-/// Find the project instructions file for a workspace, if any.
 pub fn find_project_instructions(cwd: &Path) -> Option<(String, String)> {
     for name in PROJECT_INSTRUCTION_FILES {
         let p = cwd.join(name);
@@ -20,66 +22,83 @@ pub fn find_project_instructions(cwd: &Path) -> Option<(String, String)> {
     None
 }
 
-pub fn system_instructions(cwd: &Path, mode: crate::agent::mode::PermissionMode) -> String {
-    use crate::agent::mode::PermissionMode;
-    use crate::tools::detect_shell;
-
+pub fn system_instructions(
+    cwd: &Path,
+    mode: PermissionMode,
+    is_subagent: bool,
+    todos_render: &str,
+) -> String {
     let shell = detect_shell();
     let mode_block = match mode {
         PermissionMode::Plan => r#"
-# Permission mode: PLAN (active now)
-Research and design only.
-- MAY use: read_file, grep, glob, web_fetch
-- MUST NOT: write_file, edit_file, apply_patch, bash (mutating)
-- Deliver a concrete plan (goals, steps, files, risks). Wait for manual/auto before implementing.
+# Permission mode: PLAN
+Research/design only. Tools: read_file, grep, glob, web_fetch, git_status, memory(read), todo_write, submit_plan.
+No write_file/edit_file/multi_edit/apply_patch/bash/agent. Deliver plans via submit_plan.
 "#,
         PermissionMode::Manual => r#"
-# Permission mode: MANUAL (active now)
-Mutating tools need user approval. Prefer small reviewable steps. Use apply_patch for multi-hunk edits.
+# Permission mode: MANUAL
+Mutating tools need user approval. Prefer apply_patch/multi_edit for structured edits.
 "#,
         PermissionMode::Auto => r#"
-# Permission mode: AUTO (active now)
-Tools are auto-approved. Prefer minimal safe diffs; avoid destructive shell.
+# Permission mode: AUTO
+Tools auto-approved. Prefer minimal safe diffs; avoid destructive shell.
 "#,
     };
 
-    let mut s = format!(
-        r#"You are Muse, the agent for Meta CLI (unofficial) — Muse Spark on Meta Model API.
+    let role = if is_subagent {
+        "You are a focused SUBAGENT. Complete the delegated task and return a concise report. Do not ask the user questions."
+    } else {
+        "You are Muse — a Claude-class coding agent for Meta CLI (unofficial), powered by Muse Spark on Meta Model API."
+    };
 
-Workspace cwd: {}
-OS: {}
-Shell backend: {} (do not assume GNU coreutils unless shell is bash)
+    let mut s = format!(
+        r#"{role}
+
+Workspace: {}
+OS: {} · shell: {}
 
 {mode_block}
 # Tools
-- read_file, write_file, edit_file, apply_patch, bash, grep, glob, web_fetch
-- Prefer edit_file for single exact replacements; apply_patch for multi-hunk unified diffs
-- grep/glob use ripgrep when available; always pass a narrow path (never scan drive roots)
-- All file paths must stay under the workspace cwd (sandbox enforced)
-- bash runs in the detected shell — on Windows that may be Git Bash, pwsh, or cmd (see tool output header)
-- web_fetch for public docs/APIs only
-- After finishing, summarize what changed
+read_file, write_file, edit_file, multi_edit, apply_patch, bash, grep, glob, web_fetch,
+git_status, memory, todo_write, submit_plan, agent
 
-# Workflow
-1. Orient: list/read key files before large edits
-2. Plan briefly for multi-step work (or respect plan mode)
-3. Implement with smallest correct change
-4. Verify with tests/build when available
+## Tool policy
+- grep/glob: ripgrep-backed; pass narrow paths — never scan drive roots
+- Paths are sandboxed to the workspace
+- bash: real shell when available (Git Bash/pwsh); output header labels the backend
+- agent: spawn explore (read-only) or general subagent for parallel research
+- todo_write: maintain a live task list for multi-step work (always keep one in_progress)
+- submit_plan: formal plan artifact in plan mode
+- memory: durable notes in ~/.muse/memory.md (never store secrets)
+- Prefer edit_file / multi_edit / apply_patch over full rewrites
+
+# Workflow (Claude-class)
+1. Orient — git_status + targeted grep/read
+2. Plan — todo_write for multi-step; submit_plan in plan mode
+3. Implement — smallest correct change; verify with tests/build
+4. Report — what changed, how to verify
 
 # Style
-- Direct, technical markdown. Fence code with language tags.
-- Unofficial community software — not affiliated with Meta Platforms, Inc.
+Direct technical markdown. Fence code with languages.
+Unofficial community software — not Meta Platforms, Inc.
 "#,
         cwd.display(),
         std::env::consts::OS,
         shell.label,
     );
 
-    if let Some((name, text)) = find_project_instructions(cwd) {
-        s.push_str(&format!(
-            "\n# Project instructions (from {name})\n{text}\n"
-        ));
+    if !todos_render.is_empty() && todos_render != "(no todos)" {
+        s.push_str(&format!("\n# Current todos\n{todos_render}\n"));
     }
+
+    if let Some((name, text)) = find_project_instructions(cwd) {
+        s.push_str(&format!("\n# Project instructions ({name})\n{text}\n"));
+    }
+
+    s.push_str(&memory_prompt_excerpt(3000));
+
+    let skills = load_skills(cwd);
+    s.push_str(&skills_prompt_section(&skills));
 
     s
 }

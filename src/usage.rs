@@ -125,6 +125,10 @@ impl UsageTracker {
         &self.session
     }
 
+    pub fn last_usage(&self) -> &TokenUsage {
+        &self.last
+    }
+
     /// Seed cumulative totals when resuming a session (does not append log).
     pub fn seed_session(&mut self, prior: TokenUsage) {
         self.session = prior;

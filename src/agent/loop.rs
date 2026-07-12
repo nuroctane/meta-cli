@@ -1,14 +1,15 @@
 use super::mode::{PermissionMode, SharedMode};
 use super::prompt::system_instructions;
 use super::session::Session;
+use super::subagent;
 use crate::api::types::{
-    function_call_output_item, replay_output_items, user_text_item, ReasoningConfig,
-    ResponseRequest,
+    function_call_output_item, replay_output_items, user_text_item, FunctionCallRef,
+    ReasoningConfig, ResponseRequest,
 };
 use crate::api::{ApiResponse, MetaClient, StreamEvent};
 use crate::config::Config;
 use crate::error::{MuseError, Result};
-use crate::tools::{dispatch, tool_defs, ToolContext};
+use crate::tools::{ToolContext, ToolHost};
 use crate::usage::{TokenUsage, UsageTracker};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -17,35 +18,29 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-/// Events emitted while an agent turn runs. The UI (TUI or headless printer)
-/// consumes these live from an unbounded channel.
+/// Events emitted while an agent turn runs.
 pub enum AgentEvent {
-    /// Short status line ("thinking (turn 2)").
     Status(String),
-    /// Reasoning-summary text delta (model thinking).
     ReasoningDelta(String),
-    /// Assistant output text delta (streamed).
     TextDelta(String),
-    /// Complete assistant message for a request that did not stream.
     AssistantMessage(String),
-    /// A tool call is starting.
     ToolStart { id: u64, name: String, args: String },
-    /// A tool call finished.
     ToolEnd {
         id: u64,
         name: String,
         result: String,
         ok: bool,
     },
-    /// The agent wants to run a mutating tool — reply on `respond`.
+    /// Todo list changed — TUI should refresh.
+    TodosChanged(String),
+    /// Plan written via submit_plan.
+    PlanSubmitted(String),
     ApprovalRequest {
         name: String,
         args: String,
         respond: oneshot::Sender<ApprovalDecision>,
     },
-    /// Cumulative + last-request token usage after each API response.
     Usage { session: TokenUsage, last: TokenUsage },
-    /// Turn finished; ownership of session/usage returns to the caller.
     Done {
         session: Box<Session>,
         usage: Box<UsageTracker>,
@@ -61,26 +56,38 @@ pub enum ApprovalDecision {
     Deny,
 }
 
-/// Tools that never mutate the workspace — free in manual mode; only tools in plan mode.
-pub const READ_ONLY_TOOLS: &[&str] = &["read_file", "grep", "glob", "web_fetch"];
+pub const READ_ONLY_TOOLS: &[&str] = &[
+    "read_file",
+    "grep",
+    "glob",
+    "web_fetch",
+    "git_status",
+    "memory",
+    "todo_write",
+    "submit_plan",
+];
 
-/// Tools that mutate the workspace or run arbitrary shell.
-pub const MUTATING_TOOLS: &[&str] = &["write_file", "edit_file", "apply_patch", "bash"];
+pub const MUTATING_TOOLS: &[&str] = &[
+    "write_file",
+    "edit_file",
+    "multi_edit",
+    "apply_patch",
+    "bash",
+];
 
 pub struct AgentRunner {
     pub client: MetaClient,
     pub config: Config,
     pub cwd: PathBuf,
-    /// Shared with the TUI — toggles apply mid-turn (Shift+Tab / /mode).
     pub permission_mode: SharedMode,
     #[allow(dead_code)]
     pub verbose: bool,
-    /// Tools the user approved for the whole session ("always allow") in manual mode.
     pub approved_tools: Arc<Mutex<HashSet<String>>>,
+    pub tools: ToolHost,
+    /// Nested subagents cannot spawn further agents (depth limit 1).
+    pub is_subagent: bool,
 }
 
-/// Spawn a full agent turn on the runtime. Events (including the final
-/// `Done`, which carries session + usage back) arrive on `tx`.
 pub fn spawn_turn(
     runner: Arc<AgentRunner>,
     mut session: Session,
@@ -107,8 +114,6 @@ pub fn spawn_turn(
 }
 
 impl AgentRunner {
-    /// Run one user turn: repeated model requests + tool dispatch until the
-    /// model answers without tool calls. Emits events on `tx` throughout.
     pub async fn run_turn_events(
         &self,
         session: &mut Session,
@@ -120,8 +125,7 @@ impl AgentRunner {
         session.push_user(user_text);
         session.input_items.push(user_text_item(user_text));
 
-        let tools = tool_defs();
-
+        let tools = self.tools.tool_defs();
         let mut turns = 0u32;
         let mut tool_seq: u64 = 0;
 
@@ -134,9 +138,24 @@ impl AgentRunner {
                 return Err(MuseError::MaxTurns(self.config.max_turns));
             }
 
-            // Re-read permission mode every model call so Shift+Tab is live.
+            // Auto-compact when context is hot (Claude-style).
+            if should_auto_compact(usage, &self.config) {
+                let _ = tx.send(AgentEvent::Status("auto-compacting context…".into()));
+                if let Ok(summary) = compact_session(self, session, usage).await {
+                    let _ = tx.send(AgentEvent::Status(
+                        "context compacted — continuing".into(),
+                    ));
+                    let _ = summary;
+                }
+            }
+
             let mode_now = self.permission_mode.get();
-            let instructions = system_instructions(&self.cwd, mode_now);
+            let instructions = system_instructions(
+                &self.cwd,
+                mode_now,
+                self.is_subagent,
+                &self.tools.todos_snapshot().render(),
+            );
 
             usage.set_state(format!("thinking (turn {turns})"));
             let _ = tx.send(AgentEvent::Status(format!(
@@ -156,12 +175,12 @@ impl AgentRunner {
                     effort: Some(self.config.reasoning_effort.clone()),
                     summary: Some("auto".into()),
                 }),
-                stream: Some(self.config.stream),
+                stream: Some(self.config.stream && !self.is_subagent),
                 parallel_tool_calls: Some(true),
             };
 
             let mut text_deltas = 0usize;
-            let resp: ApiResponse = if self.config.stream {
+            let resp: ApiResponse = if req.stream == Some(true) {
                 self.client
                     .create_response_stream(
                         &req,
@@ -195,14 +214,12 @@ impl AgentRunner {
                 });
             }
 
-            // Replay model output into history for next turn.
             let replayed = replay_output_items(&resp.output);
             session.input_items.extend(replayed);
 
             let calls = resp.function_calls();
             let text = resp.output_text();
 
-            // If nothing streamed, surface the message text as one block.
             if text_deltas == 0 && !text.is_empty() {
                 let _ = tx.send(AgentEvent::AssistantMessage(text.clone()));
             }
@@ -214,12 +231,73 @@ impl AgentRunner {
                 return Ok(text);
             }
 
-            for call in calls {
-                if cancel.is_cancelled() {
+            // Partition: run read-only tools in parallel; mutating / agent sequential.
+            let (readonly, sequential): (Vec<_>, Vec<_>) = calls
+                .into_iter()
+                .partition(|c| is_parallel_safe(&c.name) && c.name != "agent");
+
+            // --- parallel readonly batch ---
+            if !readonly.is_empty() {
+                let mut handles = Vec::new();
+                for call in &readonly {
+                    if cancel.is_cancelled() {
+                        return Err(MuseError::Interrupted);
+                    }
+                    tool_seq += 1;
+                    let id = tool_seq;
+                    let _ = tx.send(AgentEvent::ToolStart {
+                        id,
+                        name: call.name.clone(),
+                        args: call.arguments.clone(),
+                    });
+                    // Readonly always approved
+                    let host = ToolHost {
+                        todos: self.tools.todos.clone(),
+                        plan: self.tools.plan.clone(),
+                    };
+                    let cwd = self.cwd.clone();
+                    let name = call.name.clone();
+                    let args = call.arguments.clone();
+                    let call_id = call.call_id.clone();
+                    handles.push(tokio::task::spawn_blocking(move || {
+                        let ctx = ToolContext {
+                            cwd,
+                            auto_approve: true,
+                        };
+                        let res = host.dispatch(&name, &args, &ctx);
+                        (id, call_id, name, res)
+                    }));
+                }
+
+                for h in handles {
+                    let (id, call_id, name, res) = tokio::select! {
+                        _ = cancel.cancelled() => return Err(MuseError::Interrupted),
+                        r = h => r.map_err(|e| MuseError::Other(e.to_string()))?,
+                    };
+                    let (body, ok) = match res {
+                        Ok(s) => (s, true),
+                        Err(e) => (format!("error: {e}"), false),
+                    };
+                    emit_side_effects(tx, &name, &body);
+                    let _ = tx.send(AgentEvent::ToolEnd {
+                        id,
+                        name,
+                        result: body.clone(),
+                        ok,
+                    });
                     session
                         .input_items
-                        .push(function_call_output_item(&call.call_id, "[interrupted by user]"));
-                    let _ = session.save();
+                        .push(function_call_output_item(&call_id, &body));
+                }
+            }
+
+            // --- sequential mutating / agent ---
+            for call in sequential {
+                if cancel.is_cancelled() {
+                    session.input_items.push(function_call_output_item(
+                        &call.call_id,
+                        "[interrupted by user]",
+                    ));
                     return Err(MuseError::Interrupted);
                 }
 
@@ -231,26 +309,23 @@ impl AgentRunner {
                     args: call.arguments.clone(),
                 });
 
-                // Approval gate — uses live SharedMode (mid-turn Shift+Tab applies).
                 let mode_at_gate = self.permission_mode.get();
                 let approved = self.check_approval(&call.name, &call.arguments, tx).await;
                 if !approved {
                     let (msg, result_label) = if mode_at_gate.is_read_only_enforced()
-                        && MUTATING_TOOLS.contains(&call.name.as_str())
+                        && (MUTATING_TOOLS.contains(&call.name.as_str()) || call.name == "agent")
                     {
                         (
                             format!(
-                                "blocked: session is in plan mode (read-only). \
-                                 Only read_file/grep/glob are allowed. \
-                                 User must switch to manual or auto (Shift+Tab) to run {}.",
+                                "blocked: plan mode. Only read-only tools allowed. \
+                                 Switch to manual/auto (Shift+Tab) for {}.",
                                 call.name
                             ),
-                            "blocked · plan mode".to_string(),
+                            "blocked · plan mode".into(),
                         )
                     } else {
                         (
-                            "user denied this tool call; ask before retrying or take another approach"
-                                .into(),
+                            "user denied this tool call".into(),
                             "denied by user".into(),
                         )
                     };
@@ -267,46 +342,70 @@ impl AgentRunner {
                 }
 
                 usage.set_state(format!("tool:{}", call.name));
-                let tool_ctx = ToolContext {
-                    cwd: self.cwd.clone(),
-                    auto_approve: true, // gate handled above
-                };
-                let name = call.name.clone();
-                let args = call.arguments.clone();
-                let exec = tokio::task::spawn_blocking(move || dispatch(&name, &args, &tool_ctx));
-                let result = tokio::select! {
-                    _ = cancel.cancelled() => {
-                        session.input_items.push(function_call_output_item(
-                            &call.call_id,
-                            "[interrupted by user]",
-                        ));
-                        let _ = session.save();
-                        return Err(MuseError::Interrupted);
+
+                let (body, ok) = if call.name == "agent" {
+                    if self.is_subagent {
+                        (
+                            "error: nested subagents are not allowed (depth limit)".into(),
+                            false,
+                        )
+                    } else {
+                        match run_agent_tool(self, &call, cancel, tx).await {
+                            Ok(s) => (s, true),
+                            Err(MuseError::Interrupted) => return Err(MuseError::Interrupted),
+                            Err(e) => (format!("error: {e}"), false),
+                        }
                     }
-                    r = exec => match r {
-                        Ok(Ok(s)) => (s, true),
-                        Ok(Err(e)) => (format!("error: {e}"), false),
-                        Err(e) => (format!("error: tool panicked: {e}"), false),
-                    },
+                } else {
+                    let host = ToolHost {
+                        todos: self.tools.todos.clone(),
+                        plan: self.tools.plan.clone(),
+                    };
+                    let cwd = self.cwd.clone();
+                    let name = call.name.clone();
+                    let args = call.arguments.clone();
+                    let exec = tokio::task::spawn_blocking(move || {
+                        host.dispatch(
+                            &name,
+                            &args,
+                            &ToolContext {
+                                cwd,
+                                auto_approve: true,
+                            },
+                        )
+                    });
+                    tokio::select! {
+                        _ = cancel.cancelled() => {
+                            session.input_items.push(function_call_output_item(
+                                &call.call_id,
+                                "[interrupted by user]",
+                            ));
+                            return Err(MuseError::Interrupted);
+                        }
+                        r = exec => match r {
+                            Ok(Ok(s)) => (s, true),
+                            Ok(Err(e)) => (format!("error: {e}"), false),
+                            Err(e) => (format!("error: tool panicked: {e}"), false),
+                        },
+                    }
                 };
 
+                emit_side_effects(tx, &call.name, &body);
                 let _ = tx.send(AgentEvent::ToolEnd {
                     id,
                     name: call.name.clone(),
-                    result: result.0.clone(),
-                    ok: result.1,
+                    result: body.clone(),
+                    ok,
                 });
-
                 session
                     .input_items
-                    .push(function_call_output_item(&call.call_id, &result.0));
+                    .push(function_call_output_item(&call.call_id, &body));
             }
 
             let _ = session.save();
         }
     }
 
-    /// Gate tool execution using **current** permission mode (atomic, mid-turn safe).
     async fn check_approval(
         &self,
         name: &str,
@@ -314,19 +413,15 @@ impl AgentRunner {
         tx: &mpsc::UnboundedSender<AgentEvent>,
     ) -> bool {
         let mode = self.permission_mode.get();
-        let read_only = READ_ONLY_TOOLS.contains(&name);
+        let read_only = READ_ONLY_TOOLS.contains(&name) || name == "submit_plan";
 
         match mode {
             PermissionMode::Auto => true,
             PermissionMode::Plan => {
-                if read_only {
+                if read_only && name != "agent" {
                     true
                 } else {
-                    // Deny mutating tools immediately — do not open a modal.
-                    let _ = tx.send(AgentEvent::Status(format!(
-                        "plan mode blocked · {name}"
-                    )));
-                    // Still return false so caller injects a denial for the model.
+                    let _ = tx.send(AgentEvent::Status(format!("plan mode blocked · {name}")));
                     false
                 }
             }
@@ -334,6 +429,7 @@ impl AgentRunner {
                 if read_only {
                     return true;
                 }
+                // explore-style agent is ok after approval; general agent too
                 if let Ok(set) = self.approved_tools.lock() {
                     if set.contains(name) {
                         return true;
@@ -350,7 +446,6 @@ impl AgentRunner {
                 {
                     return false;
                 }
-                // Wait for UI — but if user switches to Auto while waiting, honor it.
                 match orx.await {
                     Ok(ApprovalDecision::Approve) => true,
                     Ok(ApprovalDecision::ApproveAlways) => {
@@ -359,25 +454,75 @@ impl AgentRunner {
                         }
                         true
                     }
-                    Ok(ApprovalDecision::Deny) => {
-                        // Re-check mode: user may have flipped to auto while modal was open
-                        // and then denied — still deny this one. If they cycled to Auto and
-                        // we want re-eval, only auto-approve if mode is now Auto AND they
-                        // didn't explicitly deny... Explicit deny wins.
-                        false
-                    }
-                    Err(_) => {
-                        // Channel dropped — if mode became Auto mid-flight, allow.
-                        self.permission_mode.get().auto_approves()
-                    }
+                    Ok(ApprovalDecision::Deny) => false,
+                    Err(_) => self.permission_mode.get().auto_approves(),
                 }
             }
         }
     }
 }
 
-/// Compact a session: ask the model to summarize the conversation, then
-/// replace the input history with the summary. Returns the summary text.
+fn is_parallel_safe(name: &str) -> bool {
+    matches!(
+        name,
+        "read_file" | "grep" | "glob" | "web_fetch" | "git_status" | "memory"
+    )
+}
+
+fn should_auto_compact(usage: &UsageTracker, cfg: &Config) -> bool {
+    let last = usage.last_usage();
+    let used = last.input_tokens.max(last.total_tokens);
+    let window = cfg.context_window.max(1);
+    // When a single request's input exceeds ~55% of the context window, compact.
+    used > (window as f64 * 0.55) as u64 && used > 40_000
+}
+
+fn emit_side_effects(tx: &mpsc::UnboundedSender<AgentEvent>, name: &str, body: &str) {
+    if name == "todo_write" {
+        let _ = tx.send(AgentEvent::TodosChanged(body.to_string()));
+    }
+    if name == "submit_plan" {
+        let _ = tx.send(AgentEvent::PlanSubmitted(body.to_string()));
+    }
+}
+
+async fn run_agent_tool(
+    runner: &AgentRunner,
+    call: &FunctionCallRef,
+    cancel: &CancellationToken,
+    tx: &mpsc::UnboundedSender<AgentEvent>,
+) -> Result<String> {
+    let v: Value = serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
+    let prompt = v
+        .get("prompt")
+        .and_then(|x| x.as_str())
+        .unwrap_or("")
+        .to_string();
+    if prompt.is_empty() {
+        return Err(MuseError::Tool("agent.prompt required".into()));
+    }
+    let kind = v
+        .get("subagent_type")
+        .and_then(|x| x.as_str())
+        .unwrap_or("explore");
+    let desc = v
+        .get("description")
+        .and_then(|x| x.as_str())
+        .unwrap_or(kind);
+    let _ = tx.send(AgentEvent::Status(format!("subagent · {desc}")));
+
+    subagent::run_subagent(
+        runner.client.clone(),
+        runner.config.clone(),
+        runner.cwd.clone(),
+        runner.permission_mode.clone(),
+        &prompt,
+        kind,
+        cancel,
+    )
+    .await
+}
+
 pub async fn compact_session(
     runner: &AgentRunner,
     session: &mut Session,
@@ -385,9 +530,8 @@ pub async fn compact_session(
 ) -> Result<String> {
     let mut items = session.input_items.clone();
     items.push(user_text_item(
-        "Summarize this conversation so far for a fresh context window. Capture: the user's goals, \
-         decisions made, files touched (paths), current state of the work, and any pending next steps. \
-         Be dense and factual; use bullet points.",
+        "Summarize this conversation for a fresh context window. Capture: goals, decisions, \
+         files touched, current state, pending next steps. Dense bullets.",
     ));
     let req = ResponseRequest {
         model: runner.config.model.clone(),

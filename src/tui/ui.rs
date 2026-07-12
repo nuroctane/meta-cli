@@ -416,10 +416,10 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = if app.busy {
-        Span::styled(" muse · queued ", theme::style_faint())
+        Span::styled(" meta · queued ", theme::style_faint())
     } else {
         Span::styled(
-            " muse ",
+            " meta ",
             Style::default()
                 .fg(theme::META_BLUE)
                 .add_modifier(Modifier::BOLD),

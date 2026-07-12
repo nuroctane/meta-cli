@@ -4,7 +4,7 @@
 
 > Not affiliated with Meta Platforms, Inc. · Community project · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
-The command you run is **`muse`**.
+The command you run is **`meta`** (alias: `muse` for compatibility).
 
 ---
 
@@ -27,15 +27,15 @@ That single command will:
 1. Install Rust if needed  
 2. Clone this repo (or update it)  
 3. `cargo build --release`  
-4. Put `muse` on your PATH (`~/.local/bin`)  
+4. Put **`meta`** (and `muse` alias) on your PATH (`~/.local/bin`)  
 5. Install the Orca ADE hook when possible  
 6. If `MODEL_API_KEY` is already set, save auth under `~/.muse/` **on your machine only**
 
 Then:
 
 ```powershell
-muse auth login    # paste your Meta Model API key (stored only in ~/.muse)
-muse               # open the TUI
+meta auth login    # paste your Meta Model API key (stored only in ~/.muse)
+meta               # open the TUI
 ```
 
 Get a key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
@@ -75,15 +75,15 @@ See [SECURITY.md](./SECURITY.md).
 ## Quick use
 
 ```
-muse                      # interactive Meta-blue TUI
-muse "fix the bug"       # start with a prompt
-muse -c                   # continue last session in this directory
-muse -r <session-id>      # resume a session
-muse --mode plan "…"      # plan mode (read-only tools)
-muse run "…" -y           # headless + auto-approve
-muse sessions
-muse usage                # token / cost for ADEs
-muse auth status
+meta                      # interactive Meta-blue TUI
+meta "fix the bug"       # start with a prompt
+meta -c                   # continue last session in this directory
+meta -r <session-id>      # resume a session
+meta --mode plan "…"      # plan mode (read-only tools)
+meta run "…" -y           # headless + auto-approve
+meta sessions
+meta usage                # token / cost for ADEs
+meta auth status
 ```
 
 ### Permission modes (live — Shift+Tab)
@@ -124,8 +124,8 @@ Usage is written for host tools (never includes your API key):
 | `~/.muse/ade.json` | Discovery manifest |
 
 ```powershell
-muse install-hook
-orca terminal create --worktree active --command "muse" --title "Meta CLI" --json
+meta install-hook
+orca terminal create --worktree active --command "meta" --title "Meta CLI" --json
 ```
 
 ---

@@ -90,6 +90,10 @@ async fn real_main() -> Result<()> {
     let mut cfg = load_config()?;
     if let Some(m) = &cli.model {
         cfg.model = m.clone();
+    } else if let Ok(m) = std::env::var("MUSE_MODEL").or_else(|_| std::env::var("META_MODEL")) {
+        if !m.trim().is_empty() {
+            cfg.model = m;
+        }
     }
     if let Some(e) = &cli.effort {
         cfg.reasoning_effort = e.clone();
@@ -116,7 +120,7 @@ async fn real_main() -> Result<()> {
     if tools::is_dangerous_workspace(&cwd) {
         return Err(error::MuseError::Other(format!(
             "refusing to run with workspace at filesystem root ({})\n\
-             Start muse from a project directory, or pass --cwd path\\to\\repo",
+             Start meta from a project directory, or pass --cwd path\\to\\repo",
             cwd.display()
         )));
     }
@@ -188,7 +192,7 @@ async fn real_main() -> Result<()> {
         }
         None => {
             ade::set_terminal_title(&format!(
-                "muse · {}",
+                "meta · {}",
                 &session.id[..8.min(session.id.len())]
             ));
             tui::run_tui(
@@ -229,6 +233,8 @@ async fn run_headless(
         permission_mode,
         verbose,
         approved_tools: Arc::new(Mutex::new(HashSet::new())),
+        tools: tools::ToolHost::default(),
+        is_subagent: false,
     });
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -307,6 +313,16 @@ async fn run_headless(
                 let _ = respond.send(decision);
             }
             AgentEvent::Usage { .. } => {}
+            AgentEvent::TodosChanged(text) => {
+                if verbose {
+                    theme::print_info(&format!("todos\n{text}"));
+                }
+            }
+            AgentEvent::PlanSubmitted(text) => {
+                if verbose {
+                    theme::print_info(&format!("plan\n{text}"));
+                }
+            }
             AgentEvent::Done { usage, result, .. } => {
                 final_usage = Some(usage);
                 final_result = result;

@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  One-shot install of Meta CLI (unofficial) — builds the `muse` binary.
+  One-shot install of Meta CLI (unofficial) — builds the `meta` binary (muse alias too).
 
 .DESCRIPTION
   Works two ways:
@@ -10,7 +10,7 @@
          irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
 
   Steps: ensure Rust → clone if needed → cargo build --release →
-  install muse to %USERPROFILE%\.local\bin → PATH → optional Orca hook →
+  install meta (+ muse alias) to %USERPROFILE%\.local\bin → PATH → Orca hook →
   optional auth if MODEL_API_KEY is set.
 
   Secrets are NEVER written into the repo. Keys live only in:
@@ -116,14 +116,20 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
 } finally { Pop-Location }
 
-$built = Join-Path $RepoDir "target\release\muse.exe"
-if (-not (Test-Path $built)) { throw "missing $built" }
+$built = Join-Path $RepoDir "target\release\meta.exe"
+if (-not (Test-Path $built)) {
+    # cargo may only emit muse.exe if meta target name not picked up yet
+    $built = Join-Path $RepoDir "target\release\muse.exe"
+}
+if (-not (Test-Path $built)) { throw "missing release binary (meta.exe / muse.exe)" }
 
 # ── install binary ────────────────────────────────────────────────────────
 $destDir = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-$dest = Join-Path $destDir "muse.exe"
+$dest = Join-Path $destDir "meta.exe"
 Copy-Item -Force $built $dest
+# alias for older muscle memory / docs
+Copy-Item -Force $built (Join-Path $destDir "muse.exe")
 $env:Path = "$destDir;$env:Path"
 
 # Persist User PATH
@@ -167,13 +173,14 @@ if ($key -and $key.Trim().Length -gt 0) {
     Write-Ok "Auth stored under $env:USERPROFILE\.muse\ (never committed to git)"
 } else {
     Write-Warn "No API key in env yet. After install:"
-    Write-Host "      muse auth login" -ForegroundColor DarkGray
+    Write-Host "      meta auth login" -ForegroundColor DarkGray
     Write-Host "    or set User env MODEL_API_KEY from https://dev.meta.ai/" -ForegroundColor DarkGray
 }
 
 Write-Host ""
 Write-Host "  Done." -ForegroundColor Green
-Write-Host "  Run:   muse" -ForegroundColor White
-Write-Host "  Auth:  muse auth login     (key stays in ~/.muse only)" -ForegroundColor DarkGray
+Write-Host "  Run:   meta" -ForegroundColor White
+Write-Host "  Auth:  meta auth login     (key stays in ~/.muse only)" -ForegroundColor DarkGray
+Write-Host "  Orca:  orca terminal create --command meta" -ForegroundColor DarkGray
 Write-Host "  Docs:  https://github.com/nuroctane/meta-cli" -ForegroundColor DarkGray
 Write-Host ""

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-shot install of Meta CLI (unofficial) — builds the `muse` binary.
+# One-shot install of Meta CLI (unofficial) — builds the `meta` binary (muse alias).
 #
 # From a clone:
 #   ./install.sh
@@ -8,7 +8,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
 #
 # Secrets are NEVER written into the repo. Keys live only in ~/.muse/auth.json
-# or env MODEL_API_KEY / MUSE_API_KEY.
+# or env MODEL_API_KEY / MUSE_API_KEY / META_API_KEY.
 
 set -euo pipefail
 
@@ -23,10 +23,9 @@ warn() { printf '  ! %s\n' "$*"; }
 
 echo ""
 echo "  Meta CLI (unofficial) installer"
-echo "  Muse Spark agent · not affiliated with Meta"
+echo "  command: meta  ·  Muse Spark agent · not affiliated with Meta"
 echo ""
 
-# ── locate or clone ───────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 IN_REPO=0
 if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/Cargo.toml" ]] && grep -q 'name = "meta-cli"' "${SCRIPT_DIR}/Cargo.toml"; then
@@ -50,7 +49,6 @@ if [[ "${IN_REPO}" -eq 0 ]]; then
 fi
 ok "Repo: ${REPO_DIR}"
 
-# ── Rust ──────────────────────────────────────────────────────────────────
 export PATH="${HOME}/.cargo/bin:${PATH}"
 if ! command -v cargo >/dev/null 2>&1; then
   step "Rust/cargo not found — installing rustup…"
@@ -61,23 +59,19 @@ fi
 command -v cargo >/dev/null || { echo "cargo not found after rustup; open a new shell and re-run"; exit 1; }
 ok "cargo $(cargo --version)"
 
-# ── build ─────────────────────────────────────────────────────────────────
 step "Building release (first time can take a few minutes)…"
 ( cd "${REPO_DIR}" && cargo build --release )
-BUILT="${REPO_DIR}/target/release/muse"
-[[ -x "${BUILT}" || -f "${BUILT}" ]] || { echo "missing ${BUILT}"; exit 1; }
+BUILT="${REPO_DIR}/target/release/meta"
+[[ -f "${BUILT}" ]] || BUILT="${REPO_DIR}/target/release/muse"
+[[ -f "${BUILT}" ]] || { echo "missing release binary"; exit 1; }
 
-# ── install ───────────────────────────────────────────────────────────────
 DEST_DIR="${HOME}/.local/bin"
 mkdir -p "${DEST_DIR}"
+cp -f "${BUILT}" "${DEST_DIR}/meta"
 cp -f "${BUILT}" "${DEST_DIR}/muse"
-chmod +x "${DEST_DIR}/muse"
+chmod +x "${DEST_DIR}/meta" "${DEST_DIR}/muse"
 export PATH="${DEST_DIR}:${PATH}"
 
-# Persist PATH in common shell rc if missing
-if ! echo ":${PATH}:" | grep -q ":${DEST_DIR}:"; then
-  :
-fi
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
   if [[ -f "${rc}" ]] && ! grep -q '\.local/bin' "${rc}" 2>/dev/null; then
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "${rc}"
@@ -86,26 +80,26 @@ for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/
   fi
 done
 
-ok "Installed ${DEST_DIR}/muse ($("${DEST_DIR}/muse" --version))"
+ok "Installed ${DEST_DIR}/meta ($("${DEST_DIR}/meta" --version))"
 
 if [[ "${SKIP_HOOK}" != "1" ]]; then
-  "${DEST_DIR}/muse" install-hook >/dev/null 2>&1 && ok "Orca ADE hook installed (if applicable)" || true
+  "${DEST_DIR}/meta" install-hook >/dev/null 2>&1 && ok "Orca ADE hook installed (if applicable)" || true
 fi
 
-# ── auth (never echo the key) ─────────────────────────────────────────────
-KEY="${MODEL_API_KEY:-${MUSE_API_KEY:-}}"
+KEY="${MODEL_API_KEY:-${META_API_KEY:-${MUSE_API_KEY:-}}}"
 if [[ -n "${KEY}" ]]; then
   step "API key found in environment — saving to ~/.muse/auth.json (local only)…"
-  "${DEST_DIR}/muse" auth login --key "${KEY}" >/dev/null
+  "${DEST_DIR}/meta" auth login --key "${KEY}" >/dev/null
   ok "Auth stored under ~/.muse/ (never committed to git)"
 else
-  warn "No API key in env yet. After install:  muse auth login"
+  warn "No API key in env yet. After install:  meta auth login"
   warn "Get a key: https://dev.meta.ai/"
 fi
 
 echo ""
 echo "  Done."
-echo "  Run:   muse"
-echo "  Auth:  muse auth login     (key stays in ~/.muse only)"
+echo "  Run:   meta"
+echo "  Auth:  meta auth login     (key stays in ~/.muse only)"
+echo "  Orca:  orca terminal create --command meta"
 echo "  Docs:  https://github.com/nuroctane/meta-cli"
 echo ""
