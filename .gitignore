@@ -29,3 +29,6 @@ secrets*
 *.swp
 *~
 Thumbs.db
+
+.ref-frames/
+
