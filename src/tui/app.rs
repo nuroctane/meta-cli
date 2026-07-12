@@ -24,7 +24,7 @@ use crossterm::ExecutableCommand;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::io::stdout;
+use std::io::{stdout, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -231,7 +231,7 @@ impl Cell {
                 )
             } else {
                 format!(
-                    "This turn completed in {}.\n\nHover cards or click ▸ on thoughts/tools to read full content. Press e (empty input) to toggle the latest card.",
+                    "This turn completed in {}.\n\nClick a thought/tool card to peek full content. Click the ▸ chevron (or press e) to expand in place.",
                     theme::fmt_duration(*duration)
                 )
             }),
@@ -347,8 +347,11 @@ pub struct App {
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
     pub expand_flash: Option<(usize, Instant)>,
-    /// Cell under the mouse for the Grok-style hover peek dialogue.
+    /// Cell under the mouse (all-motion tracking) for free hover peek.
     pub hover_cell: Option<usize>,
+    /// Click-pinned peek — stays open until Esc / click outside (works even when
+    /// the host terminal does not emit free mouse-move events).
+    pub peek_pinned: Option<usize>,
     /// Last known mouse position (for anchoring the peek box).
     pub mouse_col: u16,
     pub mouse_row: u16,
@@ -385,6 +388,9 @@ struct TermGuard;
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
+        // Disable all-motion mouse tracking before leaving alt screen.
+        let _ = write!(stdout(), "\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+        let _ = stdout().flush();
         let _ = stdout().execute(Show);
         let _ = disable_raw_mode();
         let _ = stdout().execute(DisableMouseCapture);
@@ -411,6 +417,14 @@ pub async fn run_tui(
     // terminal is replaced by in-app selection (Ctrl+A / Shift-style select) +
     // Ctrl+C/V clipboard; Shift+drag still selects in many terminals.
     stdout().execute(EnableMouseCapture)?;
+    // All-motion tracking (1003) so free hover emits MouseEventKind::Moved.
+    // Crossterm's EnableMouseCapture alone is often button-only (1002) — no
+    // hover peeks without this. Hosts that ignore 1003 still get click-to-pin.
+    {
+        let mut out = stdout();
+        let _ = write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+        let _ = out.flush();
+    }
     // Hardware cursor hidden — we paint a Meta blue block caret ourselves.
     stdout().execute(Hide)?;
     let _guard = TermGuard;
@@ -446,6 +460,7 @@ pub async fn run_tui(
         transcript_top: 0,
         expand_flash: None,
         hover_cell: None,
+        peek_pinned: None,
         mouse_col: 0,
         mouse_row: 0,
         input: InputState::new(),
@@ -686,7 +701,10 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                if self.busy {
+                // Peek closes first — same priority as a modal.
+                if self.peek_pinned.is_some() {
+                    self.peek_pinned = None;
+                } else if self.busy {
                     self.interrupt();
                 } else if self.palette_visible() {
                     self.input.clear();
@@ -790,10 +808,19 @@ impl App {
             KeyCode::Char('u') if ctrl => self.input.delete_to_line_start(),
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
             KeyCode::Char('j') if ctrl => self.input.insert_char('\n'),
-            // `e` with empty draft: expand/collapse the latest thought or tool card.
+            // `e` with empty draft: expand/collapse the peeked card, else latest.
             // (High-frequency path is unanimated — design-eng: no motion on keys.)
             KeyCode::Char('e') if !ctrl && !alt && self.input.is_empty() && !self.busy => {
-                self.toggle_last_collapsible();
+                if let Some(idx) = self.peek_pinned.or(self.hover_cell) {
+                    self.toggle_cell_expand(idx);
+                    self.peek_pinned = None;
+                } else {
+                    self.toggle_last_collapsible();
+                }
+            }
+            // `p` with empty draft: pin-peek the latest thought/tool/turn.
+            KeyCode::Char('p') if !ctrl && !alt && self.input.is_empty() && !self.busy => {
+                self.pin_peek_latest();
             }
             KeyCode::Char(c) if !ctrl && !alt => {
                 self.input.insert_char(c);
@@ -832,7 +859,6 @@ impl App {
                     self.scroll_from_scrollbar_y(m.row);
                 } else {
                     self.scrollbar_drag = false;
-                    // Prefer transcript header hits (expand/collapse); else caret.
                     let body = self.transcript_body;
                     let in_transcript = body.width > 0
                         && m.column >= body.x
@@ -842,10 +868,20 @@ impl App {
                     if in_transcript {
                         self.click_transcript(m.column, m.row);
                     } else {
+                        // Click outside transcript dismisses pinned peek.
+                        self.peek_pinned = None;
                         self.click_input(m.column, m.row);
                     }
                 }
                 self.update_hover_from_mouse();
+            }
+            // Right-click: always pin-peek (reliable even without free hover).
+            MouseEventKind::Down(MouseButton::Right) => {
+                self.scrollbar_drag = false;
+                self.update_hover_from_mouse();
+                if let Some(idx) = self.cell_at_mouse() {
+                    self.peek_pinned = Some(idx);
+                }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 // Once dragging, follow the pointer anywhere on screen (not only
@@ -865,6 +901,10 @@ impl App {
 
     /// Resolve `hover_cell` from mouse position over the transcript body.
     fn update_hover_from_mouse(&mut self) {
+        self.hover_cell = self.cell_at_mouse();
+    }
+
+    fn cell_at_mouse(&self) -> Option<usize> {
         let body = self.transcript_body;
         if body.width == 0
             || body.height == 0
@@ -873,12 +913,29 @@ impl App {
             || self.mouse_row < body.y
             || self.mouse_row >= body.bottom()
         {
-            self.hover_cell = None;
-            return;
+            return None;
         }
         let local_y = self.mouse_row.saturating_sub(body.y) as usize;
         let line_idx = self.transcript_top as usize + local_y;
-        self.hover_cell = self.line_cells.get(line_idx).copied().flatten();
+        self.line_cells.get(line_idx).copied().flatten()
+    }
+
+    /// Active peek target: pinned click wins, else free hover.
+    pub fn active_peek_cell(&self) -> Option<usize> {
+        self.peek_pinned.or(self.hover_cell)
+    }
+
+    fn pin_peek_latest(&mut self) {
+        if let Some(idx) = self
+            .cells
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| c.is_peekable())
+            .map(|(i, _)| i)
+        {
+            self.peek_pinned = Some(idx);
+        }
     }
 
     fn hit_scrollbar(&self, col: u16, row: u16) -> bool {
@@ -1476,7 +1533,12 @@ impl App {
         }
     }
 
-    /// Map a click in the transcript body onto a collapsible header.
+    /// Map a click in the transcript body.
+    ///
+    /// - Click left edge / chevron (first ~3 cells): expand/collapse in place.
+    /// - Click anywhere else on a peekable card: pin the full-content dialogue
+    ///   (works without free mouse-move — many hosts never emit hover events).
+    /// - Second click on the same pinned card expands (if collapsible).
     fn click_transcript(&mut self, col: u16, row: u16) {
         let body = self.transcript_body;
         if body.width == 0 || body.height == 0 {
@@ -1486,10 +1548,37 @@ impl App {
             return;
         }
         let local_y = row.saturating_sub(body.y) as usize;
+        let local_x = col.saturating_sub(body.x);
         let line_idx = self.transcript_top as usize + local_y;
-        if let Some(Some(cell_idx)) = self.hit_headers.get(line_idx).copied() {
-            self.toggle_cell_expand(cell_idx);
+
+        let header = self.hit_headers.get(line_idx).copied().flatten();
+        let peekable = self.line_cells.get(line_idx).copied().flatten();
+
+        // Chevron zone: toggle expand/collapse (in-place).
+        if local_x <= 3 {
+            if let Some(cell_idx) = header {
+                self.toggle_cell_expand(cell_idx);
+                self.peek_pinned = None;
+                return;
+            }
         }
+
+        if let Some(cell_idx) = peekable.or(header) {
+            // Already peeking this card → expand in place (second click).
+            if self.peek_pinned == Some(cell_idx) {
+                if self.cells.get(cell_idx).map(|c| c.is_collapsible()) == Some(true) {
+                    self.toggle_cell_expand(cell_idx);
+                }
+                self.peek_pinned = None;
+            } else {
+                // First click: pin peek dialogue with full content.
+                self.peek_pinned = Some(cell_idx);
+            }
+            return;
+        }
+
+        // Empty transcript space — dismiss peek.
+        self.peek_pinned = None;
     }
 
     // ── slash commands ──────────────────────────────────────────────────
@@ -1823,8 +1912,11 @@ impl App {
              model: {}  ·  /model <id> to switch\n\
              keys\n  \
              ↑/↓ · wheel · drag scrollbar   scroll the chat\n  \
-             click ▸/▾ card headers         expand/collapse thought · tool · bash\n  \
-             e (empty input)                toggle latest collapsible card\n  \
+             click card (thought/tool/turn) pin peek dialogue with full content\n  \
+             click ▸ chevron (left edge)    expand/collapse in place\n  \
+             e / p (empty input)            expand peeked · pin-peek latest\n  \
+             esc                            close peek (then cancel / clear)\n  \
+             right-click card               pin peek\n  \
              click in input                 place caret where you click\n  \
              Ctrl+A / Ctrl+C / Ctrl+V / Ctrl+X   select-all · copy · paste · cut\n  \
              Ctrl+P/Ctrl+N  prompt history    (also Alt+↑/↓)\n  \

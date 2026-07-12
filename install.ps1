@@ -126,10 +126,33 @@ if (-not (Test-Path $built)) { throw "missing release binary (meta.exe / muse.ex
 # ── install binary ────────────────────────────────────────────────────────
 $destDir = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+# Primary command is always `meta` (not the model name). `muse` is a legacy alias only.
+function Install-BinarySafe([string]$Source, [string]$Target) {
+    try {
+        Copy-Item -Force $Source $Target -ErrorAction Stop
+        return $true
+    } catch {
+        # Binary locked by a running TUI — swap via rename so `meta` still updates.
+        $bak = "$Target.old"
+        try {
+            if (Test-Path $bak) { Remove-Item -Force $bak -ErrorAction SilentlyContinue }
+            if (Test-Path $Target) { Rename-Item -Force $Target (Split-Path $bak -Leaf) -ErrorAction Stop }
+            Copy-Item -Force $Source $Target -ErrorAction Stop
+            Remove-Item -Force $bak -ErrorAction SilentlyContinue
+            return $true
+        } catch {
+            Write-Warn "Could not replace $Target (is meta still running?). Close it and re-run install."
+            return $false
+        }
+    }
+}
 $dest = Join-Path $destDir "meta.exe"
-Copy-Item -Force $built $dest
-# alias for older muscle memory / docs
-Copy-Item -Force $built (Join-Path $destDir "muse.exe")
+$museAlias = Join-Path $destDir "muse.exe"
+if (-not (Install-BinarySafe $built $dest)) {
+    throw "Failed to install primary binary: $dest — quit any running meta session and re-run."
+}
+# Optional alias only — always prefer `meta`
+[void](Install-BinarySafe $built $museAlias)
 $env:Path = "$destDir;$env:Path"
 
 # Persist User PATH

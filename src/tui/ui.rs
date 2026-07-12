@@ -656,9 +656,9 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             if !*expanded {
                 head.push(Span::styled(
                     if lines_n > 0 {
-                        format!("  ·  {lines_n} lines · hover peek · click ▸")
+                        format!("  ·  {lines_n} lines · click to peek · ▸ expands")
                     } else {
-                        "  ·  hover peek · click ▸".to_string()
+                        "  ·  click to peek · ▸ expands".to_string()
                     },
                     Style::default().fg(theme::FAINT),
                 ));
@@ -841,7 +841,7 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                     theme::style_turn_chip(*interrupted),
                 ),
                 Span::styled(
-                    "  ·  hover for details".to_string(),
+                    "  ·  click to peek".to_string(),
                     Style::default().fg(theme::FAINT),
                 ),
             ]));
@@ -878,9 +878,12 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
     }
 }
 
-/// Grok-style floating dialogue: full thought / tool / turn content on hover.
+/// Floating dialogue: full thought / tool / turn content.
+///
+/// Uses click-pinned peek first (always works). Free hover only when the
+/// terminal emits all-motion mouse events (we enable CSI ?1003h for that).
 fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
-    let Some(idx) = app.hover_cell else { return };
+    let Some(idx) = app.active_peek_cell() else { return };
     let Some(cell) = app.cells.get(idx) else { return };
     if !cell.is_peekable() {
         return;
@@ -891,6 +894,7 @@ fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
     }
     let Some(title) = cell.peek_title() else { return };
     let body = cell.peek_body().unwrap_or_default();
+    let pinned = app.peek_pinned == Some(idx);
 
     let max_w = (area.width.saturating_mul(7) / 10).clamp(40, 96);
     let max_h = (area.height.saturating_mul(6) / 10).clamp(8, 28);
@@ -900,14 +904,27 @@ fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
-    // Anchor near the mouse, prefer below-right; flip to stay on-screen.
-    let mut x = app.mouse_col.saturating_add(2);
-    let mut y = app.mouse_row.saturating_add(1);
+    // Pinned: center-ish; hover: anchor near mouse.
+    let (mut x, mut y) = if pinned {
+        (
+            area.width.saturating_sub(w) / 2,
+            area.height.saturating_sub(h) / 3,
+        )
+    } else {
+        (
+            app.mouse_col.saturating_add(2),
+            app.mouse_row.saturating_add(1),
+        )
+    };
     if x + w > area.width {
         x = area.width.saturating_sub(w);
     }
     if y + h > area.height {
-        y = app.mouse_row.saturating_sub(h).max(0);
+        y = if pinned {
+            area.height.saturating_sub(h)
+        } else {
+            app.mouse_row.saturating_sub(h)
+        };
     }
     if y + h > area.height {
         y = area.height.saturating_sub(h);
@@ -945,7 +962,12 @@ fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ))
         .title_bottom(Span::styled(
-            "  hover to keep · click ▸ expands in place  ",
+            if pinned {
+                "  esc close · click again / e expand in place · click ▸ on chevron  "
+            } else {
+                "  click card to pin · esc close · e expand  "
+            }
+            .to_string(),
             Style::default().fg(theme::FAINT),
         ));
     let inner = block.inner(rect);
@@ -1063,7 +1085,7 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  hover peek cards  ·  click ▸ expand  ·  drag scrollbar  ·  Shift+Tab  ·  Esc"
+            "/help  ·  click card to peek  ·  ▸ expands  ·  drag scrollbar  ·  Shift+Tab  ·  Esc"
                 .to_string(),
             theme::style_faint(),
         ),

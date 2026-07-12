@@ -5,11 +5,11 @@
 > Not affiliated with Meta Platforms, Inc. · Community project · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
 ```text
-meta          # Meta-blue interactive TUI
-muse          # alias (same binary)
+meta          # primary command — Meta-blue interactive TUI
+muse          # optional legacy alias (same binary; prefer `meta`)
 ```
 
-**v0.5.5** — Duration chips on every thought/tool/turn, fully collapsed cards by default, **hover peek dialogue** for full content, fixed scrollbar drag, design-eng motion, model-agnostic labels, zero-setup ecosystem.
+**v0.5.6** — **`meta` is the primary command.** Duration chips, fully collapsed cards, **click-to-peek** dialogue (hover when the terminal supports it), reliable scrollbar drag, design-eng motion, model-agnostic labels.
 
 ---
 
@@ -158,9 +158,11 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 | `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
 | `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
 | Wheel · drag scrollbar | Scroll transcript |
-| Hover thought / tool / turn | Peek full content in a floating dialogue |
-| Click `▸`/`▾` card header | Expand / collapse thought · tool · bash in place |
-| `e` (empty input) | Toggle latest collapsible card |
+| Click thought / tool / turn card | **Pin peek** dialogue with full content |
+| Click `▸` chevron (left edge) | Expand / collapse in place |
+| Hover card (if terminal supports free mouse-move) | Temporary peek |
+| `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest |
+| `Esc` | Close peek first |
 | Drag right-edge scrollbar | Jump through history (wide hit target) |
 | Click in input | **Place caret** where you click |
 | `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Select all · copy · paste · cut (system clipboard) |
