@@ -1,11 +1,19 @@
 //! Honest shell selection — never claim "bash" when running cmd.exe.
 
 use crate::error::{MuseError, Result};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::mpsc;
+use std::process::{Command, Stdio};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+fn read_all(pipe: Option<impl Read>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut p) = pipe {
+        let _ = p.read_to_end(&mut buf);
+    }
+    buf
+}
 
 #[derive(Debug, Clone)]
 pub struct ShellBackend {
@@ -24,12 +32,6 @@ pub enum ShellKind {
     PowerShell,
     /// Last-resort cmd.exe.
     Cmd,
-}
-
-impl ShellKind {
-    pub fn is_unix_like(self) -> bool {
-        matches!(self, Self::Bash)
-    }
 }
 
 /// Detect the best available shell once per process.
@@ -155,43 +157,67 @@ pub fn run_in_shell(
     cwd: &Path,
     timeout_ms: u64,
 ) -> Result<String> {
-    let command = command.to_string();
-    let cwd = cwd.to_path_buf();
-    let program = backend.program.clone();
     let kind = backend.kind;
     let label = backend.label.clone();
 
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut cmd = Command::new(&program);
-        cmd.current_dir(&cwd);
-        match kind {
-            ShellKind::Bash => {
-                cmd.args(["-lc", &command]);
+    let mut cmd = Command::new(&backend.program);
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    match kind {
+        ShellKind::Bash => {
+            cmd.args(["-lc", command]);
+        }
+        ShellKind::Pwsh | ShellKind::PowerShell => {
+            cmd.args(["-NoProfile", "-NonInteractive", "-Command", command]);
+        }
+        ShellKind::Cmd => {
+            cmd.args(["/C", command]);
+        }
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| MuseError::Tool(format!("command failed to start: {e}")))?;
+
+    // Drain pipes on threads so a chatty child can't deadlock on a full pipe.
+    let out_pipe = child.stdout.take();
+    let err_pipe = child.stderr.take();
+    let out_h = thread::spawn(move || read_all(out_pipe));
+    let err_h = thread::spawn(move || read_all(err_pipe));
+
+    // Poll for exit; on deadline, kill the process so cancels/timeouts don't
+    // leave orphaned shells running.
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    // Reap reader threads before erroring.
+                    let _ = out_h.join();
+                    let _ = err_h.join();
+                    return Err(MuseError::Tool(format!(
+                        "command timed out after {timeout_ms}ms (process killed)"
+                    )));
+                }
+                thread::sleep(Duration::from_millis(30));
             }
-            ShellKind::Pwsh | ShellKind::PowerShell => {
-                cmd.args([
-                    "-NoProfile",
-                    "-NonInteractive",
-                    "-Command",
-                    &command,
-                ]);
-            }
-            ShellKind::Cmd => {
-                cmd.args(["/C", &command]);
+            Err(e) => {
+                let _ = child.kill();
+                return Err(MuseError::Tool(format!("command wait failed: {e}")));
             }
         }
-        let _ = tx.send(cmd.output());
-    });
+    };
 
-    let result = rx
-        .recv_timeout(Duration::from_millis(timeout_ms))
-        .map_err(|_| MuseError::Tool(format!("command timed out after {timeout_ms}ms")))?
-        .map_err(|e| MuseError::Tool(format!("command failed: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    let code = result.status.code().unwrap_or(-1);
+    let stdout_bytes = out_h.join().unwrap_or_default();
+    let stderr_bytes = err_h.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    let code = status.code().unwrap_or(-1);
 
     let mut out = format!("shell: {label}\nexit_code: {code}\n");
     if !stdout.is_empty() {

@@ -10,13 +10,9 @@ readme = "README.md"
 keywords = ["meta", "muse", "ai", "cli", "agent"]
 categories = ["command-line-utilities", "development-tools"]
 
+# Single binary; install scripts copy meta(.exe) → muse(.exe) for the alias.
 [[bin]]
 name = "meta"
-path = "src/main.rs"
-
-# Back-compat shim: same binary as `meta`
-[[bin]]
-name = "muse"
 path = "src/main.rs"
 
 [dependencies]

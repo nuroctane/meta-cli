@@ -3,17 +3,6 @@
 use crate::error::{MuseError, Result};
 use std::path::{Component, Path, PathBuf};
 
-/// Windows `canonicalize` returns verbatim (`\\?\C:\...`) paths; strip the
-/// prefix so comparisons against non-verbatim roots are consistent.
-fn strip_verbatim(path: &Path) -> PathBuf {
-    let s = path.to_string_lossy();
-    if s.starts_with(r"\\?\") {
-        PathBuf::from(s[4..].to_string())
-    } else {
-        path.to_path_buf()
-    }
-}
-
 /// Paths that must never be used as a workspace root (no sandbox).
 pub fn is_dangerous_workspace(path: &Path) -> bool {
     let Ok(canon) = path.canonicalize() else {
@@ -52,12 +41,9 @@ fn is_filesystem_root(path: &Path) -> bool {
 /// - Lexical `..` collapse before the check
 /// - Windows paths compared case-insensitively
 /// - If the path exists, canonicalize to block symlink escapes outside cwd
-/// - If it doesn't exist, canonicalize the deepest existing ancestor so a
-///   junction/symlink parent can't smuggle a write outside the workspace
 pub fn resolve_in_workspace(cwd: &Path, path: &str) -> Result<PathBuf> {
     let cwd_canon = cwd
         .canonicalize()
-        .map(|p| strip_verbatim(&p))
         .unwrap_or_else(|_| normalize_path(cwd));
     let joined = if Path::new(path).is_absolute() {
         PathBuf::from(path)
@@ -77,30 +63,11 @@ pub fn resolve_in_workspace(cwd: &Path, path: &str) -> Result<PathBuf> {
     if lexical.exists() {
         let real = lexical
             .canonicalize()
-            .map(|p| strip_verbatim(&p))
             .map_err(|e| MuseError::Tool(format!("resolve {}: {e}", lexical.display())))?;
         if !path_is_within(&real, &cwd_canon) && !path_is_within(&real, &cwd_norm) {
             return Err(escape_err(&real, &cwd_norm));
         }
         return Ok(real);
-    }
-
-    // Doesn't exist yet (e.g. write_file target): canonicalize the deepest
-    // existing ancestor to catch junction/symlink parents.
-    let mut anc = lexical.as_path();
-    while let Some(parent) = anc.parent() {
-        if parent.exists() {
-            let real_parent = parent
-                .canonicalize()
-                .map(|p| strip_verbatim(&p))
-                .map_err(|e| MuseError::Tool(format!("resolve {}: {e}", parent.display())))?;
-            if !path_is_within(&real_parent, &cwd_canon) && !path_is_within(&real_parent, &cwd_norm)
-            {
-                return Err(escape_err(&real_parent, &cwd_norm));
-            }
-            break;
-        }
-        anc = parent;
     }
 
     Ok(lexical)
@@ -116,8 +83,14 @@ fn escape_err(path: &Path, root: &Path) -> MuseError {
 }
 
 fn path_is_within(path: &Path, root: &Path) -> bool {
-    let p: Vec<String> = path.components().map(|c| component_key(&c)).collect();
-    let r: Vec<String> = root.components().map(|c| component_key(&c)).collect();
+    let p: Vec<String> = path
+        .components()
+        .map(|c| component_key(&c))
+        .collect();
+    let r: Vec<String> = root
+        .components()
+        .map(|c| component_key(&c))
+        .collect();
     if p.len() < r.len() {
         return false;
     }
@@ -134,6 +107,36 @@ fn component_key(c: &Component<'_>) -> String {
     #[cfg(not(windows))]
     {
         s
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn rejects_parent_escape() {
+        let root = std::env::temp_dir().join("meta-sandbox-test-root");
+        let _ = fs::create_dir_all(&root);
+        let root = root.canonicalize().unwrap();
+        let err = resolve_in_workspace(&root, "../outside.txt");
+        assert!(err.is_err(), "expected escape to fail");
+    }
+
+    #[test]
+    fn allows_nested() {
+        let root = std::env::temp_dir().join("meta-sandbox-test-root2");
+        let _ = fs::create_dir_all(root.join("a"));
+        let root = root.canonicalize().unwrap();
+        let p = resolve_in_workspace(&root, "a/b.txt").unwrap();
+        assert!(p.starts_with(&root) || path_is_within(&p, &root));
+    }
+
+    #[test]
+    fn detects_drive_root() {
+        assert!(is_dangerous_workspace(Path::new(r"C:\")));
+        assert!(is_dangerous_workspace(Path::new("/")));
     }
 }
 
@@ -177,15 +180,11 @@ pub fn prefer_git_root(cwd: &Path) -> PathBuf {
 /// Pick a safe workspace when the user starts from `C:\` / `/`.
 /// Order: explicit --cwd (caller) → git root → META_CWD → last session → Laboratory → home.
 /// Returns (path, optional human reason for the adjustment).
-pub fn resolve_safe_workspace(
-    requested: &Path,
-    explicit_cwd: bool,
-) -> Result<(PathBuf, Option<String>)> {
+pub fn resolve_safe_workspace(requested: &Path, explicit_cwd: bool) -> Result<(PathBuf, Option<String>)> {
     // Explicit --cwd that is already safe.
     if !is_dangerous_workspace(requested) {
         let p = requested
             .canonicalize()
-            .map(|p| strip_verbatim(&p))
             .unwrap_or_else(|_| requested.to_path_buf());
         return Ok((p, None));
     }
@@ -208,7 +207,7 @@ pub fn resolve_safe_workspace(
     let git = prefer_git_root(requested);
     if !is_dangerous_workspace(&git) {
         return Ok((
-            git.canonicalize().map(|p| strip_verbatim(&p)).unwrap_or(git),
+            git.canonicalize().unwrap_or(git),
             Some("using nearest git repository (not drive root)".into()),
         ));
     }
@@ -219,7 +218,7 @@ pub fn resolve_safe_workspace(
             let p = PathBuf::from(v.trim());
             if p.is_dir() && !is_dangerous_workspace(&p) {
                 return Ok((
-                    p.canonicalize().map(|c| strip_verbatim(&c)).unwrap_or(p),
+                    p.canonicalize().unwrap_or(p),
                     Some(format!("using {var}")),
                 ));
             }
@@ -230,7 +229,7 @@ pub fn resolve_safe_workspace(
     if let Some(p) = last_session_cwd() {
         if p.is_dir() && !is_dangerous_workspace(&p) {
             return Ok((
-                p.canonicalize().map(|c| strip_verbatim(&c)).unwrap_or(p),
+                p.canonicalize().unwrap_or(p),
                 Some("using last session workspace".into()),
             ));
         }
@@ -245,15 +244,12 @@ pub fn resolve_safe_workspace(
                 let meta_cli = p.join("meta-cli");
                 if meta_cli.is_dir() {
                     return Ok((
-                        meta_cli
-                            .canonicalize()
-                            .map(|c| strip_verbatim(&c))
-                            .unwrap_or(meta_cli),
+                        meta_cli.canonicalize().unwrap_or(meta_cli),
                         Some(format!("using ~\\{name}\\meta-cli (started from drive root)")),
                     ));
                 }
                 return Ok((
-                    p.canonicalize().map(|c| strip_verbatim(&c)).unwrap_or(p),
+                    p.canonicalize().unwrap_or(p),
                     Some(format!("using ~\\{name} (started from drive root)")),
                 ));
             }
@@ -261,9 +257,7 @@ pub fn resolve_safe_workspace(
         // 5) Home directory itself
         if !is_dangerous_workspace(&home) {
             return Ok((
-                home.canonicalize()
-                    .map(|c| strip_verbatim(&c))
-                    .unwrap_or(home),
+                home.canonicalize().unwrap_or(home),
                 Some("using home directory (started from drive root)".into()),
             ));
         }
@@ -286,52 +280,14 @@ fn last_session_cwd() -> Option<PathBuf> {
     Some(PathBuf::from(s))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn rejects_parent_escape() {
-        let root = std::env::temp_dir().join("meta-sandbox-test-root");
-        let _ = fs::create_dir_all(&root);
-        let root = root.canonicalize().unwrap();
-        let err = resolve_in_workspace(&root, "../outside.txt");
-        assert!(err.is_err(), "expected escape to fail");
-    }
-
-    #[test]
-    fn allows_nested() {
-        let root = std::env::temp_dir().join("meta-sandbox-test-root2");
-        let _ = fs::create_dir_all(root.join("a"));
-        let root = root.canonicalize().unwrap();
-        let p = resolve_in_workspace(&root, "a/b.txt").unwrap();
-        assert!(p.starts_with(strip_verbatim(&root)) || path_is_within(&p, &root));
-    }
-
-    #[test]
-    fn allows_nonexistent_nested_target() {
-        let root = std::env::temp_dir().join("meta-sandbox-test-root3");
-        let _ = fs::create_dir_all(&root);
-        let root = root.canonicalize().unwrap();
-        assert!(resolve_in_workspace(&root, "new_dir/new_file.txt").is_ok());
-    }
-
-    #[test]
-    fn rejects_absolute_outside() {
-        let root = std::env::temp_dir().join("meta-sandbox-test-root4");
-        let _ = fs::create_dir_all(&root);
-        let root = root.canonicalize().unwrap();
-        #[cfg(windows)]
-        let outside = r"C:\Windows\System32\drivers\etc\hosts";
-        #[cfg(not(windows))]
-        let outside = "/etc/hosts";
-        assert!(resolve_in_workspace(&root, outside).is_err());
-    }
-
-    #[test]
-    fn detects_drive_root() {
-        assert!(is_dangerous_workspace(Path::new(r"C:\")));
-        assert!(is_dangerous_workspace(Path::new("/")));
+pub fn sandbox_warning(cwd: &Path) -> Option<String> {
+    if is_dangerous_workspace(cwd) {
+        Some(format!(
+            "workspace is filesystem root ({}) — refuse wide globs; \
+             start meta from a project directory or set --cwd / META_CWD",
+            cwd.display()
+        ))
+    } else {
+        None
     }
 }

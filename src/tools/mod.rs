@@ -22,15 +22,12 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub use sandbox::{
-    is_dangerous_workspace, prefer_git_root, resolve_safe_workspace, sandbox_warning,
-};
+pub use sandbox::{is_dangerous_workspace, resolve_safe_workspace};
 pub use shell::detect_shell;
 pub use submit_plan::{SharedPlan, SubmitPlan};
 
 pub struct ToolContext {
     pub cwd: PathBuf,
-    pub auto_approve: bool,
 }
 
 pub trait Tool: Send + Sync {
@@ -56,13 +53,6 @@ impl Default for ToolHost {
 }
 
 impl ToolHost {
-    pub fn with_todos(todos: SharedTodos) -> Self {
-        Self {
-            todos,
-            plan: Arc::new(Mutex::new(None)),
-        }
-    }
-
     fn boxed_tools(&self) -> Vec<Box<dyn Tool>> {
         vec![
             Box::new(read_file::ReadFile),
@@ -158,15 +148,6 @@ impl Tool for AgentStub {
     fn execute(&self, _args: &Value, _ctx: &ToolContext) -> Result<String> {
         Err(MuseError::Tool("agent is runtime-handled".into()))
     }
-}
-
-// Back-compat free functions used by older call sites
-pub fn tool_defs() -> Vec<ToolDef> {
-    ToolHost::default().tool_defs()
-}
-
-pub fn dispatch(name: &str, arguments: &str, ctx: &ToolContext) -> Result<String> {
-    ToolHost::default().dispatch(name, arguments, ctx)
 }
 
 pub(crate) fn resolve_path(cwd: &PathBuf, path: &str) -> Result<PathBuf> {

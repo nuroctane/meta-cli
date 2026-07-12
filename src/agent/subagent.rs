@@ -54,8 +54,8 @@ pub async fn run_subagent(
         is_subagent: true,
     });
 
-    let mut session = Session::new(&cfg.model, &cwd.display().to_string());
-    let mut usage = UsageTracker::new(session.id.clone(), cfg.model.clone(), cwd);
+    let session = Session::new(&cfg.model, &cwd.display().to_string());
+    let usage = UsageTracker::new(session.id.clone(), cfg.model.clone(), cwd);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
     let cancel = cancel.clone();

@@ -104,10 +104,6 @@ pub fn style_assistant() -> Style {
     Style::default().fg(FG)
 }
 
-pub fn style_tool() -> Style {
-    Style::default().fg(META_BLUE)
-}
-
 pub fn style_success() -> Style {
     Style::default().fg(SUCCESS)
 }

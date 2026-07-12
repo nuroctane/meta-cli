@@ -73,6 +73,7 @@ impl TodoList {
         s
     }
 
+    #[allow(dead_code)] // kept for future statusline use
     pub fn summary(&self) -> String {
         let total = self.items.len();
         let done = self
@@ -103,6 +104,7 @@ impl TodoList {
         }
     }
 
+    #[allow(dead_code)] // kept for future persistence
     pub fn save(&self, path: &PathBuf) {
         if let Ok(text) = serde_json::to_string_pretty(self) {
             let _ = std::fs::create_dir_all(path.parent().unwrap_or(path));
@@ -110,6 +112,7 @@ impl TodoList {
         }
     }
 
+    #[allow(dead_code)] // kept for future persistence
     pub fn load(path: &PathBuf) -> Self {
         std::fs::read_to_string(path)
             .ok()

@@ -9,9 +9,8 @@ pub mod todos;
 
 #[allow(unused_imports)]
 pub use r#loop::{
-    compact_session, spawn_turn, AgentEvent, AgentRunner, ApprovalDecision, MUTATING_TOOLS,
-    READ_ONLY_TOOLS,
+    compact_session, spawn_turn, AgentEvent, AgentRunner, ApprovalDecision, READ_ONLY_TOOLS,
 };
 pub use mode::{PermissionMode, SharedMode};
 pub use session::Session;
-pub use todos::{shared_empty, SharedTodos, TodoList};
+pub use todos::{shared_empty, SharedTodos};

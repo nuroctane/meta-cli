@@ -68,15 +68,6 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "submit_plan",
 ];
 
-pub const MUTATING_TOOLS: &[&str] = &[
-    "write_file",
-    "edit_file",
-    "multi_edit",
-    "apply_patch",
-    "bash",
-    "memory", // append path; read is handled as read-only via args
-];
-
 pub struct AgentRunner {
     pub client: MetaClient,
     pub config: Config,
@@ -295,7 +286,6 @@ impl AgentRunner {
                                 &args,
                                 &ToolContext {
                                     cwd,
-                                    auto_approve: true,
                                 },
                             );
                             (call_id, name, res)
@@ -303,14 +293,27 @@ impl AgentRunner {
                     }
 
                     // Collect in submission order (handles order matches meta)
-                    for (handle, (id, call_id, name)) in handles.into_iter().zip(meta.into_iter()) {
+                    let batch_ids: Vec<String> =
+                        batch.iter().map(|c| c.call_id.clone()).collect();
+                    for (bi, (handle, (id, call_id, name))) in
+                        handles.into_iter().zip(meta.into_iter()).enumerate()
+                    {
                         let (_, _, res) = tokio::select! {
                             _ = cancel.cancelled() => {
-                                // Fill remaining + this as interrupted
-                                session.input_items.push(function_call_output_item(
-                                    &call_id,
-                                    "[interrupted by user]",
-                                ));
+                                // Pair this + every remaining call (rest of the batch and
+                                // post-batch) so no function_call is left without an output.
+                                for cid in &batch_ids[bi..] {
+                                    session.input_items.push(function_call_output_item(
+                                        cid,
+                                        "[interrupted by user]",
+                                    ));
+                                }
+                                for c in &calls[batch_end..] {
+                                    session.input_items.push(function_call_output_item(
+                                        &c.call_id,
+                                        "[interrupted by user]",
+                                    ));
+                                }
                                 // Note: other in-flight blocking tasks keep running until drop
                                 let _ = session.save();
                                 return Err(MuseError::Interrupted);
@@ -390,10 +393,14 @@ impl AgentRunner {
                         match run_agent_tool(self, call, cancel, tx).await {
                             Ok(s) => (s, true),
                             Err(MuseError::Interrupted) => {
-                                session.input_items.push(function_call_output_item(
-                                    &call.call_id,
-                                    "[interrupted by user]",
-                                ));
+                                // Pair this + all remaining calls before unwinding.
+                                for c in &calls[idx..] {
+                                    session.input_items.push(function_call_output_item(
+                                        &c.call_id,
+                                        "[interrupted by user]",
+                                    ));
+                                }
+                                let _ = session.save();
                                 return Err(MuseError::Interrupted);
                             }
                             Err(e) => (format!("error: {e}"), false),
@@ -413,7 +420,6 @@ impl AgentRunner {
                             &args,
                             &ToolContext {
                                 cwd,
-                                auto_approve: true,
                             },
                         )
                     });
