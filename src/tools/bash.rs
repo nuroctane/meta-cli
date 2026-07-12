@@ -1,12 +1,16 @@
+use super::sandbox;
+use super::shell::{detect_shell, run_in_shell, ShellBackend};
 use super::{arg_str, arg_u64, Tool, ToolContext};
 use crate::error::{MuseError, Result};
 use serde_json::Value;
-use std::process::Command;
-use std::sync::mpsc;
-use std::thread;
-use std::time::Duration;
+use std::sync::OnceLock;
 
 pub struct Bash;
+
+fn backend() -> &'static ShellBackend {
+    static B: OnceLock<ShellBackend> = OnceLock::new();
+    B.get_or_init(detect_shell)
+}
 
 impl Tool for Bash {
     fn name(&self) -> &str {
@@ -14,7 +18,10 @@ impl Tool for Bash {
     }
 
     fn description(&self) -> &str {
-        "Run a shell command in the workspace cwd. Prefer non-interactive commands. Captures stdout/stderr."
+        // Honest description — name kept as `bash` for model familiarity.
+        "Run a shell command in the workspace cwd. \
+         On Windows prefers Git Bash, then pwsh/PowerShell, then cmd.exe (reported in output). \
+         Prefer non-interactive commands. Captures stdout/stderr."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -29,74 +36,35 @@ impl Tool for Bash {
     }
 
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String> {
+        if sandbox::is_dangerous_workspace(&ctx.cwd) {
+            return Err(MuseError::Tool(
+                "refused: workspace is filesystem root — start muse from a project directory \
+                 (or --cwd) before running shell commands"
+                    .into(),
+            ));
+        }
+
         let command = arg_str(args, "command")?;
         let timeout_ms = arg_u64(args, "timeout_ms").unwrap_or(120_000);
 
-        if !ctx.auto_approve {
-            let lower = command.to_lowercase();
-            let dangerous = ["rm -rf", "del /f", "format ", "shutdown", "mkfs"];
-            if dangerous.iter().any(|d| lower.contains(d)) {
-                return Err(MuseError::Tool(format!(
-                    "refused potentially destructive command without --yes: {command}"
-                )));
-            }
+        let lower = command.to_lowercase();
+        let dangerous = [
+            "rm -rf /",
+            "rm -rf ~",
+            "del /f /s /q",
+            "format ",
+            "shutdown",
+            "mkfs",
+            "rd /s /q c:",
+            "remove-item -recurse -force c:",
+        ];
+        if dangerous.iter().any(|d| lower.contains(d)) {
+            return Err(MuseError::Tool(format!(
+                "refused potentially destructive command: {command}"
+            )));
         }
 
-        run_command(&command, &ctx.cwd, timeout_ms)
-    }
-}
-
-fn run_command(command: &str, cwd: &std::path::Path, timeout_ms: u64) -> Result<String> {
-    let command = command.to_string();
-    let cwd = cwd.to_path_buf();
-
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        #[cfg(windows)]
-        let result = Command::new("cmd")
-            .args(["/C", &command])
-            .current_dir(&cwd)
-            .output();
-
-        #[cfg(not(windows))]
-        let result = Command::new("sh")
-            .args(["-c", &command])
-            .current_dir(&cwd)
-            .output();
-
-        let _ = tx.send(result);
-    });
-
-    let result = rx
-        .recv_timeout(Duration::from_millis(timeout_ms))
-        .map_err(|_| MuseError::Tool(format!("command timed out after {timeout_ms}ms")))?
-        .map_err(|e| MuseError::Tool(format!("command failed: {e}")))?;
-
-    let stdout = String::from_utf8_lossy(&result.stdout);
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    let code = result.status.code().unwrap_or(-1);
-
-    let mut out = format!("exit_code: {code}\n");
-    if !stdout.is_empty() {
-        out.push_str("stdout:\n");
-        out.push_str(&truncate(&stdout, 80_000));
-        out.push('\n');
-    }
-    if !stderr.is_empty() {
-        out.push_str("stderr:\n");
-        out.push_str(&truncate(&stderr, 40_000));
-        out.push('\n');
-    }
-    if stdout.is_empty() && stderr.is_empty() {
-        out.push_str("(no output)\n");
-    }
-    Ok(out)
-}
-
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…\n[truncated {} chars]", &s[..max], s.len())
+        let b = backend();
+        run_in_shell(b, &command, &ctx.cwd, timeout_ms)
     }
 }

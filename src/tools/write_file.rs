@@ -29,7 +29,7 @@ impl Tool for WriteFile {
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String> {
         let path = arg_str(args, "path")?;
         let contents = arg_str(args, "contents")?;
-        let full = resolve_path(&ctx.cwd, &path);
+        let full = resolve_path(&ctx.cwd, &path)?;
         if let Some(parent) = full.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| MuseError::Tool(format!("mkdir {}: {e}", parent.display())))?;

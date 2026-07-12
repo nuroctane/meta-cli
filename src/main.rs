@@ -11,7 +11,7 @@ mod tui;
 mod usage;
 
 use agent::session::{print_sessions, Session};
-use agent::{AgentEvent, AgentRunner, ApprovalDecision};
+use agent::{AgentEvent, AgentRunner, ApprovalDecision, PermissionMode, SharedMode};
 use api::MetaClient;
 use auth::{auth_status, login_interactive, logout, resolve_api_key, save_api_key};
 use clap::Parser;
@@ -98,11 +98,28 @@ async fn real_main() -> Result<()> {
         cfg.max_turns = t;
     }
 
-    let cwd = cli
+    let mut cwd = cli
         .cwd
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or(std::env::current_dir()?);
+
+    // If launched from drive root, prefer nearest git work tree (addresses C:\ sandbox risk).
+    let adjusted = tools::prefer_git_root(&cwd);
+    if adjusted != cwd {
+        theme::print_info(&format!(
+            "workspace adjusted to git root: {}",
+            adjusted.display()
+        ));
+        cwd = adjusted;
+    }
+    if tools::is_dangerous_workspace(&cwd) {
+        return Err(error::MuseError::Other(format!(
+            "refusing to run with workspace at filesystem root ({})\n\
+             Start muse from a project directory, or pass --cwd path\\to\\repo",
+            cwd.display()
+        )));
+    }
     let cwd_str = cwd.display().to_string();
 
     let client = MetaClient::new(&cfg.base_url, &api_key)?;
@@ -142,18 +159,48 @@ async fn real_main() -> Result<()> {
     ade::write_ade_manifest(&session.id, &cfg.model, &cwd_str, usage.session_usage());
     let _ = session.save();
 
+    let start_mode = if cli.yes {
+        PermissionMode::Auto
+    } else if let Some(m) = &cli.mode {
+        PermissionMode::parse(m).unwrap_or(PermissionMode::Manual)
+    } else {
+        PermissionMode::Manual
+    };
+    let permission_mode = SharedMode::new(start_mode);
+
     match &cli.command {
         Some(Commands::Run { prompt, yes }) => {
             let prompt = prompt.join(" ");
-            let auto = *yes || cli.yes;
-            run_headless(client, cfg, cwd, session, usage, &prompt, auto, cli.verbose).await?;
+            if *yes {
+                permission_mode.set(PermissionMode::Auto);
+            }
+            run_headless(
+                client,
+                cfg,
+                cwd,
+                session,
+                usage,
+                &prompt,
+                permission_mode,
+                cli.verbose,
+            )
+            .await?;
         }
         None => {
             ade::set_terminal_title(&format!(
                 "muse · {}",
                 &session.id[..8.min(session.id.len())]
             ));
-            tui::run_tui(client, cfg, cwd, cli.yes, session, usage, cli.prompt.clone()).await?;
+            tui::run_tui(
+                client,
+                cfg,
+                cwd,
+                permission_mode,
+                session,
+                usage,
+                cli.prompt.clone(),
+            )
+            .await?;
         }
         Some(Commands::Auth { .. })
         | Some(Commands::Usage)
@@ -172,14 +219,14 @@ async fn run_headless(
     session: Session,
     usage: UsageTracker,
     prompt: &str,
-    auto_approve: bool,
+    permission_mode: SharedMode,
     verbose: bool,
 ) -> Result<()> {
     let runner = Arc::new(AgentRunner {
         client,
         config: cfg,
         cwd,
-        auto_approve,
+        permission_mode,
         verbose,
         approved_tools: Arc::new(Mutex::new(HashSet::new())),
     });

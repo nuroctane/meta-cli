@@ -28,7 +28,7 @@ impl Tool for ReadFile {
 
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String> {
         let path = arg_str(args, "path")?;
-        let full = resolve_path(&ctx.cwd, &path);
+        let full = resolve_path(&ctx.cwd, &path)?;
         if !full.exists() {
             return Err(MuseError::Tool(format!("file not found: {}", full.display())));
         }

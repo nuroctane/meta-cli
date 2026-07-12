@@ -334,8 +334,19 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
-            "/help  ·  Enter send  ·  \\+Enter newline  ·  Esc interrupt".to_string(),
+            "/help  ·  Shift+Tab modes  ·  Enter send  ·  Esc cancel".to_string(),
             theme::style_faint(),
+        ),
+    ]));
+    out.push(Line::from(vec![
+        Span::raw("  ".to_string()),
+        Span::styled(
+            format!(
+                "mode  {}  —  {}",
+                app.permission_mode.get().badge(),
+                app.permission_mode.get().description()
+            ),
+            Style::default().fg(theme::META_BLUE_SKY),
         ),
     ]));
     out.push(Line::default());
@@ -344,31 +355,46 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
 // ── busy line ──────────────────────────────────────────────────────────────
 fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
     let tick = app.spinner_epoch.elapsed();
-    let spin = theme::spinner_frame(tick);
     let secs = app.turn_started.elapsed().as_secs();
-    let mut spans = vec![
-        Span::raw(" ".to_string()),
-        Span::styled(
+    let mut spans = vec![Span::raw(" ".to_string())];
+
+    if app.cancelling {
+        // Distinct "stopping" chrome — not a happy thinking spinner.
+        spans.push(Span::styled(
+            "◼ ".to_string(),
+            Style::default().fg(theme::WARN).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!("cancelling…  {secs}s  "),
+            Style::default().fg(theme::WARN),
+        ));
+        spans.push(Span::styled(
+            "waiting for in-flight work".to_string(),
+            theme::style_faint(),
+        ));
+    } else {
+        let spin = theme::spinner_frame(tick);
+        spans.push(Span::styled(
             spin.to_string(),
             Style::default()
                 .fg(theme::META_BLUE)
                 .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
+        ));
+        spans.push(Span::styled(
             format!("  {}  ", capitalize(&app.status)),
             Style::default().fg(theme::META_BLUE_SKY),
-        ),
-        Span::styled(
-            format!("{secs}s",),
-            theme::style_faint(),
-        ),
-        Span::styled("  ·  esc interrupt".to_string(), theme::style_faint()),
-    ];
-    if !app.queue.is_empty() {
-        spans.push(Span::styled(
-            format!("  ·  {} queued", app.queue.len()),
-            Style::default().fg(theme::WARN),
         ));
+        spans.push(Span::styled(format!("{secs}s"), theme::style_faint()));
+        spans.push(Span::styled(
+            "  ·  esc cancel".to_string(),
+            theme::style_faint(),
+        ));
+        if !app.queue.is_empty() {
+            spans.push(Span::styled(
+                format!("  ·  {} queued", app.queue.len()),
+                Style::default().fg(theme::WARN),
+            ));
+        }
     }
     f.render_widget(
         Paragraph::new(Line::from(spans)).style(theme::style_canvas()),
@@ -547,7 +573,9 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let tick = app.spinner_epoch.elapsed();
-    let state_dot = if app.busy {
+    let state_dot = if app.cancelling {
+        Span::styled("◼ ".to_string(), Style::default().fg(theme::WARN))
+    } else if app.busy {
         Span::styled(
             format!("{} ", theme::spinner_frame(tick)),
             Style::default().fg(theme::META_BLUE),
@@ -598,11 +626,19 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn default_right(app: &App) -> String {
+    let mode = app.permission_mode.get().label();
     format!(
-        "{}  ·  {}  ·  {} ",
+        "{}  ·  {}  ·  {}  ·  {} ",
         app.cfg.model,
+        mode,
         &app.session_id[..8.min(app.session_id.len())],
-        if app.busy { &app.status } else { "ready" }
+        if app.cancelling {
+            "cancelling"
+        } else if app.busy {
+            app.status.as_str()
+        } else {
+            "ready"
+        }
     )
 }
 

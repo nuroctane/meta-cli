@@ -1,3 +1,4 @@
+use super::mode::{PermissionMode, SharedMode};
 use super::prompt::system_instructions;
 use super::session::Session;
 use crate::api::types::{
@@ -60,17 +61,21 @@ pub enum ApprovalDecision {
     Deny,
 }
 
-/// Tools that never mutate the workspace — auto-approved.
-pub const READ_ONLY_TOOLS: &[&str] = &["read_file", "grep", "glob"];
+/// Tools that never mutate the workspace — free in manual mode; only tools in plan mode.
+pub const READ_ONLY_TOOLS: &[&str] = &["read_file", "grep", "glob", "web_fetch"];
+
+/// Tools that mutate the workspace or run arbitrary shell.
+pub const MUTATING_TOOLS: &[&str] = &["write_file", "edit_file", "apply_patch", "bash"];
 
 pub struct AgentRunner {
     pub client: MetaClient,
     pub config: Config,
     pub cwd: PathBuf,
-    pub auto_approve: bool,
+    /// Shared with the TUI — toggles apply mid-turn (Shift+Tab / /mode).
+    pub permission_mode: SharedMode,
     #[allow(dead_code)]
     pub verbose: bool,
-    /// Tools the user approved for the whole session ("always allow").
+    /// Tools the user approved for the whole session ("always allow") in manual mode.
     pub approved_tools: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -115,7 +120,6 @@ impl AgentRunner {
         session.push_user(user_text);
         session.input_items.push(user_text_item(user_text));
 
-        let instructions = system_instructions(&self.cwd);
         let tools = tool_defs();
 
         let mut turns = 0u32;
@@ -130,13 +134,20 @@ impl AgentRunner {
                 return Err(MuseError::MaxTurns(self.config.max_turns));
             }
 
+            // Re-read permission mode every model call so Shift+Tab is live.
+            let mode_now = self.permission_mode.get();
+            let instructions = system_instructions(&self.cwd, mode_now);
+
             usage.set_state(format!("thinking (turn {turns})"));
-            let _ = tx.send(AgentEvent::Status(format!("thinking · turn {turns}")));
+            let _ = tx.send(AgentEvent::Status(format!(
+                "thinking · turn {turns} · {}",
+                mode_now.label()
+            )));
 
             let req = ResponseRequest {
                 model: self.config.model.clone(),
                 input: Value::Array(session.input_items.clone()),
-                instructions: Some(instructions.clone()),
+                instructions: Some(instructions),
                 tools: Some(tools.clone()),
                 tool_choice: Some("auto".into()),
                 store: Some(false),
@@ -220,19 +231,38 @@ impl AgentRunner {
                     args: call.arguments.clone(),
                 });
 
-                // Approval gate for mutating tools.
+                // Approval gate — uses live SharedMode (mid-turn Shift+Tab applies).
+                let mode_at_gate = self.permission_mode.get();
                 let approved = self.check_approval(&call.name, &call.arguments, tx).await;
                 if !approved {
-                    let msg = "user denied this tool call; ask before retrying or take another approach";
+                    let (msg, result_label) = if mode_at_gate.is_read_only_enforced()
+                        && MUTATING_TOOLS.contains(&call.name.as_str())
+                    {
+                        (
+                            format!(
+                                "blocked: session is in plan mode (read-only). \
+                                 Only read_file/grep/glob are allowed. \
+                                 User must switch to manual or auto (Shift+Tab) to run {}.",
+                                call.name
+                            ),
+                            "blocked · plan mode".to_string(),
+                        )
+                    } else {
+                        (
+                            "user denied this tool call; ask before retrying or take another approach"
+                                .into(),
+                            "denied by user".into(),
+                        )
+                    };
                     let _ = tx.send(AgentEvent::ToolEnd {
                         id,
                         name: call.name.clone(),
-                        result: "denied by user".into(),
+                        result: result_label,
                         ok: false,
                     });
                     session
                         .input_items
-                        .push(function_call_output_item(&call.call_id, msg));
+                        .push(function_call_output_item(&call.call_id, &msg));
                     continue;
                 }
 
@@ -276,40 +306,72 @@ impl AgentRunner {
         }
     }
 
+    /// Gate tool execution using **current** permission mode (atomic, mid-turn safe).
     async fn check_approval(
         &self,
         name: &str,
         args: &str,
         tx: &mpsc::UnboundedSender<AgentEvent>,
     ) -> bool {
-        if self.auto_approve || READ_ONLY_TOOLS.contains(&name) {
-            return true;
-        }
-        if let Ok(set) = self.approved_tools.lock() {
-            if set.contains(name) {
-                return true;
-            }
-        }
-        let (otx, orx) = oneshot::channel();
-        if tx
-            .send(AgentEvent::ApprovalRequest {
-                name: name.to_string(),
-                args: args.to_string(),
-                respond: otx,
-            })
-            .is_err()
-        {
-            return false;
-        }
-        match orx.await {
-            Ok(ApprovalDecision::Approve) => true,
-            Ok(ApprovalDecision::ApproveAlways) => {
-                if let Ok(mut set) = self.approved_tools.lock() {
-                    set.insert(name.to_string());
+        let mode = self.permission_mode.get();
+        let read_only = READ_ONLY_TOOLS.contains(&name);
+
+        match mode {
+            PermissionMode::Auto => true,
+            PermissionMode::Plan => {
+                if read_only {
+                    true
+                } else {
+                    // Deny mutating tools immediately — do not open a modal.
+                    let _ = tx.send(AgentEvent::Status(format!(
+                        "plan mode blocked · {name}"
+                    )));
+                    // Still return false so caller injects a denial for the model.
+                    false
                 }
-                true
             }
-            _ => false,
+            PermissionMode::Manual => {
+                if read_only {
+                    return true;
+                }
+                if let Ok(set) = self.approved_tools.lock() {
+                    if set.contains(name) {
+                        return true;
+                    }
+                }
+                let (otx, orx) = oneshot::channel();
+                if tx
+                    .send(AgentEvent::ApprovalRequest {
+                        name: name.to_string(),
+                        args: args.to_string(),
+                        respond: otx,
+                    })
+                    .is_err()
+                {
+                    return false;
+                }
+                // Wait for UI — but if user switches to Auto while waiting, honor it.
+                match orx.await {
+                    Ok(ApprovalDecision::Approve) => true,
+                    Ok(ApprovalDecision::ApproveAlways) => {
+                        if let Ok(mut set) = self.approved_tools.lock() {
+                            set.insert(name.to_string());
+                        }
+                        true
+                    }
+                    Ok(ApprovalDecision::Deny) => {
+                        // Re-check mode: user may have flipped to auto while modal was open
+                        // and then denied — still deny this one. If they cycled to Auto and
+                        // we want re-eval, only auto-approve if mode is now Auto AND they
+                        // didn't explicitly deny... Explicit deny wins.
+                        false
+                    }
+                    Err(_) => {
+                        // Channel dropped — if mode became Auto mid-flight, allow.
+                        self.permission_mode.get().auto_approves()
+                    }
+                }
+            }
         }
     }
 }

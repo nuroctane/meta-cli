@@ -36,7 +36,7 @@ impl Tool for EditFile {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let full = resolve_path(&ctx.cwd, &path);
+        let full = resolve_path(&ctx.cwd, &path)?;
         let content = fs::read_to_string(&full)
             .map_err(|e| MuseError::Tool(format!("read {}: {e}", full.display())))?;
 

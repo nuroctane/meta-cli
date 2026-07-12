@@ -20,9 +20,13 @@ pub struct Cli {
     #[arg(long)]
     pub cwd: Option<String>,
 
-    /// Auto-approve tools (needed for unattended agent loops)
+    /// Auto-approve tools (sets permission mode to auto)
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,
+
+    /// Permission mode: manual | plan | auto  (Shift+Tab cycles in TUI)
+    #[arg(long, global = true, value_name = "MODE")]
+    pub mode: Option<String>,
 
     /// Reasoning effort: minimal|low|medium|high|xhigh
     #[arg(long)]

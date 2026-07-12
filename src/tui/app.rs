@@ -1,7 +1,9 @@
 //! Interactive TUI: streaming transcript, slash-command palette, tool
 //! approval modals, and a persistent usage statusline (bottom-left).
 
-use crate::agent::{self, AgentEvent, AgentRunner, ApprovalDecision, Session};
+use crate::agent::{
+    self, AgentEvent, AgentRunner, ApprovalDecision, PermissionMode, Session, SharedMode,
+};
 use crate::api::MetaClient;
 use crate::config::Config;
 use crate::error::Result;
@@ -30,6 +32,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/clear", "clear the transcript display"),
     ("/new", "start a fresh session"),
     ("/compact", "summarize conversation, free context"),
+    ("/mode", "permission: manual | plan | auto  (or Shift+Tab)"),
+    ("/plan", "switch to plan mode (read-only)"),
+    ("/manual", "switch to manual mode (approve tools)"),
+    ("/auto", "switch to auto-approve mode"),
     ("/usage", "token usage + cost for this session"),
     ("/cost", "alias for /usage"),
     ("/model", "show or switch model"),
@@ -72,7 +78,8 @@ pub struct App {
     pub client: MetaClient,
     pub cfg: Config,
     pub cwd: PathBuf,
-    pub auto_approve: bool,
+    /// Live permission mode (manual / plan / auto) — Arc, mid-turn safe.
+    pub permission_mode: SharedMode,
     pub approved_tools: Arc<Mutex<HashSet<String>>>,
 
     pub cells: Vec<Cell>,
@@ -83,7 +90,9 @@ pub struct App {
     pub queue: VecDeque<String>,
 
     pub busy: bool,
-    mode: TurnMode,
+    /// True after Esc/Ctrl+C until Done arrives — spinners show "cancelling…".
+    pub cancelling: bool,
+    turn_kind: TurnMode,
     pub turn_started: Instant,
     pub status: String,
     pub spinner_epoch: Instant,
@@ -119,7 +128,7 @@ pub async fn run_tui(
     client: MetaClient,
     cfg: Config,
     cwd: PathBuf,
-    auto_approve: bool,
+    permission_mode: SharedMode,
     session: Session,
     usage: UsageTracker,
     initial_prompt: Option<String>,
@@ -136,12 +145,13 @@ pub async fn run_tui(
     let (tx, rx) = mpsc::unbounded_channel();
     let u_session = usage.session_usage().clone();
     let session_id = session.id.clone();
+    let mode_label = permission_mode.get().label().to_string();
 
     let mut app = App {
         client,
         cfg,
         cwd,
-        auto_approve,
+        permission_mode,
         approved_tools: Arc::new(Mutex::new(HashSet::new())),
         cells: vec![Cell::Banner],
         tool_cells: HashMap::new(),
@@ -149,7 +159,8 @@ pub async fn run_tui(
         input: InputState::new(),
         queue: VecDeque::new(),
         busy: false,
-        mode: TurnMode::Chat,
+        cancelling: false,
+        turn_kind: TurnMode::Chat,
         turn_started: Instant::now(),
         status: "idle".into(),
         spinner_epoch: Instant::now(),
@@ -168,6 +179,9 @@ pub async fn run_tui(
     };
 
     app.replay_session_tail(8);
+    app.push_info(format!(
+        "mode · {mode_label}  ·  Shift+Tab cycles  manual → plan → auto  ·  /mode"
+    ));
 
     if let Some(p) = initial_prompt {
         if !p.trim().is_empty() {
@@ -261,6 +275,11 @@ impl App {
             }
             KeyCode::Char('d') if ctrl && self.input.is_empty() => {
                 self.should_quit = true;
+                return;
+            }
+            // Claude Code pattern: Shift+Tab cycles permission modes immediately.
+            KeyCode::BackTab => {
+                self.cycle_permission_mode();
                 return;
             }
             _ => {}
@@ -411,9 +430,10 @@ impl App {
         };
         self.cells.push(Cell::User(prompt.to_string()));
         self.busy = true;
-        self.mode = TurnMode::Chat;
+        self.cancelling = false;
+        self.turn_kind = TurnMode::Chat;
         self.turn_started = Instant::now();
-        self.status = "thinking".into();
+        self.status = format!("thinking · {}", self.permission_mode.get().label());
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel.clone());
         let runner = Arc::new(self.make_runner());
@@ -432,30 +452,136 @@ impl App {
             client: self.client.clone(),
             config: self.cfg.clone(),
             cwd: self.cwd.clone(),
-            auto_approve: self.auto_approve,
+            permission_mode: self.permission_mode.clone(),
             verbose: false,
             approved_tools: self.approved_tools.clone(),
         }
     }
 
+    /// Apply mode immediately (even mid-turn). Shared with AgentRunner via Arc.
+    fn set_permission_mode(&mut self, mode: PermissionMode) {
+        self.permission_mode.set(mode);
+        // If an approval modal is open and we switched to Auto, resolve it as approve.
+        if mode.auto_approves() {
+            if let Some(mut a) = self.approval.take() {
+                if let Some(respond) = a.respond.take() {
+                    let _ = respond.send(ApprovalDecision::Approve);
+                }
+            }
+        }
+        // Plan mode: pending approvals become denies.
+        if mode.is_read_only_enforced() {
+            if let Some(mut a) = self.approval.take() {
+                if let Some(respond) = a.respond.take() {
+                    let _ = respond.send(ApprovalDecision::Deny);
+                }
+            }
+        }
+        self.push_info(format!(
+            "mode · {} — {}{}",
+            mode.badge(),
+            mode.description(),
+            if self.busy {
+                "  ·  applies to next tool now"
+            } else {
+                ""
+            }
+        ));
+    }
+
+    fn cycle_permission_mode(&mut self) {
+        let next = self.permission_mode.cycle();
+        // cycle() already set it; re-run side effects without double-store
+        self.permission_mode.set(next); // idempotent
+        if next.auto_approves() {
+            if let Some(mut a) = self.approval.take() {
+                if let Some(respond) = a.respond.take() {
+                    let _ = respond.send(ApprovalDecision::Approve);
+                }
+            }
+        }
+        if next.is_read_only_enforced() {
+            if let Some(mut a) = self.approval.take() {
+                if let Some(respond) = a.respond.take() {
+                    let _ = respond.send(ApprovalDecision::Deny);
+                }
+            }
+        }
+        self.push_info(format!(
+            "mode · {} — {}{}",
+            next.badge(),
+            next.description(),
+            if self.busy {
+                "  ·  applies to next tool now"
+            } else {
+                ""
+            }
+        ));
+    }
+
     fn interrupt(&mut self) {
+        if self.cancelling {
+            // Already cancelling — keep calm UI.
+            return;
+        }
         if let Some(c) = &self.cancel {
             c.cancel();
         }
-        // If the loop is blocked on an approval, deny it so it can unwind.
+        // Unblock approval wait so the agent loop can exit.
         if let Some(mut a) = self.approval.take() {
             if let Some(respond) = a.respond.take() {
                 let _ = respond.send(ApprovalDecision::Deny);
             }
         }
-        self.status = "interrupting…".into();
+        self.cancelling = true;
+        self.status = "cancelling…".into();
+        // Stop "live" animations that look like work is progressing.
+        self.freeze_live_cells_as_cancelled();
+        self.push_info("cancelled — waiting for in-flight work to stop".into());
+    }
+
+    /// Mark streaming/thinking/running-tool cells so the UI stops looking "active".
+    fn freeze_live_cells_as_cancelled(&mut self) {
+        for c in self.cells.iter_mut().rev() {
+            match c {
+                Cell::Assistant { streaming, .. } => {
+                    *streaming = false;
+                }
+                Cell::Thinking { active, text } => {
+                    if *active {
+                        *active = false;
+                        if !text.is_empty() {
+                            text.push_str("  · cancelled");
+                        }
+                    }
+                }
+                Cell::Tool {
+                    result, ok, ..
+                } => {
+                    if result.is_none() {
+                        *result = Some("cancelled".into());
+                        *ok = Some(false);
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     // ── agent events ───────────────────────────────────────────────────
     fn on_agent_event(&mut self, ev: AgentEvent) {
         match ev {
-            AgentEvent::Status(s) => self.status = s,
+            AgentEvent::Status(s) => {
+                if self.cancelling {
+                    self.status = "cancelling…".into();
+                } else {
+                    self.status = s;
+                }
+            }
             AgentEvent::ReasoningDelta(d) => {
+                if self.cancelling {
+                    return;
+                }
                 if let Some(Cell::Thinking { text, active: true }) = self.cells.last_mut() {
                     text.push_str(&d);
                 } else {
@@ -466,6 +592,10 @@ impl App {
                 }
             }
             AgentEvent::TextDelta(d) => {
+                // Ignore late deltas after Esc so the stream caret stops "typing".
+                if self.cancelling {
+                    return;
+                }
                 self.finish_thinking();
                 if let Some(Cell::Assistant {
                     text,
@@ -491,6 +621,10 @@ impl App {
                 }
             }
             AgentEvent::ToolStart { id, name, args } => {
+                if self.cancelling {
+                    // Don't start new "running" chrome after cancel.
+                    return;
+                }
                 self.finish_thinking();
                 self.finish_streaming();
                 self.cells.push(Cell::Tool {
@@ -538,15 +672,29 @@ impl App {
             } => {
                 self.finish_thinking();
                 self.finish_streaming();
+                // Ensure no cell still looks "running".
+                self.freeze_live_cells_as_cancelled();
                 self.u_session = usage.session_usage().clone();
                 self.session_id = session.id.clone();
                 self.session = Some(session);
                 self.usage = Some(usage);
                 self.busy = false;
+                self.cancelling = false;
                 self.cancel = None;
                 self.status = "idle".into();
-                match (&self.mode, result, interrupted) {
-                    (_, _, true) => self.push_info("interrupted".into()),
+                match (&self.turn_kind, result, interrupted) {
+                    (_, _, true) => {
+                        // Already pushed "cancelled" on Esc; keep a quiet final line.
+                        if !self
+                            .cells
+                            .iter()
+                            .rev()
+                            .take(3)
+                            .any(|c| matches!(c, Cell::Info(s) if s.contains("cancelled")))
+                        {
+                            self.push_info("cancelled".into());
+                        }
+                    }
                     (TurnMode::Compact, Ok(summary), _) => {
                         self.push_info(format!(
                             "context compacted — summary:\n{summary}"
@@ -555,11 +703,21 @@ impl App {
                     (TurnMode::Compact, Err(e), _) => {
                         self.push_error(format!("compaction failed: {e}"))
                     }
-                    (TurnMode::Chat, Err(e), _) => self.push_error(e),
+                    (TurnMode::Chat, Err(e), _) => {
+                        // Interrupted surfaces as Err("interrupted") sometimes.
+                        if e.contains("interrupted") {
+                            // quiet — UI already shows cancelled
+                        } else {
+                            self.push_error(e);
+                        }
+                    }
                     (TurnMode::Chat, Ok(_), _) => {}
                 }
-                self.mode = TurnMode::Chat;
-                if let Some(next) = self.queue.pop_front() {
+                self.turn_kind = TurnMode::Chat;
+                // Drop queued prompts after cancel so we don't surprise-run them.
+                if interrupted {
+                    self.queue.clear();
+                } else if let Some(next) = self.queue.pop_front() {
                     self.submit_text(&next);
                 }
             }
@@ -596,6 +754,10 @@ impl App {
             }
             "/new" => self.cmd_new(),
             "/compact" => self.cmd_compact(),
+            "/mode" => self.cmd_mode(&arg),
+            "/plan" => self.set_permission_mode(PermissionMode::Plan),
+            "/manual" => self.set_permission_mode(PermissionMode::Manual),
+            "/auto" => self.set_permission_mode(PermissionMode::Auto),
             "/usage" | "/cost" => self.cmd_usage(),
             "/model" => self.cmd_model(&arg),
             "/effort" => self.cmd_effort(&arg),
@@ -613,16 +775,38 @@ impl App {
         }
     }
 
+    fn cmd_mode(&mut self, arg: &str) {
+        if arg.is_empty() {
+            let m = self.permission_mode.get();
+            self.push_info(format!(
+                "mode · {} — {}\n  Shift+Tab cycles  manual → plan → auto\n  /mode manual|plan|auto",
+                m.badge(),
+                m.description()
+            ));
+            return;
+        }
+        match PermissionMode::parse(arg) {
+            Some(m) => self.set_permission_mode(m),
+            None => self.push_error(format!(
+                "unknown mode '{arg}' — use manual, plan, or auto"
+            )),
+        }
+    }
+
     fn cmd_help(&mut self) {
         let mut s = String::from("commands\n");
         for (name, desc) in COMMANDS {
             s.push_str(&format!("  {name:<10} {desc}\n"));
         }
-        s.push_str(
-            "\nkeys\n  Enter send · \\+Enter or Ctrl+J newline · ↑/↓ history\n  \
-             Esc interrupt/clear · Ctrl+C twice quit · PgUp/PgDn scroll · Ctrl+L clear\n  \
-             tool approvals: y allow once · a always allow · n deny",
-        );
+        let m = self.permission_mode.get();
+        s.push_str(&format!(
+            "\npermission mode now: {} — {}\n\
+             keys\n  Enter send · \\+Enter or Ctrl+J newline · ↑/↓ history\n  \
+             Shift+Tab cycle modes · Esc cancel turn · Ctrl+C twice quit\n  \
+             tool approvals (manual): y once · a always · n deny",
+            m.badge(),
+            m.description()
+        ));
         self.push_info(s);
     }
 
@@ -661,20 +845,27 @@ impl App {
             return;
         };
         self.busy = true;
-        self.mode = TurnMode::Compact;
+        self.cancelling = false;
+        self.turn_kind = TurnMode::Compact;
         self.turn_started = Instant::now();
         self.status = "compacting".into();
         let runner = self.make_runner();
         let tx = self.tx.clone();
+        let cancel = CancellationToken::new();
+        self.cancel = Some(cancel.clone());
         tokio::spawn(async move {
             let mut session = *session;
             let mut usage = *usage;
-            let res = agent::compact_session(&runner, &mut session, &mut usage).await;
+            let res = tokio::select! {
+                _ = cancel.cancelled() => Err(crate::error::MuseError::Interrupted),
+                r = agent::compact_session(&runner, &mut session, &mut usage) => r,
+            };
+            let interrupted = matches!(res, Err(crate::error::MuseError::Interrupted));
             let _ = tx.send(AgentEvent::Done {
                 session: Box::new(session),
                 usage: Box::new(usage),
                 result: res.map_err(|e| e.to_string()),
-                interrupted: false,
+                interrupted,
             });
         });
     }
