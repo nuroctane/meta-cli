@@ -143,7 +143,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
 
     if let Some(p) = &mut app.picker {
         p.vis_page = vis_rows;
-        p.ensure_visible();
+        p.clamp_scroll();
         sel = p.idx;
         start = p.scroll;
     }

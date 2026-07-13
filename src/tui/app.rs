@@ -339,7 +339,7 @@ pub struct SessionPicker {
     pub rows: Vec<SessionRow>,
     /// Selected entry (absolute index into `visible()`).
     pub idx: usize,
-    /// First visible entry — scroll is entry-by-entry, never jumps a page.
+    /// First visible entry — only advances/retreats by 1 when selection leaves the window.
     pub scroll: usize,
     /// How many entries fit in the body (set by last draw).
     pub vis_page: usize,
@@ -347,6 +347,8 @@ pub struct SessionPicker {
     pub this_cwd_only: bool,
     /// Hit-test geometry filled by the last draw (screen coords).
     pub hit: PickerHit,
+    /// Coalesce trackpad/OS wheel floods to one step per tick.
+    pub last_step_at: Instant,
 }
 
 /// Click targets for the sessions modal (updated each frame while open).
@@ -372,9 +374,16 @@ impl SessionPicker {
             .collect()
     }
 
-    /// Keep selection in view by shifting the viewport one entry at a time.
-    pub fn ensure_visible(&mut self) {
-        let count = self.visible().len();
+    pub fn count(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|r| !self.this_cwd_only || r.here)
+            .count()
+    }
+
+    /// Clamp idx/scroll after page-size or filter changes (never jumps more than needed).
+    pub fn clamp_scroll(&mut self) {
+        let count = self.count();
         if count == 0 {
             self.idx = 0;
             self.scroll = 0;
@@ -382,10 +391,50 @@ impl SessionPicker {
         }
         self.idx = self.idx.min(count - 1);
         let page = self.vis_page.max(1);
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+        // Selection above window → pull scroll up (min steps).
         if self.idx < self.scroll {
             self.scroll = self.idx;
-        } else if self.idx >= self.scroll.saturating_add(page) {
+        }
+        // Selection below window → push scroll down (min steps).
+        let last_vis = self.scroll + page - 1;
+        if self.idx > last_vis {
             self.scroll = self.idx + 1 - page;
+        }
+    }
+
+    /// Move selection by exactly one entry (sign of `dir`). Viewport shifts by at most 1.
+    pub fn step(&mut self, dir: i32) {
+        if dir == 0 {
+            return;
+        }
+        let count = self.count();
+        if count == 0 {
+            return;
+        }
+        let page = self.vis_page.max(1);
+        if dir < 0 {
+            if self.idx == 0 {
+                return;
+            }
+            self.idx -= 1;
+            // If we walked above the window, scroll up by exactly one.
+            if self.idx < self.scroll {
+                self.scroll = self.idx;
+            }
+        } else {
+            if self.idx + 1 >= count {
+                return;
+            }
+            self.idx += 1;
+            // If we walked past the bottom of the window, scroll down by exactly one.
+            let last_vis = self.scroll + page - 1;
+            if self.idx > last_vis {
+                self.scroll += 1;
+            }
         }
         let max_scroll = count.saturating_sub(page);
         if self.scroll > max_scroll {
@@ -393,29 +442,42 @@ impl SessionPicker {
         }
     }
 
-    /// Move selection by `delta` entries (wheel / arrows). Viewport follows gently.
-    pub fn move_by(&mut self, delta: i32) {
-        let count = self.visible().len();
-        if count == 0 {
+    /// Wheel: one step max every 45ms so OS/trackpad floods don't skip items.
+    pub fn wheel_step(&mut self, dir: i32) {
+        let now = Instant::now();
+        if now.duration_since(self.last_step_at) < Duration::from_millis(45) {
             return;
         }
-        if delta < 0 {
-            self.idx = self.idx.saturating_sub((-delta) as usize);
-        } else {
-            self.idx = (self.idx + delta as usize).min(count - 1);
+        self.last_step_at = now;
+        self.step(dir.signum());
+    }
+
+    /// Arrows / j-k: always one entry, no throttle.
+    pub fn move_by(&mut self, delta: i32) {
+        if delta == 0 {
+            return;
         }
-        self.ensure_visible();
+        let steps = delta.unsigned_abs() as usize;
+        let dir = if delta < 0 { -1 } else { 1 };
+        for _ in 0..steps {
+            let before = self.idx;
+            self.step(dir);
+            if self.idx == before {
+                break;
+            }
+        }
     }
 
     pub fn set_idx(&mut self, i: usize) {
-        let count = self.visible().len();
+        let count = self.count();
         if count == 0 {
             self.idx = 0;
             self.scroll = 0;
             return;
         }
         self.idx = i.min(count - 1);
-        self.ensure_visible();
+        // Bring into view with minimal scroll (may jump if click far — intentional).
+        self.clamp_scroll();
     }
 }
 
@@ -1409,9 +1471,13 @@ impl App {
             rows,
             idx: 0,
             scroll: 0,
-            vis_page: 1,
+            // Until first paint; step() still works (viewport shifts by 1).
+            vis_page: 6,
             this_cwd_only: any_here,
             hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
         });
     }
 
@@ -1434,25 +1500,29 @@ impl App {
         if let Some(p) = &mut self.picker {
             p.this_cwd_only = !p.this_cwd_only;
             p.idx = 0;
+            p.scroll = 0;
         }
     }
 
     fn on_picker_key(&mut self, code: KeyCode) {
         let Some(p) = &mut self.picker else { return };
-        let count = p.visible().len();
+        let count = p.count();
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.close_picker(),
-            KeyCode::Up | KeyCode::Char('k') => p.move_by(-1),
-            KeyCode::Down | KeyCode::Char('j') => p.move_by(1),
-            KeyCode::PageUp => p.move_by(-5),
-            KeyCode::PageDown => p.move_by(5),
+            // One entry per key — same path the wheel uses.
+            KeyCode::Up | KeyCode::Char('k') => p.step(-1),
+            KeyCode::Down | KeyCode::Char('j') => p.step(1),
+            KeyCode::PageUp => p.move_by(-(p.vis_page.max(1) as i32)),
+            KeyCode::PageDown => p.move_by(p.vis_page.max(1) as i32),
             KeyCode::Home => {
                 p.idx = 0;
-                p.ensure_visible();
+                p.scroll = 0;
             }
             KeyCode::End => {
-                p.idx = count.saturating_sub(1);
-                p.ensure_visible();
+                if count > 0 {
+                    p.idx = count - 1;
+                    p.clamp_scroll();
+                }
             }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('a') | KeyCode::Char(' ') => {
                 self.picker_toggle_scope();
@@ -1467,14 +1537,15 @@ impl App {
         self.mouse_col = m.column;
         self.mouse_row = m.row;
         match m.kind {
+            // Same as ↑ / ↓ — one entry. Coalesce OS wheel floods so one notch ≈ one key.
             MouseEventKind::ScrollUp => {
                 if let Some(p) = &mut self.picker {
-                    p.move_by(-1);
+                    p.wheel_step(-1);
                 }
             }
             MouseEventKind::ScrollDown => {
                 if let Some(p) = &mut self.picker {
-                    p.move_by(1);
+                    p.wheel_step(1);
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -2720,6 +2791,80 @@ mod tests {
         let _ = i.submit();
         i.history_prev();
         assert_eq!(i.text(), "first");
+    }
+
+    fn test_picker(n: usize, page: usize) -> SessionPicker {
+        let rows = (0..n)
+            .map(|i| SessionRow {
+                id: format!("id-{i}"),
+                when: "now".into(),
+                messages: 1,
+                tokens: 0,
+                cost: 0.0,
+                cwd: "/x".into(),
+                preview: format!("prompt {i}"),
+                here: true,
+            })
+            .collect();
+        SessionPicker {
+            rows,
+            idx: 0,
+            scroll: 0,
+            vis_page: page,
+            this_cwd_only: true,
+            hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        }
+    }
+
+    #[test]
+    fn picker_step_moves_one_entry_at_a_time() {
+        let mut p = test_picker(10, 4);
+        assert_eq!((p.idx, p.scroll), (0, 0));
+        p.step(1);
+        assert_eq!((p.idx, p.scroll), (1, 0));
+        p.step(1);
+        p.step(1);
+        p.step(1);
+        // idx 4 → past last visible (0..3), scroll advances by exactly 1
+        assert_eq!((p.idx, p.scroll), (4, 1));
+        p.step(1);
+        assert_eq!((p.idx, p.scroll), (5, 2));
+        p.step(-1);
+        assert_eq!((p.idx, p.scroll), (4, 2)); // still in view, scroll holds
+        p.step(-1);
+        p.step(-1);
+        p.step(-1);
+        // idx 1, still in [2,5]? 1 < 2 → scroll becomes 1
+        assert_eq!(p.idx, 1);
+        assert_eq!(p.scroll, 1);
+        p.step(-1);
+        assert_eq!((p.idx, p.scroll), (0, 0));
+    }
+
+    #[test]
+    fn picker_wheel_matches_arrow_step() {
+        let mut a = test_picker(8, 3);
+        let mut b = test_picker(8, 3);
+        for _ in 0..5 {
+            a.step(1);
+            // Simulate time between notches so throttle doesn't drop events.
+            b.last_step_at = Instant::now()
+                .checked_sub(Duration::from_millis(100))
+                .unwrap_or_else(Instant::now);
+            b.wheel_step(1);
+            assert_eq!((a.idx, a.scroll), (b.idx, b.scroll));
+        }
+        for _ in 0..3 {
+            a.step(-1);
+            b.last_step_at = Instant::now()
+                .checked_sub(Duration::from_millis(100))
+                .unwrap_or_else(Instant::now);
+            b.wheel_step(-1);
+            assert_eq!((a.idx, a.scroll), (b.idx, b.scroll));
+        }
     }
 }
 
