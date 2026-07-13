@@ -1,15 +1,15 @@
 # Meta CLI (unofficial)
 
-**Unofficial** terminal coding agent for [Meta Model API](https://dev.meta.ai/) (default: [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/); switch with `--model` / `/model`).
+**Unofficial, fully loaded terminal coding agent** for [Meta Model API](https://dev.meta.ai/) — default model [Muse Spark](https://ai.meta.com/blog/introducing-muse-spark-meta-model-api/), any model id via `--model` / `/model`.
 
-> Not affiliated with Meta Platforms, Inc. · Community project · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
+> Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
 ```text
-meta          # primary command — Meta-blue interactive TUI
-muse          # optional legacy alias (same binary; prefer `meta`)
+meta          # primary — Meta-blue interactive TUI
+muse          # legacy alias (same binary)
 ```
 
-**v0.5.10** — **`meta` primary.** Click **↓ End** to jump to latest. Turn strip always posts **thought + turn timers**. Drag-select text, always-on scrollbar, click-peek.
+**v0.5.12** — Production-minded agent harness: streaming TUI with timers & peek cards, in-app drag-select, always-on scrollbar, knowledge stack (Graphify · PLUR · Ruflo · Executor · 800+ skills), hardened tools, API retries + prompt-cache keys, atomic session IO, install integrity hashes, `meta doctor`.
 
 ---
 
@@ -17,12 +17,65 @@ muse          # optional legacy alias (same binary; prefer `meta`)
 
 | | |
 |--|--|
-| **Real Meta Model agent** | Full custom Rust harness for Meta Model API — not a thin wrapper. Any model id via `/model`. |
-| **One-shot install** | One command builds, installs, and provisions the ecosystem. No multi-step “quick starts.” |
-| **Opens instantly** | Ecosystem repair runs in the **background** so the TUI never hangs on npm/uv. |
-| **Knowledge stack** | Code graph + shared engrams + vector memory + MCP gateway, all auto-wired. |
-| **Tasteful TUI** | Durations on thoughts/tools/turns, expandable cards, snappy motion, sticky prompt, drag scrollbar. |
-| **Secrets stay local** | API key only in `~/.muse/auth.json` — never in the repo. |
+| **Real agent, not a wrapper** | Custom Rust harness: modes, tools, sandbox, streaming, cancel, subagents, auto-compact |
+| **One-shot install** | Build · PATH · ecosystem provision · Orca hook · optional auth — one script |
+| **Opens instantly** | Ecosystem repair runs in the **background**; TUI never blocks on npm/uv |
+| **Knowledge stack, auto-wired** | Code graph · shared engrams · vector memory · MCP gateway · skill packs |
+| **Tasteful, dense TUI** | Duration chips, expandable thoughts/tools, click-to-peek, drag-select, sticky prompt, sessions browser |
+| **Hardened by default** | Sandbox, bash denylist, SSRF blocks, atomic writes, API retries, SHA-256 install verify |
+| **ADE-ready** | Live `status.json` / usage log for Orca-style panels; window title `🔵 meta · prompt…` |
+| **Secrets stay local** | API key only in `~/.muse/auth.json` — never in the repo |
+
+---
+
+## Feature map
+
+### Agent harness
+- Meta Model API **Responses** streaming + reasoning effort (`minimal` → `xhigh`)
+- **Manual / plan / auto** permission modes — **Shift+Tab** applies mid-turn
+- Tool loop with parallel-safe tools, approval gates, Esc cancel
+- **Subagents**, todos, plan mode (`submit_plan`), auto-compact under context pressure
+- Project instructions: `MUSE.md` · `AGENTS.md` · `CLAUDE.md`
+- Session resume (`-c`, `-r`, `/sessions`) with prompt-first picker
+- **Prompt cache key** per session (helps surface `cached_tokens` / cheaper multi-turn)
+
+### Tools (native)
+| Family | Tools |
+|--------|--------|
+| read | `read_file` `list_dir` `grep` `glob` |
+| edit | `write_file` `edit_file` `multi_edit` `apply_patch` |
+| shell | `bash` (hardened denylist + timeout) |
+| web | `web_search` `web_fetch` (SSRF / obfuscated-IP blocks) |
+| git | `git_status` `git_diff` |
+| knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |
+| agent | `todo_write` `submit_plan` `agent` |
+
+### Ecosystem (auto-provisioned)
+| Piece | Role |
+|-------|------|
+| **Graphify** | Code knowledge graph (`graphify-out/`) — query / path / explain |
+| **PLUR** | Shared engram memory across tools/sessions |
+| **Ruflo** | Vector memory + swarm/hive patterns |
+| **Executor** | MCP / OpenAPI gateway catalog |
+| **Skills** | Progressive packs (incl. large cyber skill set) via `skill` tool |
+| **AKM** | Agent knowledge package manager (when Node available) |
+
+### TUI (Meta-blue)
+- Streaming assistant · violet **thought** cards · colour-coded **tool** cards  
+- **Duration chips** on thoughts, tools, and end-of-turn (`took …` · `thought …`)  
+- Cards **collapsed by default** · click `▸` to expand · **click-to-peek** dialogue  
+- **Drag text to select** (highlight + auto-copy) · **drag scrollbar** always on  
+- Click **↓ N · End** to jump to latest  
+- Sticky PROMPT banner · click-to-caret · clipboard · sessions modal  
+- Approval modal with **mini unified-diff** for edits  
+- Per-cell **wrap cache** so long sessions stay snappy while animating  
+
+### Reliability & safety
+- Atomic writes for sessions, status, auth, config, history  
+- API client **retries** with backoff (429 / 5xx / flaky streams)  
+- Real **process timeouts** for graphify / ecosystem CLIs (kill on hang)  
+- Config validation · auth key hygiene · `meta doctor`  
+- Install scripts verify **SHA-256** of the installed binary  
 
 ---
 
@@ -40,21 +93,20 @@ irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
 curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
 ```
 
-That single command will:
+That command will:
 
 1. Install Rust if needed  
 2. Clone or update this repo  
 3. `cargo build --release`  
-4. Put **`meta`** (+ `muse` alias) on your PATH (`~/.local/bin`)  
-5. Provision the agent ecosystem (`meta ecosystem ensure`) when Node/uv are available  
-6. Install the Orca ADE hook when possible  
-7. If `MODEL_API_KEY` is set, save auth under `~/.muse/` **on your machine only**
-
-Then:
+4. Install **`meta`** (+ `muse` alias) to `~/.local/bin` and **verify SHA-256**  
+5. `meta ecosystem ensure` when Node/uv are available  
+6. Orca ADE hook when possible  
+7. Save auth if `MODEL_API_KEY` is set (**machine-local only**)  
 
 ```powershell
 meta auth login    # paste Meta Model API key → ~/.muse/auth.json only
 meta               # open the TUI
+meta doctor        # health check
 ```
 
 Key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
@@ -67,23 +119,13 @@ cd meta-cli
 # ./install.sh         # macOS / Linux
 ```
 
-Windows Laboratory clone script (if you use it):
-
-```text
-C:\Users\david\Scripts\clone meta-cli main to Laboratory local.cmd
-```
-
-Then `cd` into the folder and run `.\install.ps1`.
-
 ### Prerequisites (optional but recommended)
 
 | Need | For |
 |------|-----|
 | **Node.js 20+** | PLUR, Ruflo, Executor, skills CLI, AKM |
-| **uv** (or Python 3.10+) | Graphify (`uv tool install graphifyy`) |
+| **uv** (or Python 3.10+) | Graphify |
 | **ripgrep** | Fast `grep` / `glob` (falls back if missing) |
-
-Missing pieces are retried in the background on open, or via `meta ecosystem ensure --force`.
 
 ---
 
@@ -112,10 +154,10 @@ meta usage                   # token / cost for ADEs
 meta auth status
 meta ecosystem status        # graphify · plur · ruflo · executor · packs
 meta ecosystem ensure --force
-meta doctor                  # auth · config · ecosystem · PATH tools
+meta doctor                  # auth · config · ecosystem · PATH · sha256
 ```
 
-Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last session / Laboratory) so tools never run on the entire disk.
+Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last session / Laboratory).
 
 ---
 
@@ -124,10 +166,8 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | Mode | Behavior |
 |------|----------|
 | **manual** | Reads free; writes / shell need approval (`y` / `a` / `n`) |
-| **plan** | Research only — read tools + graphify query/path + plur recall + ruflo search |
+| **plan** | Research only — read tools + graphify query + plur/ruflo search |
 | **auto** | Auto-approve tools (`-y` / `--mode auto`) |
-
-Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-turn (next tool gate). Statusline shows the live mode.
 
 ---
 
@@ -135,174 +175,66 @@ Mode lives in a shared atomic: **Shift+Tab applies immediately**, including mid-
 
 ### Highlights
 
-- **Duration chips** — high-contrast `took 1.2s` badges on every thought, tool/bash, and finished turn  
-- **Collapsed by default** — cards start fully closed; click `▸` (or `e` with empty input) to expand in place  
-- **Hover peek** — float a dialogue over a card to read full thought / command output without expanding  
-- **Streaming** assistant text + violet-italic model thinking (never reads as the answer)  
-- **Tool cards** colour-coded by family (read / edit / shell / web / git / agent / knowledge)  
-- **Design-eng motion** — snappy spinner, ease-out pulse, activity strip, brief expand settle highlight  
-- **Model-agnostic UI** — banner and prompts use the selected Meta model id (`/model`, `--model`)  
-- **Approvals** — `y` once · `a` always this session · `n` deny  
-- **Esc cancel** — freezes stream/thinking; status shows *cancelling…* until work stops  
-- **Markdown** rendering, multi-line input, usage + cost + **ctx%** on the statusline  
-- **Project instructions** from `MUSE.md`, `AGENTS.md`, or `CLAUDE.md`  
-- **Sticky PROMPT banner** — full-width Meta-blue 3-row bar while you scroll older turns  
-- **Draggable scrollbar** — right edge of the transcript; click or drag to scrub history  
-- **Sessions picker** — `/sessions`, `/resume`, or `Ctrl+R` (same prompt-first modal; `Tab` = here / all)  
-- **Slash palette** — type `/` for commands with live filter  
-- **Auto-compact** when context pressure is high; `/compact` anytime  
+- **Duration chips** — `took 1.2s` on thoughts, tools, and finished turns (`thought …` always posted)  
+- **Collapsed cards** — click `▸` or press `e` to expand; **click-to-peek** for full content  
+- **Drag-select** chat text (auto-copy) · **drag scrollbar** · click **↓ End**  
+- **Streaming** + violet thinking · colour-coded tools · sticky PROMPT banner  
+- **Approvals** with mini **diff preview** for edits · Esc cancel  
+- **Sessions** browser: `/sessions` = `/resume` = `Ctrl+R`  
+- Markdown input, usage + cost + **ctx%**, model-agnostic banner  
 
 ### Keys
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` | Scroll the chat (caret only inside a multi-line draft) |
-| `PgUp` `PgDn` · `Home` `End` | Page · top · latest |
-| Wheel · drag scrollbar | Scroll transcript |
-| **Drag on chat text** | Select text (blue highlight) — **auto-copies** on release; Ctrl+C too |
-| **Drag right scrollbar · wheel** | Scroll / jump history — **always on** |
-| **Click `↓ N · End` chip** | Jump to latest immediately |
-| End-of-turn strip | Always shows `took …` + `thought …` after finished output |
-| Click card / `▸` chevron | Pin peek · expand in place |
-| `p` / `e` (empty input) | Pin-peek latest · expand peeked/latest |
-| `Esc` | Close peek first |
-| Click in input | **Place caret** where you click |
-| `Ctrl+A` / `Ctrl+C` / `Ctrl+V` / `Ctrl+X` | Select all · copy · paste · cut (system clipboard) |
-| `Ctrl+P` `Ctrl+N` (or `Alt+↑/↓`) | Prompt history |
-| `Enter` · `\+Enter` / `Ctrl+J` | Send · newline |
+| `↑` `↓` · wheel · drag scrollbar | Scroll transcript |
+| **Drag on chat text** | Select + auto-copy |
+| **Click `↓ N · End`** | Jump to latest |
+| Click card / `▸` | Peek / expand |
+| `p` / `e` (empty input) | Peek latest / expand |
 | `Shift+Tab` | Cycle permission mode |
-| `Ctrl+R` | Resume a session |
-| `Esc` | Cancel turn |
-| `Ctrl+C` (no selection) ×2 | Quit |
-| `Ctrl+L` | Clear transcript view |
+| `Ctrl+R` | Sessions browser |
 | `y` / `a` / `n` | Approve once / always / deny |
+| `Esc` | Close peek, then cancel turn |
+| `Ctrl+C` | Copy selection, or double-tap quit |
 
 ### Slash commands
 
 | Command | Purpose |
 |---------|---------|
 | `/help` | Keys + commands |
-| `/mode` `manual\|plan\|auto` | Permission mode (or Shift+Tab) |
-| `/plan` `/manual` `/auto` | Shortcuts |
-| `/todos` `/memory` `/skills` | Session todos · local memory · skill list |
-| `/graphify` … | Knowledge graph status / query / extract |
-| `/plur` … | Engram memory learn / recall / inject |
-| `/ruflo` … | Vector memory search / store / status |
-| `/ecosystem` | Full stack readiness |
-| `/compact` | Summarize conversation, free context |
-| `/usage` `/cost` | Tokens + est. USD |
-| `/model` `/effort` | Model / reasoning effort |
-| `/sessions` `/resume` / `Ctrl+R` | Same sessions browser (open with ↵) |
-| `/init` | Generate a `MUSE.md` project guide |
-| `/config` | Paths + config dump |
-| `/mouse` | Mouse notes (capture always on for caret + scrollbar) |
-| `/clear` `/new` `/exit` | Clear view · new session · quit |
+| `/mode` `/plan` `/manual` `/auto` | Permission |
+| `/todos` `/memory` `/skills` | Session state |
+| `/graphify` `/plur` `/ruflo` `/ecosystem` | Knowledge stack |
+| `/compact` `/usage` `/model` `/effort` | Context & model |
+| `/sessions` `/resume` | Same sessions browser |
+| `/init` `/config` `/mouse` `/clear` `/new` `/exit` | Project & shell |
 
 ### Colour system
 
-Colour is information — a blue spine with hues at matched lightness:
-
 | Family | Hue | Tools |
 |--------|-----|-------|
-| read | sky blue | `read_file` `list_dir` `grep` `glob` |
+| read | sky | `read_file` `list_dir` `grep` `glob` |
 | edit | violet | `write_file` `edit_file` `multi_edit` `apply_patch` |
 | shell | amber | `bash` |
 | web | teal | `web_fetch` `web_search` |
 | git | cyan | `git_status` `git_diff` |
-| delegate | pink | `agent` |
-| knowledge | indigo / orange | `skill` `todo_write` `graphify` `plur` `ruflo` `executor` · `memory` |
-
-System notices use their own glyph + tone: `◈` mode · `✦` plan · `☰` todos · `∑` usage · `⟲` session · `❖` memory.
-
-Statusline segments are individually coloured: **tokens · cost · ctx% · model · mode · state**.
-
----
-
-## Agent ecosystem (zero extra setup)
-
-One-shot install + background ensure on every open. You do **not** need each project’s own quick-start.
-
-### Runtime systems
-
-| System | What it is | Store / endpoint | In Meta |
-|--------|------------|------------------|---------|
-| **[Graphify](https://github.com/Graphify-Labs/graphify)** | Code knowledge graph (tree-sitter AST) | `graphify-out/` | tool `graphify` · `/graphify` |
-| **[PLUR](https://github.com/plur-ai/plur)** | Shared engram memory (preferences, corrections) | `~/.plur/` | tool `plur` · `/plur` · **auto-inject** each turn |
-| **[Ruflo](https://github.com/ruvnet/ruflo)** | Vector memory + swarm harness | `~/.muse/ruflo/` (global, no project pollution) | tool `ruflo` · `/ruflo` |
-| **[Executor](https://executor.sh/docs)** | MCP gateway for OpenAPI / GraphQL / MCP | local `:4788/mcp` | tool `executor` |
-| **[skills](https://www.npmjs.com/package/skills)** CLI | Open agent skills installer | `~/.agents/skills/` | used by `ecosystem ensure` |
-| **[akm-cli](https://www.npmjs.com/package/akm-cli)** | Agent knowledge package manager | multi-agent | skill `akm-manager` |
-
-### Skill packs (catalog routers + full packs on disk)
-
-| Pack | Source | What you get |
-|------|--------|--------------|
-| Design engineering | [emilkowalski/skills](https://github.com/emilkowalski/skills) | Motion/UI taste — easings, review tables, improve-animations |
-| Clone website | [JCodesMore/ai-website-cloner-template](https://github.com/JCodesMore/ai-website-cloner-template) | Pixel-perfect reverse-engineering pipeline |
-| Cybersecurity | [mukul975/Anthropic-Cybersecurity-Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills) | 817 MITRE/NIST-mapped playbooks — load **one** by name |
-| OpenCode catalog | [awesome-opencode](https://github.com/awesome-opencode/awesome-opencode) | Curated plugin *patterns* (Meta is not OpenCode) |
-| Context pruning | [Opencode-DCP](https://github.com/Opencode-DCP/opencode-dynamic-context-pruning) | DCP ideas + Meta native `/compact` auto-compact |
-
-```powershell
-meta ecosystem status
-meta ecosystem ensure --force   # repair / first-time full provision
-```
-
-In the TUI: `/ecosystem` · `/plur` · `/ruflo` · `/graphify` · `/skills`
-
-### What to use when
-
-| Need | Use |
-|------|-----|
-| “What calls X?” / architecture | **graphify** (`query` / `path` / `explain`) |
-| Remember preferences & corrections | **plur** (auto-injected) |
-| Semantic pattern memory / swarm status | **ruflo** |
-| External SaaS / APIs over MCP | **executor** |
-| UI / motion polish | skill **design-eng** / emil packs |
-| Clone a live site into Next.js | skill **clone-website-meta** |
-| Security investigation | skill **cybersecurity** → specific playbook |
-| Long-session context pressure | `/compact` + **context-pruning** |
-| Local markdown scratchpad | built-in `memory` (`~/.muse/memory.md`) |
-
----
-
-## Safety & tools
-
-- **Workspace sandbox** — paths cannot escape session cwd (case + symlink/junction aware); refuse filesystem-root workspaces  
-- **Shell** — Git Bash → pwsh → PowerShell → cmd (labeled; `MUSE_SHELL` override); Esc/timeout kills the process tree  
-- **grep / glob** — ripgrep-first; hard-excludes `node_modules` / `target` / … + time budget  
-- **apply_patch** — unified-diff multi-hunk edits; ambiguous context refused  
-- **web_fetch** — public HTTP(S) only; every redirect hop DNS-validated + IP-pinned; size-capped  
-- **web_search** — DuckDuckGo, no API key  
-- **git_status / git_diff** — approval-free repo inspection  
-- **skills** — `~/.muse/skills/`, `~/.agents/skills/`, project skills; agent loads via `skill` tool  
-- **subagents** — `agent` explore/general; usage rolled into the parent session  
-- **Windows ecosystem spawn** — npm `.cmd` shims resolved correctly so ensure actually installs Executor / skills / etc.
-
-### Built-in tools
-
-```text
-read_file · list_dir · write_file · edit_file · multi_edit · apply_patch · bash
-grep · glob · web_fetch · web_search · git_status · git_diff
-graphify · plur · ruflo · executor · skill · memory · todo_write · submit_plan · agent
-```
+| knowledge | indigo / orange | `graphify` `plur` `ruflo` `skill` `memory` … |
 
 ---
 
 ## ADE / Orca
 
-Usage for host tools (**never** includes your API key):
-
-| Path | Purpose |
-|------|---------|
-| `~/.muse/status.json` | Live tokens / est. USD / model / state |
+| Path | Role |
+|------|------|
+| `~/.muse/status.json` | Live tokens · cost · model · state |
 | `~/.muse/usage.jsonl` | Per-request log |
 | `~/.muse/ade.json` | Discovery manifest |
-| `~/.muse/ecosystem.json` | Ecosystem ensure marker (CLIs + packs) |
+| Window title | `🔵 meta · <first prompt…>` |
 
-```powershell
+```text
 meta install-hook
-orca terminal create --worktree active --command "meta" --title "Meta CLI" --json
+orca terminal create --command meta
 ```
 
 ---
@@ -318,32 +250,11 @@ reasoning_effort = "high"
 max_turns = 40
 stream = true
 context_window = 1000000
-# mouse = false   # preference flag; capture is always on for caret + scrollbar
-```
-
-Env overrides (user-level is fine): `MODEL_API_KEY` / `MUSE_API_KEY` / `META_API_KEY`, `META_MODEL`, `META_CWD`, `MUSE_SHELL`.
-
----
-
-## Model API
-
-Responses API (`POST /v1/responses`), default **`muse-spark-1.1`**, streaming + reasoning continuity.  
-Docs: https://dev.meta.ai/docs/getting-started/overview
-
----
-
-## Development
-
-```powershell
-cd meta-cli
-cargo test
-cargo build --release
-# install to ~/.local/bin
-.\install.ps1
+mouse = true
 ```
 
 ---
 
 ## License
 
-MIT — unofficial community software; not a Meta product.
+MIT — see [LICENSE](./LICENSE).

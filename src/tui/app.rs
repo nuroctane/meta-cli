@@ -411,6 +411,10 @@ pub struct App {
     pub selection: Option<TextRange>,
     /// Plain text of every wrapped transcript line (for copy). Rebuilt each draw.
     pub plain_lines: Vec<String>,
+    /// Per-cell wrap cache — avoids re-wrapping the whole transcript every frame.
+    pub wrap_cache_width: u16,
+    pub wrap_cache_keys: Vec<u64>,
+    pub wrap_cache_parts: Vec<Vec<ratatui::text::Line<'static>>>,
     /// Per wrapped transcript line: `Some(cell_idx)` when that line is a
     /// collapsible card header (click to expand/collapse).
     pub hit_headers: Vec<Option<usize>>,
@@ -564,6 +568,9 @@ pub async fn run_tui(
         select_anchor: None,
         selection: None,
         plain_lines: Vec::new(),
+        wrap_cache_width: 0,
+        wrap_cache_keys: Vec::new(),
+        wrap_cache_parts: Vec::new(),
         hit_headers: Vec::new(),
         line_cells: Vec::new(),
         transcript_top: 0,

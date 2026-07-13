@@ -22,6 +22,10 @@ pub struct ResponseRequest {
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
+    /// Stable key so Meta can reuse cached prompt prefixes (system instructions)
+    /// across turns in the same session — surfaces as `cached_tokens` in usage.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

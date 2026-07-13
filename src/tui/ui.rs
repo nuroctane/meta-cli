@@ -191,10 +191,25 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
 // ── transcript ─────────────────────────────────────────────────────────────
 fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_w = area.width.saturating_sub(2).max(10);
+    // Spinner frame bucket so animated cells re-wrap only when the glyph changes.
+    let spin_i = (app.spinner_epoch.elapsed().as_millis() / theme::SPINNER_MS) as u64;
 
-    // Wrap cell-by-cell so every wrapped line keeps a back-pointer to the user
-    // prompt that owns it — that's what lets the prompt stick to the top while
-    // you scroll through the work it produced.
+    // Per-cell wrap cache: finished rows are stable; live thinking/tools/stream
+    // only recompute when content or spinner frame changes.
+    if app.wrap_cache_width != inner_w || app.wrap_cache_keys.len() != app.cells.len() {
+        app.wrap_cache_width = inner_w;
+        app.wrap_cache_keys.clear();
+        app.wrap_cache_parts.clear();
+        app.wrap_cache_keys.resize(app.cells.len(), 0);
+        app.wrap_cache_parts
+            .resize_with(app.cells.len(), Vec::new);
+    }
+    // Grow if cells were appended without len mismatch (shouldn't happen).
+    while app.wrap_cache_keys.len() < app.cells.len() {
+        app.wrap_cache_keys.push(0);
+        app.wrap_cache_parts.push(Vec::new());
+    }
+
     let mut wrapped: Vec<Line<'static>> = Vec::new();
     let mut owner: Vec<Option<usize>> = Vec::new(); // index into `prompts`
     let mut is_prompt_head: Vec<bool> = Vec::new();
@@ -211,9 +226,29 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             prompts.push(text.clone());
             current = Some(prompts.len() - 1);
         }
-        let mut cell_out: Vec<Line<'static>> = Vec::new();
-        cell_lines(app, cell, cell_idx, &mut cell_out);
-        let w = wrap::wrap_lines(&cell_out, inner_w);
+        let key = cell_wrap_key(cell, spin_i);
+        let need = app.wrap_cache_keys.get(cell_idx).copied() != Some(key)
+            || app
+                .wrap_cache_parts
+                .get(cell_idx)
+                .map(|p| p.is_empty() && key != 0)
+                .unwrap_or(true);
+        if need {
+            let mut cell_out: Vec<Line<'static>> = Vec::new();
+            cell_lines(app, cell, cell_idx, &mut cell_out);
+            let w = wrap::wrap_lines(&cell_out, inner_w);
+            if let Some(slot) = app.wrap_cache_parts.get_mut(cell_idx) {
+                *slot = w;
+            }
+            if let Some(k) = app.wrap_cache_keys.get_mut(cell_idx) {
+                *k = key;
+            }
+        }
+        let w = app
+            .wrap_cache_parts
+            .get(cell_idx)
+            .cloned()
+            .unwrap_or_default();
         let collapsible = cell.is_collapsible();
         let peekable = cell.is_peekable();
         let mut header_marked = false;
@@ -1593,10 +1628,11 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
 // ── approval modal ─────────────────────────────────────────────────────────
 fn draw_approval(f: &mut Frame, app: &App, area: Rect) {
     let Some(a) = &app.approval else { return };
-    let pretty = pretty_args(&a.args);
-    let arg_lines: Vec<&str> = pretty.lines().take(10).collect();
-    let h = (arg_lines.len() as u16 + 6).min(area.height.saturating_sub(2));
-    let w = 72.min(area.width.saturating_sub(4));
+    let preview = approval_preview(&a.name, &a.args);
+    let max_body = (area.height.saturating_sub(6)).min(18).max(6) as usize;
+    let body_lines: Vec<&str> = preview.iter().map(|s| s.as_str()).take(max_body).collect();
+    let h = (body_lines.len() as u16 + 5).min(area.height.saturating_sub(2));
+    let w = 78.min(area.width.saturating_sub(4)).max(48);
     let rect = Rect {
         x: (area.width.saturating_sub(w)) / 2,
         y: (area.height.saturating_sub(h)) / 2,
@@ -1604,62 +1640,231 @@ fn draw_approval(f: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
     f.render_widget(Clear, rect);
+    let family = theme::tool_family(&a.name);
+    let hue = theme::tool_color(&a.name);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme::META_BLUE))
+        .border_style(Style::default().fg(hue))
         .style(Style::default().bg(theme::SURFACE_2))
         .title(Span::styled(
-            format!("  approve · {}  ", a.name),
-            Style::default()
-                .fg(theme::META_BLUE)
-                .add_modifier(Modifier::BOLD),
+            format!("  approve · {} · {family}  ", a.name),
+            Style::default().fg(hue).add_modifier(Modifier::BOLD),
+        ))
+        .title_bottom(Span::styled(
+            "  y once   a always   n deny  ",
+            Style::default().fg(theme::FAINT),
         ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
+    let col_w = (inner.width as usize).saturating_sub(4).max(20);
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::default());
-    for l in &arg_lines {
+    for l in &body_lines {
+        let style = if l.starts_with('+') && !l.starts_with("+++") {
+            Style::default().fg(theme::SUCCESS)
+        } else if l.starts_with('-') && !l.starts_with("---") {
+            Style::default().fg(theme::ERROR)
+        } else if l.starts_with("@@") || l.starts_with("path ") || l.starts_with("cmd ") {
+            Style::default().fg(theme::META_BLUE_SKY)
+        } else {
+            Style::default().fg(theme::MUTED)
+        };
         lines.push(Line::from(Span::styled(
-            format!("  {}", truncate(l, (inner.width as usize).saturating_sub(4))),
-            Style::default().fg(theme::FG),
+            format!("  {}", truncate(l, col_w)),
+            style,
         )));
     }
-    lines.push(Line::default());
-    lines.push(Line::from(vec![
-        Span::styled(
-            "  y ".to_string(),
-            Style::default()
-                .fg(theme::BG)
-                .bg(theme::SUCCESS)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" once   ".to_string(), theme::style_status()),
-        Span::styled(
-            " a ".to_string(),
-            Style::default()
-                .fg(theme::BG)
-                .bg(theme::META_BLUE)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!(" always {}   ", a.name),
-            theme::style_status(),
-        ),
-        Span::styled(
-            " n ".to_string(),
-            Style::default()
-                .fg(theme::BG)
-                .bg(theme::ERROR)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(" deny".to_string(), theme::style_status()),
-    ]));
+    if preview.len() > max_body {
+        lines.push(Line::from(Span::styled(
+            format!("  … +{} more lines", preview.len() - max_body),
+            theme::style_faint(),
+        )));
+    }
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
         inner,
     );
+}
+
+/// Human-readable approval body: unified mini-diff for edits, command for bash.
+fn approval_preview(tool: &str, args: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args) else {
+        return pretty_args(args)
+            .lines()
+            .map(|s| s.to_string())
+            .take(16)
+            .collect();
+    };
+    match tool {
+        "edit_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let old = v.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+            let new = v.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+            let mut out = vec![format!("path {path}")];
+            out.extend(mini_unified_diff(old, new, 12));
+            out
+        }
+        "write_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+            let mut out = vec![format!("path {path}  (write)")];
+            for l in content.lines().take(12) {
+                out.push(format!("+{l}"));
+            }
+            if content.lines().count() > 12 {
+                out.push(format!("… +{} lines", content.lines().count() - 12));
+            }
+            out
+        }
+        "multi_edit" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let mut out = vec![format!("path {path}  (multi_edit)")];
+            if let Some(edits) = v.get("edits").and_then(|e| e.as_array()) {
+                out.push(format!("@@ {} edit(s)", edits.len()));
+                for (i, e) in edits.iter().take(4).enumerate() {
+                    let old = e.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+                    let new = e.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push(format!("── edit {} ──", i + 1));
+                    out.extend(mini_unified_diff(old, new, 4));
+                }
+                if edits.len() > 4 {
+                    out.push(format!("… +{} more edits", edits.len() - 4));
+                }
+            }
+            out
+        }
+        "apply_patch" => {
+            let patch = v
+                .get("patch")
+                .or_else(|| v.get("input"))
+                .and_then(|x| x.as_str())
+                .unwrap_or(args);
+            patch
+                .lines()
+                .take(16)
+                .map(|s| s.to_string())
+                .collect()
+        }
+        "bash" => {
+            let cmd = v.get("command").and_then(|x| x.as_str()).unwrap_or(args);
+            vec![format!("cmd {cmd}")]
+        }
+        _ => pretty_args(args)
+            .lines()
+            .map(|s| s.to_string())
+            .take(14)
+            .collect(),
+    }
+}
+
+/// Tiny unified-diff for approval trust (not a full Myers diff).
+fn mini_unified_diff(old: &str, new: &str, max_lines: usize) -> Vec<String> {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let mut out = Vec::new();
+    out.push(format!(
+        "@@ -{} +{} @@",
+        old_lines.len(),
+        new_lines.len()
+    ));
+    // Prefer showing the change region: first differing line onward.
+    let mut i = 0usize;
+    while i < old_lines.len() && i < new_lines.len() && old_lines[i] == new_lines[i] {
+        i += 1;
+    }
+    let context = i.saturating_sub(1);
+    for l in old_lines.iter().skip(context).take(max_lines) {
+        out.push(format!("-{l}"));
+    }
+    for l in new_lines.iter().skip(context).take(max_lines) {
+        out.push(format!("+{l}"));
+    }
+    if old_lines.len().saturating_sub(context) > max_lines
+        || new_lines.len().saturating_sub(context) > max_lines
+    {
+        out.push("…".into());
+    }
+    out
+}
+
+/// Stable-ish fingerprint so wrap cache can skip finished cells.
+fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    match cell {
+        Cell::Banner => 1u8.hash(&mut h),
+        Cell::User(t) => {
+            2u8.hash(&mut h);
+            t.hash(&mut h);
+        }
+        Cell::Assistant { text, streaming } => {
+            3u8.hash(&mut h);
+            text.hash(&mut h);
+            streaming.hash(&mut h);
+            if *streaming {
+                spin_i.hash(&mut h);
+            }
+        }
+        Cell::Thinking {
+            text,
+            active,
+            duration,
+            expanded,
+            ..
+        } => {
+            4u8.hash(&mut h);
+            text.hash(&mut h);
+            active.hash(&mut h);
+            expanded.hash(&mut h);
+            duration.map(|d| d.as_millis()).hash(&mut h);
+            if *active {
+                spin_i.hash(&mut h);
+            }
+        }
+        Cell::Tool {
+            name,
+            args,
+            result,
+            ok,
+            duration,
+            expanded,
+            ..
+        } => {
+            5u8.hash(&mut h);
+            name.hash(&mut h);
+            args.hash(&mut h);
+            result.hash(&mut h);
+            ok.hash(&mut h);
+            expanded.hash(&mut h);
+            duration.map(|d| d.as_millis()).hash(&mut h);
+            if ok.is_none() {
+                spin_i.hash(&mut h);
+            }
+        }
+        Cell::TurnDone {
+            duration,
+            thought,
+            interrupted,
+        } => {
+            6u8.hash(&mut h);
+            duration.as_millis().hash(&mut h);
+            thought.as_millis().hash(&mut h);
+            interrupted.hash(&mut h);
+        }
+        Cell::Info { text, tone } => {
+            7u8.hash(&mut h);
+            text.hash(&mut h);
+            // tone as discriminant
+            format!("{tone:?}").hash(&mut h);
+        }
+        Cell::Error(t) => {
+            8u8.hash(&mut h);
+            t.hash(&mut h);
+        }
+    }
+    h.finish()
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

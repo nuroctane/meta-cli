@@ -67,9 +67,27 @@ BUILT="${REPO_DIR}/target/release/meta"
 
 DEST_DIR="${HOME}/.local/bin"
 mkdir -p "${DEST_DIR}"
+# Integrity: SHA-256 of the release binary (written next to install + verified after copy).
+if command -v sha256sum >/dev/null 2>&1; then
+  BUILT_HASH="$(sha256sum "${BUILT}" | awk '{print $1}')"
+elif command -v shasum >/dev/null 2>&1; then
+  BUILT_HASH="$(shasum -a 256 "${BUILT}" | awk '{print $1}')"
+else
+  BUILT_HASH=""
+  warn "sha256sum/shasum not found — skipping binary integrity hash"
+fi
 cp -f "${BUILT}" "${DEST_DIR}/meta"
 cp -f "${BUILT}" "${DEST_DIR}/muse"
 chmod +x "${DEST_DIR}/meta" "${DEST_DIR}/muse"
+if [[ -n "${BUILT_HASH}" ]]; then
+  INSTALLED_HASH="$( (sha256sum "${DEST_DIR}/meta" 2>/dev/null || shasum -a 256 "${DEST_DIR}/meta") | awk '{print $1}' )"
+  if [[ "${INSTALLED_HASH}" != "${BUILT_HASH}" ]]; then
+    echo "Integrity check failed: installed meta hash does not match build" >&2
+    exit 1
+  fi
+  echo "${BUILT_HASH}  meta" > "${DEST_DIR}/meta.sha256"
+  ok "SHA-256 ${BUILT_HASH}"
+fi
 export PATH="${DEST_DIR}:${PATH}"
 
 for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do

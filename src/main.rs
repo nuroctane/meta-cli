@@ -335,9 +335,88 @@ fn run_doctor() -> Result<()> {
         }
     }
 
+    // Binary integrity (written by install.ps1 / install.sh)
+    println!();
+    let hash_path = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("bin")
+        .join("meta.sha256");
+    if hash_path.is_file() {
+        if let (Ok(expected_line), Ok(exe)) = (
+            std::fs::read_to_string(&hash_path),
+            std::env::current_exe(),
+        ) {
+            let expected = expected_line
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            match file_sha256(&exe) {
+                Ok(actual) if !expected.is_empty() && actual == expected => {
+                    theme::print_ok(&format!("sha256  {actual}  (matches install record)"));
+                }
+                Ok(actual) if !expected.is_empty() => {
+                    theme::print_err(&format!(
+                        "sha256  {actual}  ≠ recorded {expected}  (re-run install)"
+                    ));
+                }
+                Ok(actual) => theme::print_info(&format!("sha256  {actual}")),
+                Err(e) => theme::print_info(&format!("sha256  (could not hash: {e})")),
+            }
+        }
+    } else {
+        theme::print_info("sha256  no meta.sha256 next to install (optional integrity record)");
+    }
+
     println!();
     theme::print_ok("doctor complete");
     Ok(())
+}
+
+fn file_sha256(path: &std::path::Path) -> std::io::Result<String> {
+    // Lightweight: use Windows certutil / shasum via shell when available.
+    #[cfg(windows)]
+    {
+        let out = std::process::Command::new("certutil")
+            .args(["-hashfile", &path.display().to_string(), "SHA256"])
+            .output()?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            let t = line.trim();
+            if t.len() == 64 && t.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Ok(t.to_lowercase());
+            }
+        }
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "certutil hash parse failed",
+        ));
+    }
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("shasum")
+            .args(["-a", "256"])
+            .arg(path)
+            .output()
+            .or_else(|_| {
+                std::process::Command::new("sha256sum").arg(path).output()
+            })?;
+        let text = String::from_utf8_lossy(&out.stdout);
+        let hash = text
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        if hash.len() == 64 {
+            Ok(hash)
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "sha256 parse failed",
+            ))
+        }
+    }
 }
 
 fn which_bin(name: &str) -> Option<String> {

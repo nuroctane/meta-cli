@@ -184,6 +184,9 @@ impl AgentRunner {
                 }),
                 stream: Some(self.config.stream && !self.is_subagent),
                 parallel_tool_calls: Some(true),
+                // One cache key per session so system instructions + tools can be
+                // prefix-cached across multi-turn agent loops.
+                prompt_cache_key: Some(session.id.clone()),
             };
 
             let mut text_deltas = 0usize;
@@ -801,6 +804,7 @@ pub async fn compact_session(
         }),
         stream: Some(false),
         parallel_tool_calls: None,
+        prompt_cache_key: Some(format!("compact:{}", session.id)),
     };
     let resp = runner.client.create_response(&req).await?;
     if let Some(u) = &resp.usage {

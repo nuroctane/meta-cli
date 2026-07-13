@@ -4,8 +4,8 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "meta",
     version,
-    about = "Meta CLI (unofficial) — coding agent for Meta Model API",
-    long_about = "Meta CLI is an unofficial community coding agent for Meta Model API.\nDefault model: muse-spark-1.1 (switch with --model / /model). Not affiliated with Meta Platforms, Inc.\nRepo: github.com/nuroctane/meta-cli\n\nInvoke as: meta   (alias: muse)"
+    about = "Meta CLI (unofficial) — full coding agent for Meta Model API (TUI · tools · Graphify/PLUR/Ruflo)",
+    long_about = "Meta CLI is an unofficial, fully loaded community coding agent for Meta Model API.\n\nStreaming Meta-blue TUI (timers, peek cards, drag-select, sessions browser),\nnative tools + sandbox, Graphify/PLUR/Ruflo/Executor ecosystem, skills,\nhardened bash/web, API retries + prompt-cache keys, atomic session IO, meta doctor.\n\nDefault model: muse-spark-1.1 (switch with --model / /model).\nNot affiliated with Meta Platforms, Inc.  Repo: github.com/nuroctane/meta-cli\n\nInvoke as: meta   (alias: muse)"
 )]
 pub struct Cli {
     /// Initial prompt for interactive session

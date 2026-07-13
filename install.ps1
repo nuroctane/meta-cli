@@ -148,11 +148,19 @@ function Install-BinarySafe([string]$Source, [string]$Target) {
 }
 $dest = Join-Path $destDir "meta.exe"
 $museAlias = Join-Path $destDir "muse.exe"
+# Integrity: SHA-256 of the release binary (written next to install + verified after copy).
+$builtHash = (Get-FileHash -Algorithm SHA256 -Path $built).Hash.ToLowerInvariant()
 if (-not (Install-BinarySafe $built $dest)) {
     throw "Failed to install primary binary: $dest — quit any running meta session and re-run."
 }
 # Optional alias only — always prefer `meta`
 [void](Install-BinarySafe $built $museAlias)
+$installedHash = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash.ToLowerInvariant()
+if ($installedHash -ne $builtHash) {
+    throw "Integrity check failed: installed meta.exe hash does not match build ($builtHash vs $installedHash)"
+}
+Set-Content -Path (Join-Path $destDir "meta.sha256") -Value "$builtHash  meta.exe" -Encoding ascii
+Write-Ok "SHA-256 $builtHash"
 $env:Path = "$destDir;$env:Path"
 
 # Persist User PATH
