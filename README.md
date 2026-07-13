@@ -1,6 +1,6 @@
 # Meta CLI (unofficial)
 
-**Fully loaded terminal coding agent** for [Meta Model API](https://dev.meta.ai/) — not a thin wrapper. Custom Rust harness, dense Meta-blue TUI, native tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config (default from your config).
+**Fully loaded terminal coding agent** for [Meta Model API](https://dev.meta.ai/) — not a thin wrapper. Custom Rust harness, dense Meta-blue TUI, **native vision**, tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config.
 
 > Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
 
@@ -13,11 +13,12 @@ muse          # legacy alias (same binary)
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · drag-select · always-on scrollbar · ↓ End chip · sticky prompt · sessions browser · approval mini-diff |
-| **Agent** | Manual / plan / auto modes · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
-| **Tools** | **look · extract_frames** · read · edit · bash · web · git · knowledge stack · agent |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · AKM · **800+ skills** — auto-provisioned in the background |
-| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic session/auth IO · API retries · install SHA-256 · `meta doctor` |
+| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff |
+| **Agent** | Manual / plan / auto · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
+| **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
+| **Tools** | read · edit · bash · web · git · knowledge stack · agent |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · AKM · **800+ skills** — background provision |
+| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
 ---
@@ -27,13 +28,12 @@ muse          # legacy alias (same binary)
 | | |
 |--|--|
 | **Real agent, not a wrapper** | Custom Rust harness: modes, tools, sandbox, streaming, cancel, subagents, auto-compact |
-| **One-shot install** | Build · PATH · ecosystem provision · Orca hook · optional auth — one script |
-| **Opens instantly** | Ecosystem repair runs in the **background**; TUI never blocks on npm/uv |
-| **Knowledge stack, auto-wired** | Code graph · shared engrams · vector memory · MCP gateway · skill packs |
-| **Tasteful, dense TUI** | Duration chips, expandable thoughts/tools, click-to-peek, drag-select, sticky prompt, sessions browser |
-| **Hardened by default** | Sandbox, bash denylist, SSRF blocks, atomic writes, API retries, SHA-256 install verify |
-| **Host-panel ready** | Live `status.json` / usage log for Orca-style panels |
-| **Secrets stay local** | API key only in `~/.meta/auth.json` — never in the repo |
+| **Sees media** | Muse multimodal via Responses `input_image` / `input_video` — sparse frames, not frame-by-frame spam |
+| **One-shot install** | Build · PATH · ecosystem · Orca hook · optional auth |
+| **Opens instantly** | Ecosystem repair in the **background**; TUI never blocks on npm/uv |
+| **Knowledge stack** | Code graph · shared engrams · vector memory · MCP gateway · skill packs |
+| **Simple input** | Drag-select · scrollbar · **Ctrl+A / C / V / X** — no mouse “mode” toggle |
+| **Secrets stay local** | API key only in `~/.meta/auth.json` |
 
 ---
 
@@ -46,47 +46,66 @@ muse          # legacy alias (same binary)
 - **Subagents**, todos, plan mode (`submit_plan`), auto-compact under context pressure
 - Project instructions: `META.md` · `AGENTS.md` · `CLAUDE.md` (legacy `MUSE.md` still loaded)
 - Session resume (`-c`, `-r`, `/sessions`) with prompt-first picker
-- **Prompt cache key** per session (helps surface `cached_tokens` / cheaper multi-turn)
+- **Prompt cache key** per session (helps surface `cached_tokens`)
 
 ### Tools (native)
+
 | Family | Tools |
 |--------|--------|
 | read | `read_file` `list_dir` `grep` `glob` |
 | edit | `write_file` `edit_file` `multi_edit` `apply_patch` |
 | shell | `bash` (hardened denylist + timeout) |
-| vision | `look` `extract_frames` (ffmpeg keyframes → Responses vision) |
-| web | `web_search` `web_fetch` (SSRF / obfuscated-IP blocks) |
+| **vision** | **`look`** · **`extract_frames`** |
+| web | `web_search` `web_fetch` (text only; SSRF / private-IP blocks) |
 | git | `git_status` `git_diff` |
 | knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |
 | agent | `todo_write` `submit_plan` `agent` |
 
+### Vision (design / multimodal)
+
+Muse Spark accepts multimodal input on the Responses API. Meta CLI wires that in:
+
+| Tool | What it does |
+|------|----------------|
+| **`look`** | Attach workspace **image(s)** (png/jpg/webp/gif) or a **short video** (mp4/webm/mov, ~20MB cap) so the model *sees* them on the next turn |
+| **`extract_frames`** | Sparse **keyframes** via **ffmpeg** (default ~1 fps, max ~8) → `.meta/frames/<name>/` and auto-queues `look` |
+
+**Efficient design-from-video (e.g. 10s reference clip):**
+
+```text
+meta "steal UI design tokens from demo.mp4 and scaffold a matching component"
+```
+
+Or: `extract_frames` → model inspects stills → implement with **design-eng** skills.
+
+- Paths like `demo.mp4` / `shot.png` in the user prompt **auto-attach** when the file exists in the workspace  
+- Prefer sparse frames over frame-by-frame every pixel  
+- Longer / huge videos: extract frames first; don’t `look` a giant file  
+
 ### Ecosystem (auto-provisioned)
+
 | Piece | Role |
 |-------|------|
 | **Graphify** | Code knowledge graph (`graphify-out/`) — query / path / explain |
 | **PLUR** | Shared engram memory across tools/sessions |
 | **Ruflo** | Vector memory + swarm/hive patterns |
 | **Executor** | MCP / OpenAPI gateway catalog |
-| **Skills** | Progressive packs (incl. large cyber skill set) via `skill` tool |
+| **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
 | **AKM** | Agent knowledge package manager (when Node available) |
 
 ### TUI (Meta-blue)
 - Streaming assistant · violet **thought** cards · colour-coded **tool** cards  
-- **Duration chips** on thoughts, tools, and end-of-turn (`took …` · `thought …`)  
-- Cards **collapsed by default** · click `▸` to expand · **click-to-peek** dialogue  
-- **Drag text to select** (highlight + auto-copy) · **drag scrollbar** always on  
-- Click **↓ N · End** to jump to latest  
-- Sticky PROMPT banner · click-to-caret · clipboard · sessions modal  
-- Approval modal with **mini unified-diff** for edits  
-- Per-cell **wrap cache** so long sessions stay snappy while animating  
+- **Duration chips** · cards collapsed by default · click-to-peek · **↓ End**  
+- **Drag text to select** (auto-copy) · **drag scrollbar** always on  
+- **Ctrl+A** select-all · **Ctrl+C** copy · **Ctrl+V** paste · **Ctrl+X** cut  
+- Sticky PROMPT banner · sessions modal · approval **mini-diff**  
 - Splash shows the **active model title** only there; rest of chrome is model-agnostic  
 
 ### Reliability & safety
-- Atomic writes for sessions, status, auth, config, history under **`~/.meta/`**  
-- API client **retries** with backoff (429 / 5xx / flaky streams)  
-- Real **process timeouts** for graphify / ecosystem CLIs (kill on hang)  
-- Config validation · auth key hygiene · `meta doctor`  
-- Install scripts verify **SHA-256** of the installed binary  
+- Atomic writes under **`~/.meta/`** (auth, sessions, status, history)  
+- API **retries** · process timeouts · config validation · `meta doctor`  
+- Install scripts verify **SHA-256** of the binary  
+- Gap-fill migrate from legacy `~/.muse/` (never overwrites existing `.meta` files)  
 
 ---
 
@@ -115,14 +134,14 @@ That command will:
 7. Save auth if `META_API_KEY` / `MODEL_API_KEY` is set (**machine-local only**)  
 
 ```powershell
-meta auth login    # paste Meta Model API key → ~/.meta/auth.json only
+meta auth login    # → ~/.meta/auth.json only
 meta               # open the TUI
-meta doctor        # health check
+meta doctor        # health check (incl. ffmpeg / vision)
 ```
 
 Key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
 
-### Already cloned (Laboratory / local)
+### Already cloned
 
 ```powershell
 cd meta-cli
@@ -137,6 +156,7 @@ cd meta-cli
 | **Node.js 20+** | PLUR, Ruflo, Executor, skills CLI, AKM |
 | **uv** (or Python 3.10+) | Graphify |
 | **ripgrep** | Fast `grep` / `glob` (falls back if missing) |
+| **ffmpeg** | `extract_frames` / design-from-video (optional; `look` still works on short videos & images) |
 
 ---
 
@@ -145,11 +165,11 @@ cd meta-cli
 | On GitHub | On your PC only |
 |-----------|-----------------|
 | Source, README, install scripts | `~/.meta/auth.json` (API key) |
-| No keys, no `.env`, no sessions | `~/.meta/sessions/`, usage logs, ecosystem marker |
+| No keys, no `.env`, no sessions | `~/.meta/sessions/`, usage logs, frames under workspace `.meta/frames/` |
 
 See [SECURITY.md](./SECURITY.md). **Never commit your Meta API key.**
 
-Upgrading from older builds: first launch migrates key files from `~/.muse/` → `~/.meta/` when the new home is empty.
+Upgrading from older builds: gap-fill copy from `~/.muse/` → `~/.meta/` for any missing files (auth, sessions, ruflo, skills, …). `meta auth logout` clears **both** homes.
 
 ---
 
@@ -158,16 +178,17 @@ Upgrading from older builds: first launch migrates key files from `~/.muse/` →
 ```text
 meta                         # interactive Meta-blue TUI
 meta "fix the bug"          # start with a prompt
+meta "design from ref.mp4"   # vision: auto-attach media if path exists
 meta -c                      # continue last session in this directory
 meta -r <session-id>         # resume a session
-meta --mode plan "…"         # plan mode (read-only tools)
+meta --mode plan "…"         # plan mode (read-only tools; look is free)
 meta run "…" -y              # headless + auto-approve
 meta sessions
-meta usage                   # token / cost for host panels
+meta usage
 meta auth status
-meta ecosystem status        # graphify · plur · ruflo · executor · packs
+meta ecosystem status
 meta ecosystem ensure --force
-meta doctor                  # auth · config · ecosystem · PATH · sha256
+meta doctor                  # auth · config · ecosystem · PATH · ffmpeg · sha256
 ```
 
 Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last session / Laboratory).
@@ -178,23 +199,13 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 
 | Mode | Behavior |
 |------|----------|
-| **manual** | Reads free; writes / shell need approval (`y` / `a` / `n`) |
-| **plan** | Research only — read tools + graphify query + plur/ruflo search |
+| **manual** | Reads free (`look`, reads, …); writes / shell / `extract_frames` need approval (`y` / `a` / `n`) |
+| **plan** | Research only — read tools + `look` + graphify query + plur/ruflo search |
 | **auto** | Auto-approve tools (`-y` / `--mode auto`) |
 
 ---
 
 ## TUI
-
-### Highlights
-
-- **Duration chips** — `took 1.2s` on thoughts, tools, and finished turns (`thought …` always posted)  
-- **Collapsed cards** — click `▸` or press `e` to expand; **click-to-peek** for full content  
-- **Drag-select** chat text (auto-copy) · **drag scrollbar** · click **↓ End**  
-- **Streaming** + violet thinking · colour-coded tools · sticky PROMPT banner  
-- **Approvals** with mini **diff preview** for edits · Esc cancel  
-- **Sessions** browser: `/sessions` = `/resume` = `Ctrl+R`  
-- Markdown input, usage + cost + **ctx%**, model shown only on splash  
 
 ### Keys
 
@@ -205,11 +216,14 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | **Click `↓ N · End`** | Jump to latest |
 | Click card / `▸` | Peek / expand |
 | `p` / `e` (empty input) | Peek latest / expand |
+| **Ctrl+A** | Select-all input (or whole transcript if input empty) |
+| **Ctrl+C** | Copy selection (transcript or input); else interrupt / double-tap quit |
+| **Ctrl+V** | Paste into input |
+| **Ctrl+X** | Cut input selection (or whole input) |
 | `Shift+Tab` | Cycle permission mode |
 | `Ctrl+R` | Sessions browser |
 | `y` / `a` / `n` | Approve once / always / deny |
 | `Esc` | Close peek, then cancel turn |
-| `Ctrl+C` | Copy selection, or double-tap quit |
 
 ### Slash commands
 
@@ -221,7 +235,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/graphify` `/plur` `/ruflo` `/ecosystem` | Knowledge stack |
 | `/compact` `/usage` `/model` `/effort` | Context & model |
 | `/sessions` `/resume` | Same sessions browser |
-| `/init` `/config` `/mouse` `/clear` `/new` `/exit` | Project & shell |
+| `/init` `/config` `/clear` `/new` `/exit` | Project & shell |
 
 ### Colour system
 
@@ -230,6 +244,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | read | sky | `read_file` `list_dir` `grep` `glob` |
 | edit | violet | `write_file` `edit_file` `multi_edit` `apply_patch` |
 | shell | amber | `bash` |
+| vision | pink | `look` `extract_frames` |
 | web | teal | `web_fetch` `web_search` |
 | git | cyan | `git_status` `git_diff` |
 | knowledge | indigo / orange | `graphify` `plur` `ruflo` `skill` `memory` … |
@@ -262,10 +277,9 @@ reasoning_effort = "high"
 max_turns = 40
 stream = true
 context_window = 1000000
-mouse = true
 ```
 
-Override home with `META_HOME` if you need a custom data directory.
+Override home with `META_HOME` (legacy `MUSE_HOME` still honored). Env: `META_API_KEY` / `MODEL_API_KEY` / `META_MODEL`.
 
 ---
 

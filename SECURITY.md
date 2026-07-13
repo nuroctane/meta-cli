@@ -9,10 +9,13 @@ Meta CLI is **unofficial** community software. It is not affiliated with Meta Pl
 | `~/.meta/auth.json` | Meta Model API key after `meta auth login` |
 | env `META_API_KEY` / `MODEL_API_KEY` | Optional override (never print in logs). Legacy: `MUSE_API_KEY` |
 | `~/.meta/sessions/`, `status.json`, `usage.jsonl` | Session + usage metadata (no key in usage log) |
+| Workspace `.meta/frames/` | Extracted video keyframes (local artifacts; may be large) |
 
-**Never commit** `~/.meta/`, `.env` files with keys, or session dumps.
+**Never commit** `~/.meta/`, workspace `.meta/frames/` dumps of sensitive UI, `.env` files with keys, or session dumps.
 
-Older installs used `~/.muse/`; Meta CLI migrates key files into `~/.meta/` on first launch when the new home is empty.
+Session `input_items` may include base64 media when vision (`look` / auto-attach) is used — treat session files as potentially sensitive.
+
+Older installs used `~/.muse/`. Meta CLI **gap-fills** missing files into `~/.meta/` (does not overwrite). `meta auth logout` removes auth from **both** `~/.meta` and legacy `~/.muse`.
 
 ## Install scripts
 

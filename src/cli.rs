@@ -4,17 +4,19 @@ use clap::{Parser, Subcommand};
 #[command(
     name = "meta",
     version,
-    about = "Meta CLI (unofficial) — fully loaded Meta Model API coding agent · TUI · tools · Graphify/PLUR/Ruflo · 800+ skills",
+    about = "Meta CLI (unofficial) — vision · TUI · tools · Graphify/PLUR/Ruflo · 800+ skills",
     long_about = "Meta CLI — unofficial, fully loaded community coding agent for Meta Model API.\n\n\
 What you get:\n\
   · Streaming Meta-blue TUI — duration chips, expandable thought/tool cards,\n\
-    click-to-peek, drag-select + always-on scrollbar, sessions browser, sticky prompt\n\
+    click-to-peek, drag-select + scrollbar, Ctrl+A/C/V, sessions browser\n\
+  · Vision — look (images/short video) · extract_frames (ffmpeg keyframes)\n\
+    via Responses input_image / input_video; media paths in prompts auto-attach\n\
   · Real agent harness — manual/plan/auto modes, tool loop, subagents, todos,\n\
     auto-compact, approvals with mini-diff, Esc cancel, Shift+Tab live mode flip\n\
   · Native tools — read/edit/shell/web/git + knowledge stack\n\
   · Ecosystem auto-wired — Graphify · PLUR · Ruflo · Executor · 800+ skills · AKM\n\
   · Hardened by default — sandbox, bash denylist, SSRF blocks, API retries,\n\
-    prompt-cache keys, atomic session IO, install SHA-256, meta doctor\n\
+    prompt-cache keys, atomic ~/.meta IO, install SHA-256, meta doctor\n\
   · Host panels — live status.json / usage.jsonl for ADE/Orca-style dashboards\n\n\
 Model: any Meta Model API id via --model / /model / config (default from config).\n\
 Secrets stay in ~/.meta/ only.  Not affiliated with Meta Platforms, Inc.\n\
