@@ -442,11 +442,21 @@ fn run_doctor() -> Result<()> {
     // Config
     match load_config() {
         Ok(cfg) => {
+            let cost_cap = cfg
+                .max_session_cost_usd
+                .map(|c| format!("${c:.2}"))
+                .unwrap_or_else(|| "∞$".into());
+            let tok_cap = cfg
+                .max_session_tokens
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "∞tok".into());
             theme::print_ok(&format!(
-                "config  model={} effort={} max_turns={}  ({})",
+                "config  model={} effort={} max_turns={} budget={}/{}  ({})",
                 cfg.model,
                 cfg.reasoning_effort,
                 cfg.max_turns,
+                cost_cap,
+                tok_cap,
                 config::config_path().display()
             ));
         }

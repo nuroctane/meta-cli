@@ -52,6 +52,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/ruflo", "vector memory / swarm: status | search | store"),
     ("/ecosystem", "graphify · plur · ruflo readiness"),
     ("/usage", "token usage + cost for this session  (/cost)"),
+    ("/budget", "session spend ceiling: /budget [cost <usd>|tokens <n>|clear|save]"),
     ("/context", "context-window utilization for this session"),
     ("/status", "session snapshot: model · mode · cwd · tokens"),
     ("/doctor", "health check: version · auth · ecosystem · shell"),
@@ -3000,6 +3001,7 @@ impl App {
                 }
             }
             "/usage" | "/cost" => self.cmd_usage(),
+            "/budget" => self.cmd_budget(&arg),
             "/context" => self.cmd_context(),
             "/status" => self.cmd_status(),
             "/doctor" => self.cmd_doctor(),
@@ -3403,11 +3405,22 @@ impl App {
 
     fn cmd_usage(&mut self) {
         let u = &self.u_session;
+        let cost_cap = self
+            .cfg
+            .max_session_cost_usd
+            .map(|c| format!("${c:.4}"))
+            .unwrap_or_else(|| "∞".into());
+        let tok_cap = self
+            .cfg
+            .max_session_tokens
+            .map(|t| fmt_num(t))
+            .unwrap_or_else(|| "∞".into());
         self.push_note(
             Tone::Usage,
             format!(
             "session usage\n  input    {} tok ({} cached)\n  output   {} tok ({} reasoning)\n  \
-             total    {} tok\n  est cost ${:.4}\n  status   {}",
+             total    {} tok  (cap {tok_cap})\n  est cost ${:.4}  (cap {cost_cap})\n  status   {}\n  \
+             set a ceiling with /budget",
             fmt_num(u.input_tokens),
             fmt_num(u.cached_tokens),
             fmt_num(u.output_tokens),
@@ -3416,6 +3429,94 @@ impl App {
             u.estimated_cost_usd(),
             crate::config::status_path().display(),
         ));
+    }
+
+    /// Session spend ceiling: show, set cost/tokens, clear, or save to config.toml.
+    fn cmd_budget(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() || arg == "show" {
+            let cost = self
+                .cfg
+                .max_session_cost_usd
+                .map(|c| format!("${c:.4}"))
+                .unwrap_or_else(|| "unlimited".into());
+            let toks = self
+                .cfg
+                .max_session_tokens
+                .map(|t| fmt_num(t))
+                .unwrap_or_else(|| "unlimited".into());
+            let used_c = self.u_session.estimated_cost_usd();
+            let used_t = self.u_session.total_tokens;
+            self.push_note(
+                Tone::Usage,
+                format!(
+                    "budget\n  cost    {cost}  · spent ${used_c:.4}\n  tokens  {toks}  · used {}\n  \
+                     /budget cost <usd>   e.g. /budget cost 2.5\n  \
+                     /budget tokens <n>   e.g. /budget tokens 500000\n  \
+                     /budget clear        remove ceilings this process\n  \
+                     /budget save         write current ceilings to config.toml",
+                    fmt_num(used_t),
+                ),
+            );
+            return;
+        }
+        let mut parts = arg.split_whitespace();
+        let cmd = parts.next().unwrap_or("");
+        match cmd {
+            "clear" => {
+                self.cfg.max_session_cost_usd = None;
+                self.cfg.max_session_tokens = None;
+                self.push_note(Tone::Usage, "budget cleared (unlimited for this process)".into());
+            }
+            "save" => match crate::config::save_config(&self.cfg) {
+                Ok(()) => self.push_note(
+                    Tone::Usage,
+                    format!(
+                        "budget saved to {}",
+                        crate::config::config_path().display()
+                    ),
+                ),
+                Err(e) => self.push_error(format!("could not save config: {e}")),
+            },
+            "cost" => {
+                let Some(v) = parts.next() else {
+                    self.push_error("usage: /budget cost <usd>".into());
+                    return;
+                };
+                match v.parse::<f64>() {
+                    Ok(n) if n.is_finite() && n >= 0.0 => {
+                        self.cfg.max_session_cost_usd = Some(n);
+                        self.push_note(
+                            Tone::Usage,
+                            format!("budget cost set to ${n:.4} (this process · /budget save to persist)"),
+                        );
+                    }
+                    _ => self.push_error("cost must be a non-negative number".into()),
+                }
+            }
+            "tokens" => {
+                let Some(v) = parts.next() else {
+                    self.push_error("usage: /budget tokens <n>".into());
+                    return;
+                };
+                match v.parse::<u64>() {
+                    Ok(n) if n > 0 => {
+                        self.cfg.max_session_tokens = Some(n);
+                        self.push_note(
+                            Tone::Usage,
+                            format!(
+                                "budget tokens set to {} (this process · /budget save to persist)",
+                                fmt_num(n)
+                            ),
+                        );
+                    }
+                    _ => self.push_error("tokens must be a positive integer".into()),
+                }
+            }
+            _ => self.push_error(
+                "usage: /budget [cost <usd>|tokens <n>|clear|save]".into(),
+            ),
+        }
     }
 
     /// Change the workspace the agent's tools are sandboxed to. `~` expands to

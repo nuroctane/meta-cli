@@ -151,6 +151,10 @@ impl AgentRunner {
             if turns > self.config.max_turns {
                 return Err(MuseError::MaxTurns(self.config.max_turns));
             }
+            if let Some(msg) = session_budget_exceeded(&self.config, usage) {
+                let _ = tx.send(AgentEvent::Status(msg.clone()));
+                return Err(MuseError::Budget(msg));
+            }
 
             // Auto-compact at most once per user turn (Claude-style pressure relief).
             if !did_auto_compact && should_auto_compact(usage, &self.config) {
@@ -776,6 +780,26 @@ mod tests {
     }
 
     #[test]
+    fn session_budget_trips_on_cost_and_tokens() {
+        use crate::usage::TokenUsage;
+        let mut cfg = Config::default();
+        let mut usage = UsageTracker::new("t".into(), "m".into(), PathBuf::from("."));
+        assert!(session_budget_exceeded(&cfg, &usage).is_none());
+        cfg.max_session_cost_usd = Some(0.01);
+        // Seed enough tokens that estimated cost exceeds $0.01 at default prices.
+        let mut u = TokenUsage::default();
+        u.input_tokens = 50_000;
+        u.total_tokens = 50_000;
+        usage.seed_session(u.clone());
+        assert!(session_budget_exceeded(&cfg, &usage).is_some());
+        cfg.max_session_cost_usd = None;
+        cfg.max_session_tokens = Some(10_000);
+        assert!(session_budget_exceeded(&cfg, &usage).is_some());
+        cfg.max_session_tokens = Some(1_000_000);
+        assert!(session_budget_exceeded(&cfg, &usage).is_none());
+    }
+
+    #[test]
     fn browser_perception_is_free_control_is_gated() {
         for free in ["tabs", "scan", "snapshot", "tabtree", "status", "console", "network"] {
             let a = format!(r#"{{"action":"{free}"}}"#);
@@ -822,6 +846,29 @@ pub(crate) fn pair_interrupted(items: &mut Vec<Value>, calls: &[FunctionCallRef]
         items.push(function_call_output_item(&call_id, INTERRUPT_OUTPUT));
     }
     n
+}
+
+/// Returns a human-readable reason when the session has hit a configured
+/// cost or token ceiling (checked before each API call).
+pub fn session_budget_exceeded(cfg: &Config, usage: &UsageTracker) -> Option<String> {
+    let u = usage.session_usage();
+    if let Some(max) = cfg.max_session_cost_usd {
+        let cost = u.estimated_cost_usd();
+        if cost >= max {
+            return Some(format!(
+                "session cost ${cost:.4} ≥ budget ${max:.4} — raise with /budget cost <n> or max_session_cost_usd in config"
+            ));
+        }
+    }
+    if let Some(max) = cfg.max_session_tokens {
+        if u.total_tokens >= max {
+            return Some(format!(
+                "session tokens {} ≥ budget {} — raise with /budget tokens <n> or max_session_tokens in config",
+                u.total_tokens, max
+            ));
+        }
+    }
+    None
 }
 
 /// In PLAN mode, shell runs freely for reading, parsing, analysis, and scratch

@@ -64,6 +64,14 @@ pub struct Config {
     /// `0` = unlimited (legacy behavior).
     #[serde(default = "default_tool_result_max_chars")]
     pub tool_result_max_chars: u64,
+    /// Hard stop when session estimated cost reaches this USD amount.
+    /// `None` / omitted = unlimited.
+    #[serde(default)]
+    pub max_session_cost_usd: Option<f64>,
+    /// Hard stop when session total_tokens reaches this value.
+    /// `None` / omitted = unlimited.
+    #[serde(default)]
+    pub max_session_tokens: Option<u64>,
 }
 
 fn default_model() -> String {
@@ -98,6 +106,8 @@ impl Default for Config {
             stream: true,
             context_window: default_context_window(),
             tool_result_max_chars: default_tool_result_max_chars(),
+            max_session_cost_usd: None,
+            max_session_tokens: None,
         }
     }
 }
@@ -375,6 +385,18 @@ impl Config {
         }
         if self.base_url.is_empty() || !(self.base_url.starts_with("http://") || self.base_url.starts_with("https://")) {
             return Err(MuseError::Config(format!("invalid base_url '{}'", self.base_url)));
+        }
+        if let Some(c) = self.max_session_cost_usd {
+            if !c.is_finite() || c < 0.0 {
+                return Err(MuseError::Config(
+                    "max_session_cost_usd must be a non-negative number".into(),
+                ));
+            }
+        }
+        if let Some(0) = self.max_session_tokens {
+            return Err(MuseError::Config(
+                "max_session_tokens must be > 0 when set".into(),
+            ));
         }
         Ok(())
     }
