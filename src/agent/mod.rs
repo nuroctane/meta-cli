@@ -1,3 +1,4 @@
+pub mod hooks;
 pub mod memory;
 pub mod r#loop;
 pub mod mode;

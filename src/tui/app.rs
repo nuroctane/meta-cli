@@ -53,10 +53,12 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/ecosystem", "graphify · plur · ruflo readiness"),
     ("/usage", "token usage + cost for this session  (/cost)"),
     ("/budget", "session spend ceiling: /budget [cost <usd>|tokens <n>|clear|save]"),
+    ("/poor", "toggle cost-saver: skip PLUR inject + skills catalog + long memory in prompt"),
     ("/context", "context-window utilization for this session"),
     ("/status", "session snapshot: model · mode · cwd · tokens"),
     ("/doctor", "health check: version · auth · ecosystem · shell"),
     ("/permissions", "show or reload allow/deny/ask rules (permissions.toml)"),
+    ("/hooks", "show local tool hook status (hooks.toml)"),
     ("/model", "show or switch model"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
@@ -2536,6 +2538,7 @@ impl App {
             approved_tools: self.approved_tools.clone(),
             tools: host,
             permissions: self.permissions.clone(),
+            hooks: agent::hooks::HooksConfig::load(),
             is_subagent: false,
         }
     }
@@ -3007,7 +3010,12 @@ impl App {
             }
             "/usage" | "/cost" => self.cmd_usage(),
             "/budget" => self.cmd_budget(&arg),
+            "/poor" => self.cmd_poor(),
             "/permissions" => self.cmd_permissions(&arg),
+            "/hooks" => self.push_note(
+                Tone::Skill,
+                agent::hooks::HooksConfig::load().summary(),
+            ),
             "/context" => self.cmd_context(),
             "/status" => self.cmd_status(),
             "/doctor" => self.cmd_doctor(),
@@ -3435,6 +3443,21 @@ impl App {
             u.estimated_cost_usd(),
             crate::config::status_path().display(),
         ));
+    }
+
+    fn cmd_poor(&mut self) {
+        self.cfg.poor_mode = !self.cfg.poor_mode;
+        if self.cfg.poor_mode {
+            self.push_note(
+                Tone::Usage,
+                "poor mode ON · skipping PLUR auto-inject, skills catalog, and long memory in the system prompt \
+                 (tools still available). /poor again to restore. /budget save does not persist this — \
+                 set poor_mode=true in config.toml if you want it permanent."
+                    .into(),
+            );
+        } else {
+            self.push_note(Tone::Usage, "poor mode OFF · full prompt context restored".into());
+        }
     }
 
     fn cmd_permissions(&mut self, arg: &str) {

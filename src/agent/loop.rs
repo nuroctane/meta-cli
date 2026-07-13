@@ -1,3 +1,4 @@
+use super::hooks::HooksConfig;
 use super::mode::{PermissionMode, SharedMode};
 use super::permissions::{RuleDecision, SharedPermissions};
 use super::prompt::PromptContext;
@@ -74,6 +75,8 @@ pub struct AgentRunner {
     pub tools: ToolHost,
     /// Optional allow/deny/ask patterns (`permissions.toml`). Empty = no change.
     pub permissions: SharedPermissions,
+    /// Optional pre/post tool hooks (`hooks.toml`). Inactive when file missing.
+    pub hooks: HooksConfig,
     /// Nested subagents cannot spawn further agents (depth limit 1).
     pub is_subagent: bool,
 }
@@ -140,7 +143,12 @@ impl AgentRunner {
         let tools = self.tools.tool_defs();
         // Disk-backed prompt parts (skills, MUSE.md, memory, shell) — read once
         // per user turn, not once per model request.
-        let prompt_ctx = PromptContext::build(&self.cwd, self.is_subagent, &self.config.model);
+        let prompt_ctx = PromptContext::build_with_opts(
+            &self.cwd,
+            self.is_subagent,
+            &self.config.model,
+            self.config.poor_mode,
+        );
         let mut turns = 0u32;
         let mut tool_seq: u64 = 0;
         // Prevent compact→still-hot→compact infinite loop within one user turn.
@@ -429,6 +437,26 @@ impl AgentRunner {
                         }
                     }
                 } else {
+                    // Pre-tool hook (optional) — blocks on non-zero exit.
+                    if let Err(e) = self.hooks.run_pre(
+                        &call.name,
+                        &call.arguments,
+                        &self.cwd,
+                        &session.id,
+                    ) {
+                        let msg = format!("error: {e}");
+                        let _ = tx.send(AgentEvent::ToolEnd {
+                            id,
+                            name: call.name.clone(),
+                            result: msg.clone(),
+                            ok: false,
+                        });
+                        session
+                            .input_items
+                            .push(function_call_output_item(&call.call_id, &msg));
+                        idx += 1;
+                        continue;
+                    }
                     let host = ToolHost {
                         todos: self.tools.todos.clone(),
                         plan: self.tools.plan.clone(),
@@ -472,6 +500,12 @@ impl AgentRunner {
                     // Keep error messages intact (usually short).
                     body
                 };
+                self.hooks.run_post(
+                    &call.name,
+                    &call.arguments,
+                    &self.cwd,
+                    &session.id,
+                );
                 emit_side_effects(tx, &call.name, &body);
                 let _ = tx.send(AgentEvent::ToolEnd {
                     id,

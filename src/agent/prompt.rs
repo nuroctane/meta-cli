@@ -81,7 +81,13 @@ pub struct PromptContext {
 
 impl PromptContext {
     pub fn build(cwd: &Path, is_subagent: bool, model: &str) -> Self {
-        let plur = if is_subagent {
+        Self::build_with_opts(cwd, is_subagent, model, false)
+    }
+
+    /// `poor_mode`: skip PLUR inject, skills catalog, and long memory excerpts
+    /// to cut background token spend (toggle via `/poor`).
+    pub fn build_with_opts(cwd: &Path, is_subagent: bool, model: &str, poor_mode: bool) -> Self {
+        let plur = if is_subagent || poor_mode {
             String::new()
         } else {
             ecosystem::plur_inject(&format!(
@@ -93,14 +99,24 @@ impl PromptContext {
             .map(|s| format!("\n# PLUR shared memory (auto-injected)\n{s}\n"))
             .unwrap_or_default()
         };
+        let memory = if poor_mode {
+            String::new()
+        } else {
+            memory_prompt_excerpt(3000)
+        };
+        let skills = if poor_mode {
+            String::new()
+        } else {
+            cached_skills(cwd)
+        };
         Self {
             cwd: cwd.to_path_buf(),
             is_subagent,
             model: model.to_string(),
             shell_label: shell_backend().label.clone(),
             project: find_project_instructions(cwd),
-            memory: memory_prompt_excerpt(3000),
-            skills: cached_skills(cwd),
+            memory,
+            skills,
             plur,
         }
     }

@@ -266,11 +266,14 @@ async fn real_main() -> Result<()> {
     let _ = session.save();
 
     // Never block launch on ecosystem install (npm/uv/skill packs can take minutes).
-    // Snapshot whatever is already provisioned; repair in a background thread.
+    // Snapshot whatever is already provisioned; optional background repair
+    // (config ecosystem_auto_ensure, default true).
     let eco_summary = ecosystem::launch_snapshot();
-    std::thread::spawn(|| {
-        let _ = ecosystem::ensure_ecosystem(false);
-    });
+    if cfg.ecosystem_auto_ensure {
+        std::thread::spawn(|| {
+            let _ = ecosystem::ensure_ecosystem(false);
+        });
+    }
 
     let start_mode = if cli.yes {
         PermissionMode::Auto
@@ -624,6 +627,7 @@ async fn run_headless(
         approved_tools: Arc::new(Mutex::new(HashSet::new())),
         tools: tools::ToolHost::default(),
         permissions: agent::SharedPermissions::load(&cwd),
+        hooks: agent::hooks::HooksConfig::load(),
         is_subagent: false,
     });
 

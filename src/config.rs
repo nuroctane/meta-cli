@@ -79,6 +79,13 @@ pub struct Config {
     /// `0` = leave tool bodies intact for the summarizer.
     #[serde(default = "default_compact_tool_body_max")]
     pub compact_tool_body_max_chars: u64,
+    /// Cost-saver: skip PLUR auto-inject, skills catalog, and long memory in the system prompt.
+    #[serde(default)]
+    pub poor_mode: bool,
+    /// When true (default), TUI open background-repairs graphify/plur/ruflo/browser packs.
+    /// Set false for a pure binary + chat experience until `meta ecosystem ensure`.
+    #[serde(default = "default_true")]
+    pub ecosystem_auto_ensure: bool,
 }
 
 fn default_model() -> String {
@@ -117,6 +124,8 @@ impl Default for Config {
             max_session_tokens: None,
             compact_keep_user_turns: default_compact_keep_user_turns(),
             compact_tool_body_max_chars: default_compact_tool_body_max(),
+            poor_mode: false,
+            ecosystem_auto_ensure: true,
         }
     }
 }
