@@ -337,6 +337,57 @@ pub fn decide_arrow_action(input_empty: bool, on_edge: bool, palette_open: bool)
     }
 }
 
+/// Outcome of a click in the transcript body.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TranscriptClick {
+    /// Expand/collapse a collapsible card in place.
+    ToggleExpand(usize),
+    /// Open (pin) the floating peek dialogue for a peekable cell.
+    PinPeek(usize),
+    /// Dismiss any pinned peek.
+    Dismiss,
+}
+
+/// Pure resolution of a transcript click — the single source of truth for what
+/// clicking a line does. Kept side-effect-free so it can be unit-tested (the
+/// physical mouse can't be injected through the test harness).
+///
+/// - `chevron`: the click landed in the left gutter (~3 cols).
+/// - `header`: the collapsible card whose header this line is, if any.
+/// - `peekable`: the peekable cell this line belongs to (incl. the finished-turn
+///   timing strip), if any.
+/// - `pinned`: the currently pinned peek cell.
+/// - `target_collapsible`: whether the resolved target can expand in place.
+pub fn resolve_transcript_click(
+    chevron: bool,
+    header: Option<usize>,
+    peekable: Option<usize>,
+    pinned: Option<usize>,
+    target_collapsible: bool,
+) -> TranscriptClick {
+    // Left-gutter click on a collapsible header → expand/collapse.
+    if chevron {
+        if let Some(h) = header {
+            return TranscriptClick::ToggleExpand(h);
+        }
+    }
+    if let Some(idx) = peekable.or(header) {
+        // Second click on the already-pinned card: collapsible cards toggle
+        // expand-in-place; everything else (e.g. the turn strip) just closes.
+        if pinned == Some(idx) {
+            return if target_collapsible {
+                TranscriptClick::ToggleExpand(idx)
+            } else {
+                TranscriptClick::Dismiss
+            };
+        }
+        // First click → open the peek.
+        return TranscriptClick::PinPeek(idx);
+    }
+    // Empty space → dismiss.
+    TranscriptClick::Dismiss
+}
+
 pub struct ApprovalState {
     pub name: String,
     pub args: String,
@@ -2702,32 +2753,22 @@ impl App {
 
         let header = self.hit_headers.get(line_idx).copied().flatten();
         let peekable = self.line_cells.get(line_idx).copied().flatten();
+        let chevron = local_x <= 3;
+        let target_collapsible = peekable
+            .or(header)
+            .and_then(|i| self.cells.get(i))
+            .map(|c| c.is_collapsible())
+            .unwrap_or(false);
 
-        // Chevron zone: toggle expand/collapse (in-place).
-        if local_x <= 3 {
-            if let Some(cell_idx) = header {
-                self.toggle_cell_expand(cell_idx);
+        match resolve_transcript_click(chevron, header, peekable, self.peek_pinned, target_collapsible)
+        {
+            TranscriptClick::ToggleExpand(i) => {
+                self.toggle_cell_expand(i);
                 self.peek_pinned = None;
-                return;
             }
+            TranscriptClick::PinPeek(i) => self.peek_pinned = Some(i),
+            TranscriptClick::Dismiss => self.peek_pinned = None,
         }
-
-        if let Some(cell_idx) = peekable.or(header) {
-            // Already peeking this card → expand in place (second click).
-            if self.peek_pinned == Some(cell_idx) {
-                if self.cells.get(cell_idx).map(|c| c.is_collapsible()) == Some(true) {
-                    self.toggle_cell_expand(cell_idx);
-                }
-                self.peek_pinned = None;
-            } else {
-                // First click: pin peek dialogue with full content.
-                self.peek_pinned = Some(cell_idx);
-            }
-            return;
-        }
-
-        // Empty transcript space — dismiss peek.
-        self.peek_pinned = None;
     }
 
     // ── slash commands ──────────────────────────────────────────────────
@@ -3503,6 +3544,55 @@ mod tests {
         truncate_session_before_prompt(&mut s, 2); // from_end 2 == first of two
         assert!(s.messages.is_empty());
         assert!(s.input_items.is_empty());
+    }
+
+    #[test]
+    fn clicking_finished_turn_strip_opens_the_peek() {
+        // The turn-done strip is peekable but NOT collapsible and has no header.
+        // A click anywhere on it (gutter or body) must PIN its peek.
+        let strip = Some(7);
+        // body click
+        assert_eq!(
+            resolve_transcript_click(false, None, strip, None, false),
+            TranscriptClick::PinPeek(7)
+        );
+        // gutter click (no header) still pins — never a dead click.
+        assert_eq!(
+            resolve_transcript_click(true, None, strip, None, false),
+            TranscriptClick::PinPeek(7)
+        );
+        // second click closes it (non-collapsible → dismiss, not toggle).
+        assert_eq!(
+            resolve_transcript_click(false, None, strip, Some(7), false),
+            TranscriptClick::Dismiss
+        );
+    }
+
+    #[test]
+    fn clicking_collapsible_card_pins_then_expands() {
+        let card = Some(3);
+        assert_eq!(
+            resolve_transcript_click(false, card, card, None, true),
+            TranscriptClick::PinPeek(3)
+        );
+        // gutter click on its header → expand in place.
+        assert_eq!(
+            resolve_transcript_click(true, card, card, None, true),
+            TranscriptClick::ToggleExpand(3)
+        );
+        // second body click on the pinned collapsible card → expand in place.
+        assert_eq!(
+            resolve_transcript_click(false, card, card, Some(3), true),
+            TranscriptClick::ToggleExpand(3)
+        );
+    }
+
+    #[test]
+    fn clicking_empty_space_dismisses() {
+        assert_eq!(
+            resolve_transcript_click(false, None, None, Some(2), false),
+            TranscriptClick::Dismiss
+        );
     }
 
     #[test]
