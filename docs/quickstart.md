@@ -20,6 +20,9 @@ meta auth login
 
 Paste your [Meta Model API key](https://dev.meta.ai/) when prompted. The key is stored locally in `~/.meta/auth.json` — never printed or echoed.
 
+!!! tip "TUI shortcuts"
+    Once in the TUI, you can also use `/login` to re-authenticate and `/logout` to clear the stored key.
+
 ## 3. Open the TUI
 
 ```bash

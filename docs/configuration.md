@@ -95,6 +95,7 @@ All Meta CLI state lives under `~/.meta/` by default:
 ├── status.json         # Live token/cost status
 ├── usage.jsonl         # Per-request usage log
 ├── ade.json            # ADE discovery manifest
+├── memory.md           # Cross-session memory journal (quick-memory #notes)
 ├── sessions/           # Session files (UUID.json)
 ├── skills/             # Installed skill packs
 ├── ruflo/              # Vector memory database

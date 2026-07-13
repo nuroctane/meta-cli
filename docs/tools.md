@@ -69,3 +69,83 @@ Execute shell commands. Hardened with:
 
 !!! note "Shell backend"
     Meta CLI uses Git Bash on Windows when available, otherwise falls back to PowerShell. On macOS/Linux it uses Bash. Check with `meta doctor`.
+
+---
+
+## Vision tools
+
+### `look`
+
+Attach workspace images or video so the model sees them. Accepts png, jpg, webp, gif (direct) and mp4 (direct up to ~20 MB). See [Vision](vision.md) for details.
+
+### `extract_frames`
+
+Extract keyframes from video via ffmpeg. Output goes to `.meta/frames/<name>/`.
+
+---
+
+## Web tools
+
+### `web_search`
+
+Search the web for information.
+
+### `web_fetch`
+
+Fetch content from a URL.
+
+---
+
+## Git tools
+
+### `git_status`
+
+Show working tree status.
+
+### `git_diff`
+
+Show file changes.
+
+---
+
+## Knowledge tools
+
+### `graphify`
+
+Query the code knowledge graph. See [Ecosystem](ecosystem.md).
+
+### `plur`
+
+Search shared engram memory.
+
+### `ruflo`
+
+Search vector memory.
+
+### `executor`
+
+Dispatch to external APIs.
+
+### `skill`
+
+Load a skill into context.
+
+### `memory`
+
+Read or append to the cross-session memory journal (`~/.meta/memory.md`).
+
+---
+
+## Agent tools
+
+### `todo_write`
+
+Create and manage task lists.
+
+### `submit_plan`
+
+Submit a plan for approval.
+
+### `agent`
+
+Spawn a subagent for complex tasks.

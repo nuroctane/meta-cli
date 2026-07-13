@@ -91,6 +91,16 @@ Type `/` in the input to see available commands.
 | `/ecosystem` | Show ecosystem status |
 | `/memory` | Show session memory |
 
+### Quick memory
+
+Type `#` followed by a note to save it directly to `~/.meta/memory.md` without starting a turn:
+
+```text
+# use cargo-nextest for test runner, not cargo test
+```
+
+The note is appended to your persistent memory file and recalled automatically in future sessions.
+
 ### Model and context
 
 | Command | Purpose |
@@ -109,6 +119,7 @@ Type `/` in the input to see available commands.
 | `/help` | Show keys + commands reference |
 | `/login` | Authenticate (masked key entry) |
 | `/logout` | Clear stored API key |
+| `/bug` | Open GitHub issues page (report a bug) |
 | `/exit` | Quit Meta CLI |
 
 ---
@@ -139,7 +150,7 @@ Each tool call shows a duration chip (e.g. `1.2s`) so you can see where time is 
 
 ### Approval mini-diff
 
-When a write tool requests approval, the TUI shows a compact diff preview of what will change.
+When a write tool requests approval, the TUI shows a compact diff preview of what will change. The diff is line-numbered with `+`/`-` indicators so you can see exactly which lines will be added or removed before approving.
 
 ### Sessions browser
 

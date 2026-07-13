@@ -12,14 +12,17 @@ Meta CLI supports the Meta Model API Responses API multimodal input via `input_i
 
 ### `look`
 
-Attach workspace **image(s)** or a **short video** so the model sees them on the next turn.
+Attach workspace **image(s)** or a **video** so the model sees them on the next turn.
 
 | Input type | Formats | Notes |
 |------------|---------|-------|
-| Images | png, jpg, webp, gif | Direct attachment |
-| Video | mp4, webm, mov | ~20 MB cap; use `extract_frames` for longer clips |
+| Images | png, jpg, webp, gif | Direct attachment (no ffmpeg needed) |
+| Video | mp4, webm, mov | mp4 accepted directly up to ~20 MB; webm/mov go through `extract_frames` |
 
 **Usage in TUI:** The agent calls `look` automatically, or you can reference media paths in your prompt.
+
+!!! note "mp4 is accepted directly"
+    Unlike other video formats, `.mp4` files under ~20 MB are sent directly to the model via `input_video` without needing ffmpeg. For webm/mov or larger files, use `extract_frames` first.
 
 ### `extract_frames`
 
