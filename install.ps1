@@ -223,6 +223,16 @@ try {
     Write-Warn "Ecosystem ensure deferred to first meta open: $($_.Exception.Message)"
 }
 
+# ── Browser tool: stage extension + target the default browser ────────────
+# The `browser` tool drives the user's real browser (Arc / Chrome / Edge / …).
+# Stage the extension now so it's usable immediately; the one-time "load
+# unpacked" click is a Chromium security step we surface but can't automate.
+try {
+    & $dest browser setup 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+} catch {
+    Write-Warn "Browser setup deferred — run later: meta browser setup"
+}
+
 # ── Orca hook (best-effort) ───────────────────────────────────────────────
 if (-not $SkipHook) {
     try {

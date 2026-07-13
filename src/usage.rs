@@ -138,6 +138,11 @@ impl UsageTracker {
         let _ = self.write_status();
     }
 
+    pub fn set_cwd(&mut self, cwd: PathBuf) {
+        self.cwd = cwd;
+        let _ = self.write_status();
+    }
+
     pub fn set_state(&mut self, state: impl Into<String>) {
         self.state = state.into();
         let _ = self.write_status();

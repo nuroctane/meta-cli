@@ -38,6 +38,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/clear", "clear the transcript display"),
     ("/new", "start a fresh session"),
     ("/compact", "summarize conversation, free context"),
+    ("/cd", "change working directory: /cd <path>  (tools sandbox here)"),
+    ("/pwd", "print the current working directory"),
     ("/mode", "permission: manual | plan | auto  (or Shift+Tab)"),
     ("/plan", "switch to plan mode (read-only)"),
     ("/manual", "switch to manual mode (approve tools)"),
@@ -50,6 +52,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/ruflo", "vector memory / swarm: status | search | store"),
     ("/ecosystem", "graphify · plur · ruflo readiness"),
     ("/usage", "token usage + cost for this session  (/cost)"),
+    ("/context", "context-window utilization for this session"),
+    ("/status", "session snapshot: model · mode · cwd · tokens"),
+    ("/doctor", "health check: version · auth · ecosystem · shell"),
     ("/model", "show or switch model"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
@@ -2921,6 +2926,8 @@ impl App {
             }
             "/new" => self.cmd_new(),
             "/compact" => self.cmd_compact(),
+            "/cd" => self.cmd_cd(&arg),
+            "/pwd" => self.push_info(format!("cwd  {}", self.cwd.display())),
             "/mode" => self.cmd_mode(&arg),
             "/plan" => self.set_permission_mode(PermissionMode::Plan),
             "/manual" => self.set_permission_mode(PermissionMode::Manual),
@@ -2968,6 +2975,9 @@ impl App {
                 }
             }
             "/usage" | "/cost" => self.cmd_usage(),
+            "/context" => self.cmd_context(),
+            "/status" => self.cmd_status(),
+            "/doctor" => self.cmd_doctor(),
             "/model" => self.cmd_model(&arg),
             "/effort" => self.cmd_effort(&arg),
             // /sessions and /resume are the same interactive picker.
@@ -3381,6 +3391,142 @@ impl App {
             u.estimated_cost_usd(),
             crate::config::status_path().display(),
         ));
+    }
+
+    /// Change the workspace the agent's tools are sandboxed to. `~` expands to
+    /// home; relative paths resolve against the current cwd. Filesystem roots
+    /// are refused (the tool layer already blocks them). The session + usage
+    /// tracker are re-homed so status.json and future tool calls follow.
+    fn cmd_cd(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.push_info(format!(
+                "cwd  {}\n  usage: /cd <path>  (~ ok · relative to here · absolute ok)",
+                self.cwd.display()
+            ));
+            return;
+        }
+        // Expand a leading ~ / ~/… to the home directory.
+        let expanded: PathBuf = if arg == "~" {
+            dirs::home_dir().unwrap_or_else(|| PathBuf::from(arg))
+        } else if let Some(rest) = arg.strip_prefix("~/").or_else(|| arg.strip_prefix("~\\")) {
+            dirs::home_dir()
+                .map(|h| h.join(rest))
+                .unwrap_or_else(|| PathBuf::from(arg))
+        } else {
+            let p = PathBuf::from(arg);
+            if p.is_absolute() {
+                p
+            } else {
+                self.cwd.join(p)
+            }
+        };
+        // Canonicalize so `..`, symlinks, and case resolve to a real path.
+        let target = match expanded.canonicalize() {
+            Ok(p) => p,
+            Err(e) => {
+                self.push_error(format!("cd: {}: {e}", expanded.display()));
+                return;
+            }
+        };
+        if !target.is_dir() {
+            self.push_error(format!("cd: not a directory: {}", target.display()));
+            return;
+        }
+        if crate::tools::is_dangerous_workspace(&target) {
+            self.push_error(
+                "cd: refusing a filesystem root — tools need a real project directory".into(),
+            );
+            return;
+        }
+        // Strip Windows \\?\ verbatim prefix for a clean display path.
+        let clean = target.to_string_lossy().replace(r"\\?\", "");
+        let target = PathBuf::from(&clean);
+        let from = self.cwd.display().to_string();
+        self.cwd = target.clone();
+        if let Some(s) = &mut self.session {
+            s.cwd = clean.clone();
+        }
+        if let Some(u) = &mut self.usage {
+            u.set_cwd(target);
+        }
+        self.push_note(
+            Tone::Session,
+            format!("cd\n  from  {from}\n  to    {clean}  · tools sandboxed here"),
+        );
+    }
+
+    /// Context-window utilization — how full the model's context is this turn.
+    fn cmd_context(&mut self) {
+        let used = self.u_last.input_tokens + self.u_last.output_tokens;
+        let window = self.cfg.context_window;
+        let pct = if window > 0 {
+            (used as f64 / window as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        // Simple 20-cell bar so the fill is legible at a glance.
+        let cells = 20usize;
+        let filled = ((pct / 100.0) * cells as f64).round() as usize;
+        let bar: String = "█".repeat(filled) + &"░".repeat(cells.saturating_sub(filled));
+        self.push_note(
+            Tone::Usage,
+            format!(
+                "context window\n  {bar}  {pct:.0}%\n  used     {} tok (last turn: {} in · {} out)\n  \
+                 window   {} tok\n  cached   {} tok\n  /compact frees context when this climbs",
+                fmt_num(used),
+                fmt_num(self.u_last.input_tokens),
+                fmt_num(self.u_last.output_tokens),
+                fmt_num(window),
+                fmt_num(self.u_last.cached_tokens),
+            ),
+        );
+    }
+
+    /// One-glance session snapshot (model · effort · mode · session · cwd · tokens).
+    fn cmd_status(&mut self) {
+        let mode = self.permission_mode.get();
+        let ctx_used = self.u_last.input_tokens + self.u_last.output_tokens;
+        let ctx_pct = if self.cfg.context_window > 0 {
+            (ctx_used as f64 / self.cfg.context_window as f64 * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+        let auth = if self.authed { "signed in" } else { "no key — /login" };
+        self.push_note(
+            Tone::Session,
+            format!(
+                "status\n  version  meta v{}\n  model    {}  · effort {}\n  mode     {}  ({})\n  \
+                 session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ${:.4}",
+                env!("CARGO_PKG_VERSION"),
+                self.cfg.model,
+                self.cfg.reasoning_effort,
+                mode.label(),
+                mode.description(),
+                &self.session_id[..8.min(self.session_id.len())],
+                self.cwd.display(),
+                auth,
+                fmt_num(self.u_session.total_tokens),
+                self.u_session.estimated_cost_usd(),
+            ),
+        );
+    }
+
+    /// Inline health check — the interactive cousin of `meta doctor`.
+    fn cmd_doctor(&mut self) {
+        let sh = crate::tools::shell_backend();
+        let auth = if self.authed { "signed in" } else { "no key — /login" };
+        let mut lines = format!(
+            "doctor · meta v{}\n  model    {}\n  cwd      {}\n  auth     {}\n  shell    {}\n",
+            env!("CARGO_PKG_VERSION"),
+            self.cfg.model,
+            self.cwd.display(),
+            auth,
+            sh.label,
+        );
+        lines.push_str("\n");
+        lines.push_str(&crate::ecosystem::quick_status());
+        self.push_note(Tone::Skill, lines);
     }
 
     fn cmd_model(&mut self, arg: &str) {

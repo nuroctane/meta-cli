@@ -128,15 +128,29 @@ Dispatch to external APIs.
 
 ### `browser`
 
-Perceive and control the user's **real Chrome session** (login state preserved)
-via [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli).
+Perceive and control the user's **real, default browser** — Arc, Chrome, Edge,
+Brave, or any Chromium browser — with login state preserved, via
+[agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli).
 Perception is free: `tabs`, `scan`, `snapshot` (page → `@e` element refs),
 `tabtree`, `console`, `network`, `status`. Control needs approval in manual
 mode and is blocked in plan mode: `open`, `click`, `fill`, `send_keys`, `exec`,
 `close`. `screenshot` is plan-safe perception — pair it with `look` for vision.
-Cookie reading is deliberately not exposed. Setup: the CLI is auto-provisioned;
-load the `tmwd_cdp_bridge` Chrome extension once (chrome://extensions →
-developer mode → load unpacked).
+Cookie reading is deliberately not exposed.
+
+**Setup is automatic.** The installer provisions the CLI, stages the
+`tmwd_cdp_bridge` extension (no download), detects your **default browser**, and
+runs `meta browser setup` — which opens that browser's `chrome://extensions`
+page. The only manual step is a one-time **Load unpacked** click (a Chromium
+security boundary that can't be scripted); the staged folder path is copied to
+your clipboard. Re-run any time with:
+
+```bash
+meta browser setup     # stage + open the default browser's extensions page
+meta browser status    # detected default browser + extension state
+```
+
+The `browser` tool's own `status` action folds in this local state so the agent
+can self-diagnose a disconnected bridge.
 
 ### `omp`
 

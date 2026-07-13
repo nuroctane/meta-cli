@@ -13,15 +13,15 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.8.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
+**v0.9.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff |
+| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · **`/cd` `/pwd` `/context` `/status` `/doctor`** |
 | **Agent** | Manual / plan / auto · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
-| **Tools** | read · edit · bash · web · **browser** (real Chrome) · git · knowledge stack · agent |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** — background provision |
+| **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** (`meta browser setup`) · AKM · **800+ skills** — background provision |
 | **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
@@ -61,7 +61,7 @@ muse          # legacy alias (same binary)
 | shell | `bash` (hardened denylist + timeout) |
 | **vision** | **`look`** · **`extract_frames`** |
 | web | `web_search` `web_fetch` (text only; SSRF / private-IP blocks) |
-| browser | `browser` — the user's **real Chrome** via agent-browser-cli: tabs · snapshot (@e refs) · click/fill/keys · JS · screenshots (pair with `look`) |
+| browser | `browser` — the user's **real default browser** (Arc/Chrome/Edge/Brave/…) via agent-browser-cli: tabs · snapshot (@e refs) · click/fill/keys · JS · screenshots (pair with `look`); setup via `meta browser setup` |
 | git | `git_status` `git_diff` |
 | knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |
 | delegate | `agent` `omp` — omp.sh coding-agent backend (LSP renames, DAP debugging, AST rewrites) |
@@ -322,11 +322,14 @@ The `omp` tool delegates to **[Oh My Pi](https://omp.sh)**
 ([can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)) — headless backend
 runs only, provisioned automatically when Bun is available.
 
-The `browser` tool drives the user's real Chrome through
+The `browser` tool drives the user's real, **default browser** — Arc, Chrome,
+Edge, Brave, or any Chromium browser — through
 **[agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli)**
 (browser bridge lineage from
 [GenericAgent](https://github.com/lsdefine/GenericAgent)) — login state stays
-in the browser, cookies are never exposed to the model.
+in the browser, cookies are never exposed to the model. Install auto-detects
+your default browser and stages the extension; `meta browser setup` finishes
+the one-time load.
 
 Also built on: [tokio](https://tokio.rs), [reqwest](https://github.com/seanmonstar/reqwest),
 [serde](https://serde.rs), and [clap](https://github.com/clap-rs/clap).

@@ -14,6 +14,15 @@ pub fn set_terminal_title(title: &str) {
     let _ = std::io::stdout().flush();
 }
 
+/// Copy text to the system clipboard (best-effort; returns false if the
+/// platform has no accessible clipboard, e.g. a bare SSH session).
+pub fn copy_to_clipboard(text: &str) -> bool {
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => cb.set_text(text.to_string()).is_ok(),
+        Err(_) => false,
+    }
+}
+
 /// Preferred session tab title: blue-dot emoji · meta · abbreviated first prompt.
 ///
 /// Example: `🔵 meta · fix the login hang…`

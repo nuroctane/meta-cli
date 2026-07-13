@@ -238,9 +238,21 @@ pub fn ensure_browser_cli(node_ok: bool) -> ComponentStatus {
         c.version = super::cmd_version_pub(&bin, &["--version"]);
         // Drop the usage SOP into ~/.agents/skills (best-effort).
         let _ = run_quiet(&bin, &["install-skill"], None, 60_000);
-        c.detail =
-            "real-Chrome bridge ready (`browser` tool) — load the tmwd_cdp_bridge extension once"
-                .into();
+        // Stage the extension out of the npm package so nothing must be
+        // downloaded, and target whatever browser the user actually uses.
+        let staged = super::browser_setup::stage_extension_from_cli().is_some();
+        let browser = super::browser_setup::detect_default_browser();
+        c.detail = if staged {
+            format!(
+                "real-Chrome bridge ready · default {} · extension staged (load once: `meta browser setup`)",
+                browser.label()
+            )
+        } else {
+            format!(
+                "real-Chrome bridge ready · default {} · run `meta browser setup` to finish",
+                browser.label()
+            )
+        };
     } else if c.detail.is_empty() {
         c.detail = "not found after npm install — try: npm i -g @sleepinsummer/agent-browser-cli".into();
     }

@@ -151,6 +151,11 @@ step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)
 "${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure deferred to first meta open"
 ok "Ecosystem ready (or will finish on first open)"
 
+# ── Browser tool: stage extension + target the default browser ────────────
+# Usable immediately; the one-time "load unpacked" click is a Chromium
+# security step we surface but can't automate.
+"${DEST_DIR}/meta" browser setup 2>/dev/null || warn "Browser setup deferred — run later: meta browser setup"
+
 if [[ "${SKIP_HOOK}" != "1" ]]; then
   "${DEST_DIR}/meta" install-hook >/dev/null 2>&1 && ok "Orca hook installed (if applicable)" || true
 fi

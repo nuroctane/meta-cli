@@ -87,9 +87,9 @@ impl Tool for BrowserTool {
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String> {
         let bin = ecosystem::find_bin(BIN).ok_or_else(|| {
             MuseError::Tool(
-                "agent-browser-cli not found. Meta auto-installs it — or: \
-                 npm i -g @sleepinsummer/agent-browser-cli, then load the \
-                 tmwd_cdp_bridge Chrome extension (see the repo's releases)"
+                "agent-browser-cli not found. Meta auto-installs it — or run \
+                 `meta browser setup` to stage the extension and finish one-time \
+                 setup for your default browser."
                     .into(),
             )
         })?;
@@ -100,7 +100,14 @@ impl Tool for BrowserTool {
             "scan" => vec!["scan".into()],
             "snapshot" => vec!["snapshot".into()],
             "tabtree" => vec!["tabtree".into()],
-            "status" => vec!["status".into()],
+            "status" => {
+                // Fold in the local setup state (default browser + extension
+                // staging) so the model can self-diagnose a disconnected bridge.
+                let setup = crate::ecosystem::browser_setup::setup_summary();
+                let live = ecosystem::run_capture(&bin, &["status"], Some(&ctx.cwd), 30_000)
+                    .unwrap_or_else(|e| format!("(bridge status unavailable: {e})"));
+                return Ok(format!("{setup}\n\nbridge:\n{live}"));
+            }
             "doctor" => vec!["doctor".into()],
             "console" => vec!["console".into(), "list".into()],
             "network" => vec!["network".into(), "list".into()],

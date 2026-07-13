@@ -98,6 +98,23 @@ async fn real_main() -> Result<()> {
             }
             return Ok(());
         }
+        Some(Commands::Browser { action }) => {
+            match action {
+                cli::BrowserCmd::Setup => run_browser_setup(true)?,
+                cli::BrowserCmd::Status => {
+                    theme::print_info("browser tool status");
+                    print!("{}", ecosystem::browser_setup::setup_summary());
+                    if ecosystem::find_bin("agent-browser-cli").is_some() {
+                        theme::print_ok("agent-browser-cli present");
+                    } else {
+                        theme::print_info(
+                            "agent-browser-cli not on PATH — run `meta ecosystem ensure`",
+                        );
+                    }
+                }
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
@@ -285,10 +302,97 @@ async fn real_main() -> Result<()> {
         | Some(Commands::Sessions { .. })
         | Some(Commands::InstallHook)
         | Some(Commands::Doctor)
-        | Some(Commands::Ecosystem { .. }) => unreachable!(),
+        | Some(Commands::Ecosystem { .. })
+        | Some(Commands::Browser { .. }) => unreachable!(),
     }
 
     Ok(())
+}
+
+/// Prepare the real-Chrome `browser` tool: ensure the CLI + extension are
+/// staged, detect the default browser, and (for `setup`) open its extensions
+/// page so the one-time "load unpacked" step is a single action. Everything
+/// else — CLI install, extension files, default-browser targeting — is
+/// automatic; the load click is a Chromium security boundary we can't script.
+fn run_browser_setup(open: bool) -> Result<()> {
+    use ecosystem::browser_setup as bs;
+    theme::print_info("browser tool setup");
+
+    // Make sure the CLI is present (provisions it if a package manager exists).
+    if ecosystem::find_bin("agent-browser-cli").is_none() {
+        theme::print_info("installing agent-browser-cli…");
+        let _ = ecosystem::ensure_ecosystem(false);
+    }
+
+    // Stage the extension out of the installed package (no download needed).
+    let staged = bs::stage_extension_from_cli().or_else(|| {
+        let d = bs::staged_extension_dir();
+        d.join("manifest.json").is_file().then_some(d)
+    });
+    let browser = bs::detect_default_browser();
+    theme::print_ok(&format!("default browser · {}", browser.label()));
+
+    match &staged {
+        Some(dir) => theme::print_ok(&format!("extension staged · {}", dir.display())),
+        None => theme::print_err(
+            "could not stage the extension — run `meta ecosystem ensure` first, \
+             or load it from the agent-browser-cli release zip",
+        ),
+    }
+
+    if !browser.is_chromium() {
+        theme::print_info(
+            "your default browser isn't Chromium — the bridge needs \
+             Arc / Chrome / Edge / Brave / Chromium set as default",
+        );
+        return Ok(());
+    }
+
+    if let Some(dir) = &staged {
+        println!();
+        theme::print_info(&format!(
+            "one-time load in {} (Chromium security requires this click):",
+            browser.label()
+        ));
+        println!("    1. open  {}", browser.extensions_url());
+        println!("    2. toggle  Developer mode  (top-right)");
+        println!("    3. click  Load unpacked  →  choose:");
+        println!("         {}", dir.display());
+        println!("    4. keep at least one normal web tab open");
+        // Copy the path so the folder picker is a paste away.
+        if crate::ade::copy_to_clipboard(&dir.display().to_string()) {
+            theme::print_ok("extension path copied to clipboard");
+        }
+        if open {
+            // Open the extensions page in the default browser. `chrome://` URLs
+            // only resolve inside a Chromium browser, so hand it to the OS
+            // opener which routes to the default browser.
+            let _ = open_url(browser.extensions_url());
+            theme::print_ok(&format!("opened {} in {}", browser.extensions_url(), browser.label()));
+        }
+    }
+    println!();
+    theme::print_ok("after loading once, the `browser` tool works in every session");
+    Ok(())
+}
+
+/// Open a URL in the OS default browser (best-effort, non-fatal).
+fn open_url(url: &str) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", url])
+            .spawn()
+            .map(|_| ())
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(url).spawn().map(|_| ())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
+    }
 }
 
 /// Headless health check for install, auth, config, and ecosystem.

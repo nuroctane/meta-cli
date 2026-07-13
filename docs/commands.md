@@ -181,6 +181,37 @@ meta ecosystem status
 
 ---
 
+### `meta browser`
+
+Set up the real-browser `browser` tool for your **default Chromium browser**
+(Arc, Chrome, Edge, Brave, …). Stages the `tmwd_cdp_bridge` extension and
+walks you through the one-time Load unpacked click.
+
+```bash
+meta browser <SUBCOMMAND>
+```
+
+#### `meta browser setup`
+
+Stage the extension (no download), detect the default browser, copy the staged
+path to the clipboard, and open `chrome://extensions`.
+
+```bash
+meta browser setup
+```
+
+#### `meta browser status`
+
+Show detected default browser + extension staging state.
+
+```bash
+meta browser status
+```
+
+Also runs automatically from the installer after `ecosystem ensure`.
+
+---
+
 ### `meta install-hook`
 
 Install the Orca agent hook for usage/status reporting.

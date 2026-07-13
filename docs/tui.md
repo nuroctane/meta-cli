@@ -124,14 +124,19 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/model` | Change model (e.g. `/model muse-spark-1.1`) |
 | `/effort` | Change reasoning effort |
 | `/compact` | Manually compact context |
-| `/usage` | Show token usage and cost |
+| `/usage` | Show token usage and cost (`/cost`) |
+| `/context` | Context-window utilization (bar + tokens) |
+| `/status` | Session snapshot: model · mode · cwd · tokens |
 
 ### Project and shell
 
 | Command | Purpose |
 |---------|---------|
+| `/cd <path>` | Change the working directory tools are sandboxed to (`~` and relative paths OK) |
+| `/pwd` | Print the current working directory |
 | `/init` | Initialise project instructions (`META.md`) |
 | `/config` | Open config |
+| `/doctor` | Inline health check: version · auth · ecosystem · shell |
 | `/help` | Show keys + commands reference |
 | `/login` | Authenticate (masked key entry) |
 | `/logout` | Clear stored API key |

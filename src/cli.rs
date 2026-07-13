@@ -100,6 +100,19 @@ pub enum Commands {
         #[command(subcommand)]
         action: EcosystemCmd,
     },
+    /// Set up the real-Chrome `browser` tool for your default browser
+    Browser {
+        #[command(subcommand)]
+        action: BrowserCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BrowserCmd {
+    /// Stage the extension + open your default browser's extensions page
+    Setup,
+    /// Show detected default browser + extension staging state
+    Status,
 }
 
 #[derive(Subcommand, Debug)]
