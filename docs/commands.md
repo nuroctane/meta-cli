@@ -105,7 +105,7 @@ meta auth logout
 
 ### `meta sessions`
 
-List recent sessions.
+List recent sessions (prompt-first summaries from `~/.meta/sessions` and legacy `~/.muse/sessions`).
 
 ```bash
 meta sessions [--limit <N>]
@@ -113,7 +113,9 @@ meta sessions [--limit <N>]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--limit` | `20` | Max rows to display |
+| `--limit` | `20` | Max rows to display (`0` = all) |
+
+Columns: **ID · UPDATED · MSGS · TOKENS · COST · CWD**.
 
 ---
 
@@ -138,10 +140,10 @@ meta doctor
 Checks:
 
 - Binary path and version
-- Config file (model, effort, max_turns)
+- Config file (model, effort, max_turns, **budget caps**)
 - Auth status (key present, last 4 chars)
 - Data home, status, usage, sessions paths
-- Ecosystem readiness (Graphify, PLUR, Ruflo)
+- Ecosystem readiness (Graphify, PLUR, Ruflo, browser, omp when present)
 - Shell backend (Bash / PowerShell)
 - Optional tools on PATH (rg, git, node, npm, uv, ffmpeg)
 - Vision support (look, extract_frames)
@@ -153,7 +155,7 @@ See [Troubleshooting](troubleshooting.md) for interpreting results.
 
 ### `meta ecosystem`
 
-Manage the Graphify / PLUR / Ruflo ecosystem (auto-provisioned on TUI open).
+Manage the Graphify / PLUR / Ruflo / browser / omp ecosystem.
 
 ```bash
 meta ecosystem <SUBCOMMAND>
@@ -161,7 +163,7 @@ meta ecosystem <SUBCOMMAND>
 
 #### `meta ecosystem ensure`
 
-Install or repair Graphify, PLUR, Ruflo, and skills. Also runs automatically on TUI open.
+Install or repair Graphify, PLUR, Ruflo, skills, and related packs. Also runs in the **background** on TUI open when `ecosystem_auto_ensure = true` (default). Set `false` in config for a pure binary until you run this manually.
 
 ```bash
 meta ecosystem ensure [--force]

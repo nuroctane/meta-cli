@@ -11,7 +11,7 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 | **Ruflo** | Vector memory + swarm / hive-mind patterns |
 | **Executor** | MCP / OpenAPI gateway catalog |
 | **omp** | [Oh My Pi](https://omp.sh) coding-agent backend — headless `omp -p` runs via the `omp` tool (needs Bun) |
-| **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real-Chrome bridge — perception + control via the `browser` tool (needs the Chrome extension loaded once) |
+| **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real **default browser** bridge (Arc / Chrome / Edge / Brave / …) — perception + control via the `browser` tool; `meta browser setup` stages the extension once |
 | **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
 | **AKM** | Agent knowledge package manager (requires Node.js) |
 
@@ -22,15 +22,17 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 When you open the TUI, Meta CLI:
 
 1. Snapshots whatever is already provisioned (instant)
-2. Spawns a **background thread** that runs `meta ecosystem ensure`
+2. If `ecosystem_auto_ensure = true` (default), spawns a **background thread** that runs `meta ecosystem ensure`
 3. The TUI never blocks on npm / uv installs
 
-You can also run provisioning manually:
+Set `ecosystem_auto_ensure = false` in `~/.meta/config.toml` for a pure binary + chat experience until you run ensure yourself.
 
 ```bash
 meta ecosystem ensure          # install / repair
 meta ecosystem ensure --force  # force re-install
 meta ecosystem status          # check readiness
+meta browser setup             # stage extension + open default browser extensions page
+meta browser status            # default browser + staging state
 ```
 
 ---

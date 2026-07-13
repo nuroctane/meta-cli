@@ -12,8 +12,17 @@ All native tools available to the Meta CLI agent.
 | **vision** | `look` `extract_frames` | pink |
 | **web** | `web_search` `web_fetch` | teal |
 | **git** | `git_status` `git_diff` | cyan |
+| **browser** | `browser` | teal |
 | **knowledge** | `graphify` `plur` `ruflo` `executor` `skill` `memory` | indigo / orange |
+| **delegate** | `omp` | — |
 | **agent** | `todo_write` `submit_plan` `agent` | — |
+
+All of the above are **first-class** in the tool schema every turn (nothing is hidden behind a “search tools” gate). Capability flags (read-only / concurrency-safe / destructive) drive parallel batching and approvals.
+
+### Tool results and context
+
+- Results larger than `tool_result_max_chars` (default **12000**) are written under `~/.meta/tool-results/` and the model gets a short preview + path (use `read_file` for more).
+- Set `tool_result_max_chars = 0` for unlimited inline results (legacy behaviour).
 
 ---
 

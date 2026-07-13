@@ -13,16 +13,16 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.9.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
+**v0.10.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · **`/cd` `/pwd` `/context` `/status` `/doctor`** |
-| **Agent** | Manual / plan / auto · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
+| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · **`/cd` `/pwd` `/context` `/status` `/doctor` `/budget` `/poor` `/permissions` `/hooks`** |
+| **Agent** | Manual / plan / auto · tool loop · subagents · todos · **smarter auto-compact** · **session $ / token budgets** · tool-result spill · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
-| **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** (`meta browser setup`) · AKM · **800+ skills** — background provision |
-| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · API retries · install SHA-256 · `meta doctor` |
+| **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent — **all first-class** (no deferred demotion) |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** (`meta browser setup`) · AKM · **800+ skills** — background provision (`ecosystem_auto_ensure`) |
+| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · **session `.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
 ---
@@ -46,10 +46,15 @@ muse          # legacy alias (same binary)
 ### Agent harness
 - Meta Model API **Responses** streaming + reasoning effort (`minimal` → `xhigh`)
 - **Manual / plan / auto** permission modes — **Shift+Tab** applies mid-turn
-- Tool loop with parallel-safe tools, approval gates, Esc cancel
-- **Subagents**, todos, plan mode (`submit_plan`), auto-compact under context pressure
+- Tool loop with fail-closed capability flags (read-only / parallel / destructive), approval gates, Esc cancel
+- **Subagents**, todos, plan mode (`submit_plan`)
+- **Session budgets** — hard stop on `$` and/or tokens (`/budget`, `max_session_cost_usd` / `max_session_tokens`)
+- **Tool-result spill** — oversized tool output → `~/.meta/tool-results/` + short model preview
+- **Smarter auto-compact** — thins old tool bodies, keeps recent turns, writes `.precompact.bak`
+- Optional **`permissions.toml`** allow/deny/ask patterns; optional **`hooks.toml`** pre/post tool
+- **`/poor`** — cost-saver prompt (skip PLUR inject / skills catalog / long memory; tools stay full)
 - Project instructions: `META.md` · `AGENTS.md` · `CLAUDE.md` (legacy `MUSE.md` still loaded)
-- Session resume (`-c`, `-r`, `/sessions`) with prompt-first picker
+- Session resume (`-c`, `-r`, `/sessions`) — defaults to **all** workspaces; dual `~/.meta` / `~/.muse` prefers richer copy
 - **Prompt cache key** per session (helps surface `cached_tokens`)
 
 ### Tools (native)
@@ -109,9 +114,11 @@ Or: `extract_frames` → model inspects stills → implement with **design-eng**
 
 ### Reliability & safety
 - Atomic writes under **`~/.meta/`** (auth, sessions, status, history)  
+- Session saves write **`*.json.bak`** first; compaction writes **`*.precompact.bak`**  
 - API **retries** · process timeouts · config validation · `meta doctor`  
 - Install scripts verify **SHA-256** of the binary  
 - Gap-fill migrate from legacy `~/.muse/` (never overwrites existing `.meta` files)  
+- Logs to **`~/.meta/meta.log`** (never paints stderr over the TUI)
 
 ---
 
@@ -242,10 +249,17 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 |---------|---------|
 | `/help` | Keys + commands |
 | `/mode` `/plan` `/manual` `/auto` | Permission |
+| `/cd` `/pwd` | Change / print workspace cwd |
 | `/todos` `/memory` `/skills` | Session state |
 | `/graphify` `/plur` `/ruflo` `/ecosystem` | Knowledge stack |
-| `/compact` `/usage` `/model` `/effort` | Context & model |
-| `/sessions` `/resume` | Same sessions browser |
+| `/compact` `/usage` `/cost` `/context` `/status` | Context, tokens, cost |
+| `/budget` | Session spend ceiling (`cost` / `tokens` / `clear` / `save`) |
+| `/poor` | Toggle cost-saver prompt (tools stay full) |
+| `/permissions` | Show / reload `permissions.toml` rules |
+| `/hooks` | Local `hooks.toml` status |
+| `/doctor` | Inline health check |
+| `/model` `/effort` | Model & reasoning |
+| `/sessions` `/resume` | Sessions browser (all workspaces by default) |
 | `/init` `/config` `/clear` `/new` `/exit` | Project & shell |
 | `/login` `/logout` | Authenticate / clear stored key |
 | `/bug` | Open GitHub issues page |
@@ -294,7 +308,23 @@ reasoning_effort = "high"
 max_turns = 40
 stream = true
 context_window = 1000000
+tool_result_max_chars = 12000   # 0 = unlimited; spill oversized tool output
+# max_session_cost_usd = 5.0    # optional hard stop
+# max_session_tokens = 500000   # optional hard stop
+compact_keep_user_turns = 4
+compact_tool_body_max_chars = 800
+poor_mode = false
+ecosystem_auto_ensure = true    # background pack repair on TUI open
 ```
+
+Optional files:
+
+| Path | Purpose |
+|------|---------|
+| `~/.meta/permissions.toml` | `allow` / `deny` / `ask` patterns (`bash:git *`, …) |
+| `~/.meta/hooks.toml` | `pre_tool` / `post_tool` shell hooks |
+| `~/.meta/tool-results/` | Spilled large tool outputs |
+| `~/.meta/meta.log` | Tracing (not the terminal) |
 
 Override home with `META_HOME` (legacy `MUSE_HOME` still honored). Env: `META_API_KEY` / `MODEL_API_KEY` / `META_MODEL`.
 

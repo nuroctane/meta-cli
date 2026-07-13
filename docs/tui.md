@@ -123,10 +123,12 @@ The note is appended to your persistent memory file and recalled automatically i
 |---------|---------|
 | `/model` | Change model (e.g. `/model muse-spark-1.1`) |
 | `/effort` | Change reasoning effort |
-| `/compact` | Manually compact context |
-| `/usage` | Show token usage and cost (`/cost`) |
+| `/compact` | Manually compact context (thins old tool bodies; keeps recent turns; writes `.precompact.bak`) |
+| `/usage` | Show token usage and cost (`/cost`) — includes budget caps when set |
+| `/budget` | Session spend ceiling: `/budget [cost <usd>\|tokens <n>\|clear\|save]` |
+| `/poor` | Toggle cost-saver prompt (skip PLUR inject / skills catalog / long memory; **tools stay full**) |
 | `/context` | Context-window utilization (bar + tokens) |
-| `/status` | Session snapshot: model · mode · cwd · tokens |
+| `/status` | Session snapshot: model · mode · cwd · tokens · cost |
 
 ### Project and shell
 
@@ -135,13 +137,25 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/cd <path>` | Change the working directory tools are sandboxed to (`~` and relative paths OK) |
 | `/pwd` | Print the current working directory |
 | `/init` | Initialise project instructions (`META.md`) |
-| `/config` | Open config |
-| `/doctor` | Inline health check: version · auth · ecosystem · shell |
+| `/config` | Show config + data paths |
+| `/permissions` | Show or reload allow/deny/ask rules (`permissions.toml`) |
+| `/hooks` | Local tool hook status (`hooks.toml`) |
+| `/doctor` | Inline health check: version · auth · ecosystem · shell · budgets |
 | `/help` | Show keys + commands reference |
 | `/login` | Authenticate (masked key entry) |
 | `/logout` | Clear stored API key |
 | `/bug` | Open GitHub issues page (report a bug) |
 | `/exit` | Quit Meta CLI |
+
+### Cost control (quick)
+
+```text
+/budget cost 5          # hard-stop this session around $5
+/budget save            # persist ceilings to config.toml
+/poor                   # leaner system prompt (tools unchanged)
+```
+
+Oversized tool results automatically spill under `~/.meta/tool-results/` with a short preview for the model — see [Configuration](configuration.md).
 
 ---
 
@@ -206,6 +220,11 @@ No keyboard shortcuts — move the highlight with the wheel or `↑`/`↓`, choo
 ### Sessions browser
 
 Open with `Ctrl+R` or `/sessions`. Browse recent sessions with a prompt-first picker — see the first user message of each session to find the one you want.
+
+- Defaults to **all** workspaces (not only the current cwd). Toggle **here** / **all** with Tab or the scope chip.
+- Scans both `~/.meta/sessions` and legacy `~/.muse/sessions`; when the same id exists twice, the **richer** copy wins.
+- Lists show message counts, tokens, and **estimated cost** so high-spend sessions are easy to spot.
+- Session saves write a sidecar **`.json.bak`** before overwrite.
 
 ### Sticky prompt
 

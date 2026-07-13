@@ -13,13 +13,13 @@ meta doctor
 | Check | Shows |
 |-------|-------|
 | `binary` | Path to the `meta` binary |
-| `config` | Model, effort, max_turns, config path |
+| `config` | Model, effort, max_turns, **budget** (`$/tok` caps), config path |
 | `auth` | Whether a key is set (last 4 chars only) |
 | `home` | Data home directory |
 | `status` | Path to `status.json` |
 | `usage` | Path to `usage.jsonl` |
 | `sessions` | Path to sessions directory |
-| `ecosystem` | Graphify, PLUR, Ruflo readiness |
+| `ecosystem` | Graphify, PLUR, Ruflo (and related packs) readiness |
 | `shell` | Bash / PowerShell backend |
 | `rg`, `git`, `node`, `npm`, `uv`, `ffmpeg` | Whether on PATH |
 | `vision` | look + extract_frames support |
@@ -30,10 +30,10 @@ meta doctor
 **All green:**
 
 ```text
-meta doctor · v0.6.6
+meta doctor · v0.10.0
 
 binary  C:\Users\you\.local\bin\meta.exe
-config  model=muse-spark-1.1 effort=high max_turns=40  (C:\Users\you\.meta\config.toml)
+config  model=muse-spark-1.1 effort=high max_turns=40 budget=∞$/∞tok  (C:\Users\you\.meta\config.toml)
 auth    key set (…abcd)
 home    C:\Users\you\.meta
 status  C:\Users\you\.meta\status.json
@@ -91,6 +91,35 @@ meta auth login
 # or
 export META_API_KEY="your-key-here"
 ```
+
+### Missing session in `/sessions`
+
+Sessions are never auto-deleted. If a chat “vanished”:
+
+1. Toggle the sessions picker scope to **all** (not only this cwd) — Tab or the scope chip.
+2. CLI: `meta sessions --limit 50` and look at the **COST** column for high-spend chats.
+3. Resume by id: `meta -r <prefix>` (first 8 chars of the UUID are enough when unique).
+4. Check both `~/.meta/sessions/` and legacy `~/.muse/sessions/`. Sidecar `*.json.bak` may hold the previous save.
+
+### Session budget stopped the agent
+
+```text
+session cost $X ≥ budget $Y
+```
+
+**Fix:**
+
+```text
+/budget cost 10
+/budget clear
+/budget save
+```
+
+Or edit `max_session_cost_usd` / `max_session_tokens` in `~/.meta/config.toml`.
+
+### Garbled text in the TUI on launch
+
+Logs go to `~/.meta/meta.log` (not stderr). If you still see noise, check that you're on **v0.10.0+** and no wrapper is redirecting `RUST_LOG` to the console at `warn` for syntect.
 
 ### Ecosystem components missing
 
