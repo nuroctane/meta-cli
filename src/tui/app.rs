@@ -350,6 +350,7 @@ pub struct PickerHit {
     /// Top-right close control (✕).
     pub close: ratatui::layout::Rect,
     /// List body (rows).
+    #[allow(dead_code)]
     pub body: ratatui::layout::Rect,
     /// Scope chip ("here" / "all") — click to toggle.
     pub scope: ratatui::layout::Rect,
