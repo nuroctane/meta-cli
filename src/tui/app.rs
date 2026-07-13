@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "commands + keyboard shortcuts"),
+    ("/commands", "commands + keyboard shortcuts"),
     ("/clear", "clear the transcript display"),
     ("/new", "start a fresh session"),
     ("/compact", "summarize conversation, free context"),
@@ -256,6 +257,27 @@ enum TurnMode {
     Chat,
     Compact,
 }
+
+#[derive(Clone)]
+pub struct CtxMenuHit {
+    pub frame: ratatui::layout::Rect,
+    pub actions: Vec<(usize, ratatui::layout::Rect)>,
+}
+
+pub struct CtxMenu {
+    pub cell_idx: usize,
+    pub selected: usize,
+    pub hit: CtxMenuHit,
+}
+
+/// Prompt context-menu actions, in display order. Single source of truth for
+/// both the renderer and the confirm handler so the row you pick always runs
+/// the action it shows.
+pub const CTX_ACTIONS: &[(&str, &str)] = &[
+    ("⑂", "Fork"),   // branch: a new session seeded up to this prompt
+    ("↺", "Revert"), // rewind this session to just before this prompt
+    ("⧉", "Copy"),   // copy the prompt text
+];
 
 /// What ↑/↓ do in the current UI state. Never history — history lives on
 /// Ctrl+P / Ctrl+N, because a past prompt jumping into the input box unbidden
@@ -566,6 +588,8 @@ pub struct App {
     pub hit_headers: Vec<Option<usize>>,
     /// Per wrapped line → owning peekable cell (hover dialogue).
     pub line_cells: Vec<Option<usize>>,
+    /// Per wrapped line → owning cell index (ALL cell types, for right-click hit-testing).
+    pub line_cell_all: Vec<Option<usize>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
@@ -574,6 +598,10 @@ pub struct App {
     pub hover_cell: Option<usize>,
     /// Click-pinned peek — stays open until Esc / click outside.
     pub peek_pinned: Option<usize>,
+    /// Right-click / double-click context menu on a User prompt.
+    pub ctx_menu: Option<CtxMenu>,
+    /// Last left-button press (cell idx, time) — for double-click detection.
+    pub last_click: Option<(usize, Instant)>,
     /// Last known mouse position (for anchoring the peek box).
     pub mouse_col: u16,
     pub mouse_row: u16,
@@ -601,6 +629,7 @@ pub struct App {
     pub picker: Option<SessionPicker>,
     pub palette_idx: usize,
     pub palette_scroll: usize,
+    pub palette_last_step: std::time::Instant,
     pub quit_armed: Option<Instant>,
 
     tx: mpsc::UnboundedSender<AgentEvent>,
@@ -742,10 +771,13 @@ pub async fn run_tui(
         wrap_cache_parts: Vec::new(),
         hit_headers: Vec::new(),
         line_cells: Vec::new(),
+        line_cell_all: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
         hover_cell: None,
         peek_pinned: None,
+        ctx_menu: None,
+        last_click: None,
         mouse_col: 0,
         mouse_row: 0,
         input: InputState::new(),
@@ -766,6 +798,7 @@ pub async fn run_tui(
         picker: None,
         palette_idx: 0,
         palette_scroll: 0,
+        palette_last_step: std::time::Instant::now(),
         quit_armed: None,
         tx,
         rx,
@@ -951,20 +984,48 @@ impl App {
         !self.palette_matches().is_empty()
     }
 
-    /// Clamp palette_scroll so the selected item is always visible.
-    fn clamp_palette_scroll(&mut self) {
-        let n = self.palette_matches().len();
-        if n == 0 {
-            self.palette_scroll = 0;
+    /// Move palette selection by exactly one entry. Viewport shifts by at most 1.
+    fn palette_step(&mut self, dir: i32) {
+        if dir == 0 || !self.palette_visible() {
             return;
         }
-        let sel = self.palette_idx.min(n - 1);
-        // Approximate visible rows (actual value set by draw, but 10 is the cap).
-        let vis = 10usize;
-        self.palette_scroll = self.palette_scroll.min(sel);
-        self.palette_scroll = self.palette_scroll.max(sel.saturating_sub(vis.saturating_sub(1)));
-        let max_scroll = n.saturating_sub(vis);
-        self.palette_scroll = self.palette_scroll.min(max_scroll);
+        let n = self.palette_matches().len();
+        if n == 0 {
+            return;
+        }
+        let page = 10usize;
+        if dir < 0 {
+            if self.palette_idx == 0 {
+                return;
+            }
+            self.palette_idx -= 1;
+            if self.palette_idx < self.palette_scroll {
+                self.palette_scroll = self.palette_idx;
+            }
+        } else {
+            if self.palette_idx + 1 >= n {
+                return;
+            }
+            self.palette_idx += 1;
+            let last_vis = self.palette_scroll + page - 1;
+            if self.palette_idx > last_vis {
+                self.palette_scroll += 1;
+            }
+        }
+        let max_scroll = n.saturating_sub(page);
+        if self.palette_scroll > max_scroll {
+            self.palette_scroll = max_scroll;
+        }
+    }
+
+    /// Wheel: one step max every 45ms so OS/trackpad floods don't skip items.
+    fn palette_wheel_step(&mut self, dir: i32) {
+        let now = std::time::Instant::now();
+        if now.duration_since(self.palette_last_step) < std::time::Duration::from_millis(45) {
+            return;
+        }
+        self.palette_last_step = now;
+        self.palette_step(dir.signum());
     }
 
     // ── arrow-key policy ───────────────────────────────────────────────
@@ -1013,6 +1074,213 @@ impl App {
         self.scroll_from_bottom = v.min(self.max_scroll());
     }
 
+    // ── prompt context menu (right-click / double-click a User prompt) ───
+    //
+    // No keyboard shortcuts: wheel or ↑/↓ move the highlight, Enter or click
+    // chooses, Esc or an outside click dismisses. Styled like every other
+    // dialogue (shared modal frame).
+
+    fn open_ctx_menu(&mut self, cell_idx: usize) {
+        self.ctx_menu = Some(CtxMenu {
+            cell_idx,
+            selected: 0,
+            hit: CtxMenuHit {
+                frame: ratatui::layout::Rect::default(),
+                actions: Vec::new(),
+            },
+        });
+    }
+
+    fn close_ctx_menu(&mut self) {
+        self.ctx_menu = None;
+    }
+
+    fn ctx_move(&mut self, delta: isize) {
+        if let Some(menu) = &mut self.ctx_menu {
+            let n = CTX_ACTIONS.len() as isize;
+            if n > 0 {
+                let cur = menu.selected as isize;
+                menu.selected = (cur + delta).clamp(0, n - 1) as usize;
+            }
+        }
+    }
+
+    fn on_ctx_menu_key(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Esc => self.close_ctx_menu(),
+            KeyCode::Up => self.ctx_move(-1),
+            KeyCode::Down => self.ctx_move(1),
+            KeyCode::Enter => self.ctx_confirm(),
+            _ => {} // deliberately no letter shortcuts
+        }
+    }
+
+    fn on_ctx_menu_mouse(&mut self, m: event::MouseEvent) {
+        let Some(menu) = &self.ctx_menu else { return };
+        let hit = menu.hit.clone();
+        match m.kind {
+            MouseEventKind::ScrollUp => self.ctx_move(-1),
+            MouseEventKind::ScrollDown => self.ctx_move(1),
+            // Hovering the menu moves the highlight (feels like a real menu).
+            MouseEventKind::Moved => {
+                for (i, r) in &hit.actions {
+                    if rect_contains(*r, m.column, m.row) {
+                        if let Some(menu) = &mut self.ctx_menu {
+                            menu.selected = *i;
+                        }
+                        break;
+                    }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                for (i, r) in &hit.actions {
+                    if rect_contains(*r, m.column, m.row) {
+                        if let Some(menu) = &mut self.ctx_menu {
+                            menu.selected = *i;
+                        }
+                        self.ctx_confirm();
+                        return;
+                    }
+                }
+                // Click off the menu → dismiss.
+                if !rect_contains(hit.frame, m.column, m.row) {
+                    self.close_ctx_menu();
+                }
+            }
+            MouseEventKind::Down(MouseButton::Right) => self.close_ctx_menu(),
+            _ => {}
+        }
+    }
+
+    fn ctx_confirm(&mut self) {
+        let sel = self.ctx_menu.as_ref().map(|m| m.selected).unwrap_or(0);
+        // Index order must match CTX_ACTIONS: 0 Fork · 1 Revert · 2 Copy.
+        match sel {
+            0 => self.ctx_fork(),
+            1 => self.ctx_revert(),
+            2 => self.ctx_copy(),
+            _ => {}
+        }
+        self.close_ctx_menu();
+    }
+
+    /// The selected prompt's text plus its position counted **from the end** of
+    /// the user prompts (1 = last prompt, 2 = second-to-last, …). Counting from
+    /// the end makes revert/fork correct even when the transcript only shows a
+    /// resumed tail: the displayed prompts are always the suffix of the session.
+    fn ctx_prompt(&self) -> Option<(String, usize)> {
+        let idx = self.ctx_menu.as_ref()?.cell_idx;
+        let text = match self.cells.get(idx)? {
+            Cell::User(t) => t.clone(),
+            _ => return None,
+        };
+        let displayed = self
+            .cells
+            .iter()
+            .filter(|c| matches!(c, Cell::User(_)))
+            .count();
+        let before = self.cells[..idx]
+            .iter()
+            .filter(|c| matches!(c, Cell::User(_)))
+            .count();
+        let from_end = displayed.saturating_sub(before); // 1-based from the end
+        Some((text, from_end))
+    }
+
+    fn ctx_copy(&mut self) {
+        if let Some((text, _)) = self.ctx_prompt() {
+            let n = text.chars().count();
+            clipboard_set(&text);
+            self.push_note(Tone::Neutral, format!("copied prompt · {n} chars"));
+        }
+    }
+
+    /// Revert: rewind THIS session to just before the selected prompt, then load
+    /// the prompt back into the input box (edit and resend at will). Everything
+    /// from that prompt onward is dropped from the transcript and session.
+    fn ctx_revert(&mut self) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish, then revert".into());
+            return;
+        }
+        let Some((prompt, from_end)) = self.ctx_prompt() else { return };
+        let idx = self.ctx_menu.as_ref().map(|m| m.cell_idx).unwrap_or(0);
+
+        self.cells.truncate(idx);
+        if let Some(session) = &mut self.session {
+            truncate_session_before_prompt(session, from_end);
+            let _ = session.save();
+        }
+        self.reset_transcript_interaction();
+        self.input.set_text(&prompt);
+        self.scroll_to_bottom();
+        self.push_note(
+            Tone::Session,
+            "reverted — dropped this prompt and everything after; it's back in the input to edit or resend".into(),
+        );
+    }
+
+    /// Fork: branch into a NEW session seeded with the conversation up to (but
+    /// not including) the selected prompt. The original session is left intact
+    /// on disk; the prompt is placed in the input, ready to send down the fork.
+    fn ctx_fork(&mut self) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish, then fork".into());
+            return;
+        }
+        let Some((prompt, from_end)) = self.ctx_prompt() else { return };
+        let idx = self.ctx_menu.as_ref().map(|m| m.cell_idx).unwrap_or(0);
+
+        // Persist the original before branching.
+        if let Some(s) = &self.session {
+            let _ = s.save();
+        }
+        // Clone current session → new id, truncated to before this prompt.
+        let mut forked = match &self.session {
+            Some(s) => (**s).clone(),
+            None => Session::new(&self.cfg.model, &self.cwd.display().to_string()),
+        };
+        forked.id = uuid::Uuid::new_v4().to_string();
+        forked.cwd = self.cwd.display().to_string();
+        truncate_session_before_prompt(&mut forked, from_end);
+        let _ = forked.save();
+
+        self.session_id = forked.id.clone();
+        self.u_session = forked.usage.clone();
+        self.u_last = TokenUsage::default();
+        let mut usage = UsageTracker::new(
+            forked.id.clone(),
+            self.cfg.model.clone(),
+            self.cwd.clone(),
+        );
+        usage.seed_session(forked.usage.clone());
+        self.session = Some(Box::new(forked));
+        self.usage = Some(Box::new(usage));
+
+        // Transcript shows the shared history up to the fork point.
+        self.cells.truncate(idx);
+        self.reset_transcript_interaction();
+        self.input.set_text(&prompt);
+        self.scroll_to_bottom();
+        self.push_note(
+            Tone::Session,
+            format!(
+                "forked → {} · branched from this prompt (original kept) — prompt is in the input, send to continue the fork",
+                &self.session_id[..8.min(self.session_id.len())]
+            ),
+        );
+    }
+
+    /// Clear transient transcript interaction state after cells change.
+    fn reset_transcript_interaction(&mut self) {
+        self.peek_pinned = None;
+        self.hover_cell = None;
+        self.selection = None;
+        self.select_anchor = None;
+        self.selecting = false;
+        self.expand_flash = None;
+    }
+
     // ── keys ───────────────────────────────────────────────────────────
     fn on_key(&mut self, key: event::KeyEvent) {
         // Secure login modal swallows all keys (masked key entry).
@@ -1028,6 +1296,11 @@ impl App {
         // Session picker swallows all keys while open.
         if self.picker.is_some() {
             self.on_picker_key(key.code);
+            return;
+        }
+        // Context menu swallows keys while open.
+        if self.ctx_menu.is_some() {
+            self.on_ctx_menu_key(key.code);
             return;
         }
 
@@ -1159,21 +1432,12 @@ impl App {
             KeyCode::Up if alt => self.input.history_prev(),
             KeyCode::Down if alt => self.input.history_next(),
             KeyCode::Up => match self.arrow_action(true) {
-                ArrowAction::Palette => {
-                    self.palette_idx = self.palette_idx.saturating_sub(1);
-                    self.clamp_palette_scroll();
-                }
+                ArrowAction::Palette => self.palette_step(-1),
                 ArrowAction::Caret => self.input.move_up_line(),
                 ArrowAction::Scroll => self.scroll_up(1),
             },
             KeyCode::Down => match self.arrow_action(false) {
-                ArrowAction::Palette => {
-                    let n = self.palette_matches().len();
-                    if self.palette_idx + 1 < n {
-                        self.palette_idx += 1;
-                    }
-                    self.clamp_palette_scroll();
-                }
+                ArrowAction::Palette => self.palette_step(1),
                 ArrowAction::Caret => self.input.move_down_line(),
                 ArrowAction::Scroll => self.scroll_down(1),
             },
@@ -1280,6 +1544,16 @@ impl App {
         self.mouse_col = m.column;
         self.mouse_row = m.row;
 
+        // Context menu is modal — forward all mouse events.
+        if self.ctx_menu.is_some() {
+            self.scrollbar_drag = false;
+            self.selecting = false;
+            self.select_anchor = None;
+            self.mouse_left_down = false;
+            self.on_ctx_menu_mouse(m);
+            return;
+        }
+
         // Approval is a modal *overlay* but must not brick scroll/select forever.
         // Allow wheel + continue an in-progress scrollbar drag; new clicks on
         // the transcript are ignored until the modal is dismissed.
@@ -1288,7 +1562,7 @@ impl App {
         match m.kind {
             MouseEventKind::ScrollUp => {
                 if self.palette_visible() {
-                    self.palette_scroll = self.palette_scroll.saturating_sub(1);
+                    self.palette_wheel_step(-1);
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
@@ -1299,11 +1573,7 @@ impl App {
             }
             MouseEventKind::ScrollDown => {
                 if self.palette_visible() {
-                    let n = self.palette_matches().len();
-                    let max_scroll = n.saturating_sub(1);
-                    if self.palette_scroll < max_scroll {
-                        self.palette_scroll += 1;
-                    }
+                    self.palette_wheel_step(1);
                 } else {
                     self.scroll_down(3);
                 }
@@ -1339,7 +1609,31 @@ impl App {
                     self.select_anchor = None;
                     self.selecting = false;
                     self.scrollbar_drag = false;
+                    self.last_click = None;
                     return;
+                }
+                // Double-click a User prompt → open its context menu. A single
+                // click on a prompt still does nothing (prompts aren't peekable),
+                // so this never fights normal clicking.
+                let over_prompt = self
+                    .cell_at_mouse_any()
+                    .filter(|&idx| matches!(self.cells.get(idx), Some(Cell::User(_))));
+                if let Some(idx) = over_prompt {
+                    let dbl = self
+                        .last_click
+                        .map(|(ci, t)| ci == idx && t.elapsed() < Duration::from_millis(450))
+                        .unwrap_or(false);
+                    if dbl {
+                        self.last_click = None;
+                        self.selecting = false;
+                        self.select_anchor = None;
+                        self.selection = None;
+                        self.open_ctx_menu(idx);
+                        return;
+                    }
+                    self.last_click = Some((idx, Instant::now()));
+                } else {
+                    self.last_click = None;
                 }
                 if self.hit_scrollbar(m.column, m.row) {
                     self.scrollbar_drag = true;
@@ -1377,8 +1671,11 @@ impl App {
                 self.selecting = false;
                 self.select_anchor = None;
                 self.update_hover_from_mouse();
-                if let Some(idx) = self.cell_at_mouse() {
-                    self.peek_pinned = Some(idx);
+                self.ctx_menu = None;
+                if let Some(idx) = self.cell_at_mouse_any() {
+                    if matches!(self.cells.get(idx), Some(Cell::User(_))) {
+                        self.open_ctx_menu(idx);
+                    }
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -1538,6 +1835,22 @@ impl App {
         let local_y = self.mouse_row.saturating_sub(body.y) as usize;
         let line_idx = self.transcript_top as usize + local_y;
         self.line_cells.get(line_idx).copied().flatten()
+    }
+
+    fn cell_at_mouse_any(&self) -> Option<usize> {
+        let body = self.transcript_body;
+        if body.width == 0
+            || body.height == 0
+            || self.mouse_col < body.x
+            || self.mouse_col >= body.right()
+            || self.mouse_row < body.y
+            || self.mouse_row >= body.bottom()
+        {
+            return None;
+        }
+        let local_y = self.mouse_row.saturating_sub(body.y) as usize;
+        let line_idx = self.transcript_top as usize + local_y;
+        self.line_cell_all.get(line_idx).copied().flatten()
     }
 
     /// Active peek target: pinned click wins, else free hover.
@@ -2425,7 +2738,7 @@ impl App {
 
         match cmd {
             "/exit" | "/quit" => self.should_quit = true,
-            "/help" => self.cmd_help(),
+            "/help" | "/commands" => self.cmd_help(),
             "/clear" => {
                 self.cells.retain(|c| matches!(c, Cell::Banner));
                 self.scroll_from_bottom = 0;
@@ -2778,6 +3091,7 @@ impl App {
             ("drag text", "select + auto-copy"),
             ("click ↓ End", "jump to latest"),
             ("click card  ·  ▸", "peek  ·  expand"),
+            ("right/2×-click prompt", "menu: fork · revert · copy"),
             ("e  ·  p  (empty)", "expand  ·  pin-peek latest"),
             ("Ctrl+A", "select all (input, or transcript if empty)"),
             ("Ctrl+C", "copy selection  ·  else cancel / double-tap quit"),
@@ -3049,6 +3363,41 @@ impl App {
     }
 }
 
+/// Rewind a session to just before a user prompt, identified by its position
+/// **from the end** (1 = last prompt). Drops that prompt's message + API items
+/// and everything after, in both the display messages and the Responses
+/// `input_items` history, so the model's context is genuinely rewound.
+pub fn truncate_session_before_prompt(session: &mut crate::agent::Session, from_end: usize) {
+    if from_end == 0 {
+        return;
+    }
+    // Chat messages (user + assistant).
+    let user_msgs: Vec<usize> = session
+        .messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| m.role == "user")
+        .map(|(i, _)| i)
+        .collect();
+    if from_end <= user_msgs.len() {
+        let cut = user_msgs[user_msgs.len() - from_end];
+        session.messages.truncate(cut);
+    }
+    // API input_items — each user turn begins with a `role: "user"` item.
+    let user_items: Vec<usize> = session
+        .input_items
+        .iter()
+        .enumerate()
+        .filter(|(_, it)| it.get("role").and_then(|r| r.as_str()) == Some("user"))
+        .map(|(i, _)| i)
+        .collect();
+    if from_end <= user_items.len() {
+        let cut = user_items[user_items.len() - from_end];
+        session.input_items.truncate(cut);
+    }
+    session.updated_at = chrono::Utc::now();
+}
+
 fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
     r.width > 0
         && r.height > 0
@@ -3097,6 +3446,72 @@ pub fn line_to_plain(line: &ratatui::text::Line<'_>) -> String {
 mod tests {
     use super::*;
     use crate::tui::input::InputState;
+
+    fn sess_with_turns(prompts: &[&str]) -> crate::agent::Session {
+        let mut s = crate::agent::Session::new("m", "/tmp");
+        for (i, p) in prompts.iter().enumerate() {
+            s.messages.push(crate::agent::session::SessionMessage {
+                role: "user".into(),
+                content: (*p).into(),
+                ts: chrono::Utc::now(),
+            });
+            s.input_items
+                .push(crate::api::types::user_text_item(p));
+            // assistant reply for the turn
+            s.messages.push(crate::agent::session::SessionMessage {
+                role: "assistant".into(),
+                content: format!("reply {i}"),
+                ts: chrono::Utc::now(),
+            });
+            s.input_items.push(serde_json::json!({
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": format!("reply {i}")}]
+            }));
+        }
+        s
+    }
+
+    #[test]
+    fn revert_rewinds_to_before_the_chosen_prompt() {
+        // 3 turns: prompts A,B,C. Revert to B (from_end = 2) keeps only A's turn.
+        let mut s = sess_with_turns(&["A", "B", "C"]);
+        assert_eq!(s.messages.len(), 6);
+        assert_eq!(s.input_items.len(), 6);
+        truncate_session_before_prompt(&mut s, 2);
+        // Only A's user+assistant remain, in messages AND the API items.
+        assert_eq!(s.messages.iter().filter(|m| m.role == "user").count(), 1);
+        assert_eq!(s.messages.last().unwrap().content, "reply 0");
+        assert_eq!(
+            s.input_items
+                .iter()
+                .filter(|it| it.get("role").and_then(|r| r.as_str()) == Some("user"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn revert_last_prompt_keeps_all_prior() {
+        let mut s = sess_with_turns(&["A", "B", "C"]);
+        truncate_session_before_prompt(&mut s, 1); // the last prompt (C)
+        assert_eq!(s.messages.iter().filter(|m| m.role == "user").count(), 2);
+    }
+
+    #[test]
+    fn revert_first_prompt_clears_everything() {
+        let mut s = sess_with_turns(&["A", "B"]);
+        truncate_session_before_prompt(&mut s, 2); // from_end 2 == first of two
+        assert!(s.messages.is_empty());
+        assert!(s.input_items.is_empty());
+    }
+
+    #[test]
+    fn ctx_action_indices_match_labels() {
+        // The confirm handler switches on these indices; keep them pinned.
+        assert_eq!(CTX_ACTIONS[0].1, "Fork");
+        assert_eq!(CTX_ACTIONS[1].1, "Revert");
+        assert_eq!(CTX_ACTIONS[2].1, "Copy");
+    }
 
     /// Calls the same `decide_arrow_action` the App does — no mirrored logic,
     /// so the tests cannot drift from the behavior they claim to pin.

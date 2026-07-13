@@ -68,8 +68,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
     // Grok-style hover dialogue over thoughts / tools / turns (above everything
     // except approval/picker, which already short-circuit interaction).
-    if app.approval.is_none() && app.picker.is_none() && app.login.is_none() {
+    if app.approval.is_none() && app.picker.is_none() && app.login.is_none() && app.ctx_menu.is_none() {
         draw_hover_peek(f, app, area);
+    }
+    // Context menu overlay — drawn last so it sits on top.
+    if app.ctx_menu.is_some() {
+        draw_ctx_menu(f, app);
     }
 }
 
@@ -567,6 +571,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     // Rebuild hit-test maps: headers (click) + any peekable line (hover).
     let mut hit_headers: Vec<Option<usize>> = Vec::new();
     let mut line_cells: Vec<Option<usize>> = Vec::new();
+    let mut line_cell_all: Vec<Option<usize>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
@@ -579,6 +584,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 is_prompt_head.push(false);
                 hit_headers.push(None);
                 line_cells.push(None);
+                line_cell_all.push(None);
                 plain_lines.push(String::new());
             }
             prompts.push(text.clone());
@@ -633,10 +639,13 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             });
+            // All non-blank lines map to their cell for right-click targeting.
+            line_cell_all.push(if !empty { Some(cell_idx) } else { None });
         }
     }
     app.hit_headers = hit_headers;
     app.line_cells = line_cells;
+    app.line_cell_all = line_cell_all;
     app.plain_lines = plain_lines;
 
     let total = wrapped.len() as u16;
@@ -2155,7 +2164,6 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
     let vis = inner.height as usize;
     // Clamp palette_scroll so the keyboard selection is always visible.
     let mut start = app.palette_scroll;
-    start = start.min(sel);
     start = start.max(sel.saturating_sub(vis.saturating_sub(1)));
     let max_scroll = matches.len().saturating_sub(vis);
     start = start.min(max_scroll);
@@ -2608,6 +2616,72 @@ fn capitalize(s: &str) -> String {
     match c.next() {
         Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
         None => String::new(),
+    }
+}
+
+fn draw_ctx_menu(f: &mut Frame, app: &mut App) {
+    use super::app::CTX_ACTIONS;
+    let area = f.area();
+    // content rows + 2 border + 2 inner padding, so the shared ornate frame fits.
+    let menu_w: u16 = 34.min(area.width.saturating_sub(2));
+    let menu_h: u16 = CTX_ACTIONS.len() as u16 + 4;
+    // Anchor at the cursor, clamped fully on-screen.
+    let x = app
+        .mouse_col
+        .min(area.right().saturating_sub(menu_w).saturating_sub(1));
+    let y = app
+        .mouse_row
+        .min(area.bottom().saturating_sub(menu_h).saturating_sub(1));
+    let frame = Rect::new(x, y, menu_w, menu_h);
+
+    f.render_widget(Clear, frame);
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme::SURFACE_2)),
+        frame,
+    );
+    let phase = modal_phase(app);
+    draw_modal_frame(
+        f,
+        frame,
+        phase,
+        theme::META_BLUE,
+        " prompt ",
+        None,
+        "  ↑↓/wheel move  ·  ↵ choose  ·  esc  ",
+    );
+    let inner = modal_inner(frame);
+
+    let sel = app.ctx_menu.as_ref().map(|m| m.selected).unwrap_or(0);
+    let mut actions = Vec::new();
+    for (i, (glyph, label)) in CTX_ACTIONS.iter().enumerate() {
+        let ar = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        let selected = i == sel;
+        let (fg, bg) = if selected {
+            (theme::BG, theme::META_BLUE)
+        } else {
+            (theme::FG, theme::SURFACE_2)
+        };
+        let marker = if selected { "❯ " } else { "  " };
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{marker}{glyph}  "),
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{label:<width$}", width = inner.width.saturating_sub(6) as usize),
+                Style::default().fg(fg).bg(bg),
+            ),
+        ]);
+        f.render_widget(
+            Paragraph::new(line).style(Style::default().bg(bg)),
+            ar,
+        );
+        actions.push((i, ar));
+    }
+
+    if let Some(menu) = &mut app.ctx_menu {
+        menu.hit.frame = frame;
+        menu.hit.actions = actions;
     }
 }
 
