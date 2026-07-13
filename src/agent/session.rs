@@ -1,9 +1,12 @@
-use crate::config::{atomic_write, ensure_dirs, muse_home, sessions_dir};
+use crate::config::{
+    atomic_write, ensure_dirs, legacy_muse_home, muse_home, sessions_dir,
+};
 use crate::error::{MuseError, Result};
 use crate::usage::TokenUsage;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -30,7 +33,6 @@ pub struct SessionMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct SessionSummary {
     pub id: String,
     pub updated_at: DateTime<Utc>,
@@ -39,6 +41,25 @@ pub struct SessionSummary {
     pub messages: usize,
     pub total_tokens: u64,
     pub estimated_cost_usd: f64,
+    /// First user prompt, trimmed (for the sessions picker). Empty if none.
+    #[serde(default)]
+    pub preview: String,
+}
+
+/// Lightweight parse — deliberately **omits** `input_items` so huge multimodal
+/// session files don't get fully materialised just to list them.
+#[derive(Debug, Deserialize)]
+struct SessionLite {
+    id: String,
+    updated_at: DateTime<Utc>,
+    #[serde(default)]
+    model: String,
+    #[serde(default)]
+    cwd: String,
+    #[serde(default)]
+    messages: Vec<SessionMessage>,
+    #[serde(default)]
+    usage: TokenUsage,
 }
 
 impl Session {
@@ -179,6 +200,20 @@ impl Session {
 
     #[allow(dead_code)]
     pub fn summary(&self) -> SessionSummary {
+        let preview = self
+            .messages
+            .iter()
+            .find(|m| m.role == "user")
+            .map(|m| {
+                m.content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(120)
+                    .collect()
+            })
+            .unwrap_or_default();
         SessionSummary {
             id: self.id.clone(),
             updated_at: self.updated_at,
@@ -187,6 +222,7 @@ impl Session {
             messages: self.messages.len(),
             total_tokens: self.usage.total_tokens,
             estimated_cost_usd: self.usage.estimated_cost_usd(),
+            preview,
         }
     }
 }
@@ -233,31 +269,30 @@ fn find_by_prefix(prefix: &str) -> Result<Option<Session>> {
     Ok(None)
 }
 
+/// Full session load (includes input_items). Prefer [`list_session_summaries`]
+/// for pickers and listings.
 pub fn list_sessions() -> Result<Vec<Session>> {
     ensure_dirs()?;
-    let dir = sessions_dir();
     let mut out = Vec::new();
-    if !dir.exists() {
-        return Ok(out);
-    }
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+    let mut seen = HashSet::new();
+    for dir in session_dirs() {
+        if !dir.exists() {
             continue;
         }
-        // skip *.status.json
-        if path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|n| n.contains(".status."))
-            .unwrap_or(false)
-        {
+        let Ok(rd) = fs::read_dir(&dir) else {
             continue;
-        }
-        if let Ok(text) = fs::read_to_string(&path) {
-            if let Ok(s) = serde_json::from_str::<Session>(&text) {
-                out.push(s);
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !is_session_file(&path) {
+                continue;
+            }
+            if let Ok(text) = fs::read_to_string(&path) {
+                if let Ok(s) = serde_json::from_str::<Session>(&text) {
+                    if seen.insert(s.id.clone()) {
+                        out.push(s);
+                    }
+                }
             }
         }
     }
@@ -265,8 +300,95 @@ pub fn list_sessions() -> Result<Vec<Session>> {
     Ok(out)
 }
 
+/// Fast listing for `/sessions` UI and `meta sessions` — skips `input_items`.
+/// Scans both `~/.meta/sessions` and legacy `~/.muse/sessions`.
+pub fn list_session_summaries() -> Result<Vec<SessionSummary>> {
+    ensure_dirs()?;
+    // Opportunistically heal missing files from legacy home.
+    let _ = crate::config::ensure_dirs();
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for dir in session_dirs() {
+        if !dir.is_dir() {
+            continue;
+        }
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if !is_session_file(&path) {
+                continue;
+            }
+            match summarize_session_file(&path) {
+                Ok(s) if seen.insert(s.id.clone()) => out.push(s),
+                _ => {}
+            }
+        }
+    }
+    out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(out)
+}
+
+fn session_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![sessions_dir()];
+    let legacy = legacy_muse_home().join("sessions");
+    if legacy != dirs[0] {
+        dirs.push(legacy);
+    }
+    dirs
+}
+
+fn is_session_file(path: &Path) -> bool {
+    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return false;
+    }
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| !n.contains(".status.") && !n.starts_with('.'))
+        .unwrap_or(false)
+}
+
+fn summarize_session_file(path: &Path) -> Result<SessionSummary> {
+    let text = fs::read_to_string(path)
+        .map_err(|e| MuseError::Other(format!("read {}: {e}", path.display())))?;
+    // Cap insane files so a corrupt multi-GB dump can't take us down.
+    if text.len() > 32 * 1024 * 1024 {
+        return Err(MuseError::Other(format!(
+            "session file too large: {}",
+            path.display()
+        )));
+    }
+    let lite: SessionLite = serde_json::from_str(&text)
+        .map_err(|e| MuseError::Other(format!("parse {}: {e}", path.display())))?;
+    let preview = lite
+        .messages
+        .iter()
+        .find(|m| m.role == "user")
+        .map(|m| {
+            m.content
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(120)
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(SessionSummary {
+        id: lite.id,
+        updated_at: lite.updated_at,
+        model: lite.model,
+        cwd: lite.cwd,
+        messages: lite.messages.len(),
+        total_tokens: lite.usage.total_tokens,
+        estimated_cost_usd: lite.usage.estimated_cost_usd(),
+        preview,
+    })
+}
+
 pub fn print_sessions(limit: usize) -> Result<()> {
-    let sessions = list_sessions()?;
+    let sessions = list_session_summaries()?;
     if sessions.is_empty() {
         println!("no sessions yet");
         return Ok(());
@@ -281,8 +403,8 @@ pub fn print_sessions(limit: usize) -> Result<()> {
             "{:<10}  {:<20}  {:>8}  {:>10}  {}",
             id_short,
             s.updated_at.format("%Y-%m-%d %H:%M"),
-            s.messages.len(),
-            s.usage.total_tokens,
+            s.messages,
+            s.total_tokens,
             s.cwd
         );
     }

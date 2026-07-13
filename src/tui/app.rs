@@ -660,16 +660,33 @@ pub async fn run_tui(
     usage: UsageTracker,
     initial_prompt: Option<String>,
     ecosystem_summary: String,
+    workspace_note: Option<String>,
 ) -> Result<()> {
-    enable_raw_mode()?;
-    stdout().execute(EnterAlternateScreen)?;
+    // Fail clearly if stdin isn't a real console (redirects / dead pipes).
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        return Err(crate::error::MuseError::Other(
+            "meta needs an interactive terminal (stdin is not a TTY).\n\
+             Run `meta` from a normal shell window, not a redirected pipe."
+                .into(),
+        ));
+    }
+    enable_raw_mode().map_err(|e| {
+        crate::error::MuseError::Other(format!(
+            "cannot enter raw mode (TUI): {e}\n\
+             Try a different terminal, or close other full-screen console apps."
+        ))
+    })?;
+    stdout()
+        .execute(EnterAlternateScreen)
+        .map_err(|e| crate::error::MuseError::Other(format!("alternate screen: {e}")))?;
     stdout().execute(EnableBracketedPaste)?;
     enable_mouse();
     // Hardware cursor hidden — we paint a Meta blue block caret ourselves.
     stdout().execute(Hide)?;
     let _guard = TermGuard;
     let backend = CrosstermBackend::new(stdout());
-    let mut terminal = Terminal::new(backend)?;
+    let mut terminal = Terminal::new(backend)
+        .map_err(|e| crate::error::MuseError::Other(format!("terminal init: {e}")))?;
 
     let (tx, rx) = mpsc::unbounded_channel();
     let u_session = usage.session_usage().clone();
@@ -759,6 +776,9 @@ pub async fn run_tui(
     };
 
     app.replay_session_tail(8);
+    if let Some(note) = workspace_note {
+        app.push_note(Tone::Session, note);
+    }
     app.push_info(format!(
         "mode · {mode_label}  ·  Shift+Tab cycles  manual → plan → auto  ·  /mode"
     ));
@@ -1588,7 +1608,8 @@ impl App {
             self.push_error("wait for the current turn to finish".into());
             return;
         }
-        let sessions = match crate::agent::session::list_sessions() {
+        // Lightweight summaries (no input_items) from ~/.meta + legacy ~/.muse.
+        let sessions = match crate::agent::session::list_session_summaries() {
             Ok(s) => s,
             Err(e) => {
                 self.push_error(format!("could not list sessions: {e}"));
@@ -1596,40 +1617,44 @@ impl App {
             }
         };
         let here_key = self.cwd.display().to_string().to_lowercase();
-        let rows: Vec<SessionRow> = sessions
-            .iter()
-            // Current session isn't a resume target; empty shells aren't history.
-            .filter(|s| s.id != self.session_id && !s.messages.is_empty())
-            .take(60)
-            .map(|s| SessionRow {
-                id: s.id.clone(),
-                when: relative_when(s.updated_at),
-                messages: s.messages.len(),
-                tokens: s.usage.total_tokens,
-                cost: s.usage.estimated_cost_usd(),
-                cwd: s.cwd.clone(),
-                preview: s
-                    .messages
-                    .iter()
-                    .find(|m| m.role == "user")
-                    .map(|m| {
-                        m.content
-                            .split_whitespace()
-                            .collect::<Vec<_>>()
-                            .join(" ")
-                            .chars()
-                            .take(100)
-                            .collect()
-                    })
-                    .unwrap_or_else(|| "(no prompt)".into()),
-                here: s.cwd.to_lowercase() == here_key,
+        let mut rows: Vec<SessionRow> = sessions
+            .into_iter()
+            // Current session isn't a resume target.
+            .filter(|s| s.id != self.session_id)
+            .take(120)
+            .map(|s| {
+                let preview = if !s.preview.is_empty() {
+                    s.preview.chars().take(100).collect()
+                } else if s.messages == 0 {
+                    "(empty session)".into()
+                } else {
+                    "(no prompt)".into()
+                };
+                SessionRow {
+                    id: s.id,
+                    when: relative_when(s.updated_at),
+                    messages: s.messages,
+                    tokens: s.total_tokens,
+                    cost: s.estimated_cost_usd,
+                    cwd: s.cwd.clone(),
+                    preview,
+                    here: s.cwd.to_lowercase() == here_key,
+                }
             })
             .collect();
+
+        // Prefer real chats; hide empty shells unless that's all we have.
+        let has_real = rows.iter().any(|r| r.messages > 0);
+        if has_real {
+            rows.retain(|r| r.messages > 0);
+        }
 
         if rows.is_empty() {
             self.push_note(
                 Tone::Session,
-                "no past sessions yet — keep chatting, then /sessions to jump back".into(),
+                "no past sessions yet — keep chatting, then /sessions to jump back\n\
+                 (searched ~/.meta/sessions and legacy ~/.muse/sessions)"
+                    .into(),
             );
             return;
         }
@@ -1639,7 +1664,6 @@ impl App {
             rows,
             idx: 0,
             scroll: 0,
-            // Until first paint; step() still works (viewport shifts by 1).
             vis_page: 6,
             this_cwd_only: any_here,
             hit: PickerHit::default(),

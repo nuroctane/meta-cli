@@ -149,13 +149,16 @@ async fn real_main() -> Result<()> {
 
     // Safe workspace: auto-fallback when user starts at C:\ / / (common on Windows).
     let (cwd, why) = tools::resolve_safe_workspace(&requested, explicit_cwd)?;
-    if let Some(reason) = why {
-        theme::print_info(&format!(
-            "workspace: {}  ·  {reason}",
+    // Don't print workspace tips to stdout before the TUI — that races with
+    // alternate-screen enter and can look like a crash (tips, then shell).
+    // Hand the note into the TUI instead.
+    let workspace_note = why.map(|reason| {
+        format!(
+            "workspace  {}  ·  {reason}\n\
+             tip  cd into your repo, or set META_CWD for a default",
             cwd.display()
-        ));
-        theme::print_info("tip: cd into your repo, or set user env META_CWD for a default");
-    }
+        )
+    });
     // Enter the workspace so relative paths / shell feel natural.
     let _ = std::env::set_current_dir(&cwd);
     let cwd_str = cwd.display().to_string();
@@ -273,6 +276,7 @@ async fn real_main() -> Result<()> {
                 usage,
                 cli.prompt.clone(),
                 eco_summary,
+                workspace_note,
             )
             .await?;
         }
