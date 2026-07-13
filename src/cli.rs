@@ -87,8 +87,8 @@ pub enum Commands {
     Usage,
     /// List recent sessions
     Sessions {
-        /// Max rows
-        #[arg(long, default_value_t = 20)]
+        /// Max rows (0 = all)
+        #[arg(long, default_value_t = 0)]
         limit: usize,
     },
     /// Install Orca agent hook for usage/status reporting

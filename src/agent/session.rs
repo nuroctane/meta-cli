@@ -397,7 +397,12 @@ pub fn print_sessions(limit: usize) -> Result<()> {
         "{:<10}  {:<20}  {:>8}  {:>10}  {}",
         "ID", "UPDATED", "MSGS", "TOKENS", "CWD"
     );
-    for s in sessions.into_iter().take(limit) {
+    let iter: Box<dyn Iterator<Item = SessionSummary>> = if limit == 0 {
+        Box::new(sessions.into_iter())
+    } else {
+        Box::new(sessions.into_iter().take(limit))
+    };
+    for s in iter {
         let id_short = if s.id.len() >= 8 { &s.id[..8] } else { &s.id };
         println!(
             "{:<10}  {:<20}  {:>8}  {:>10}  {}",
