@@ -3,7 +3,7 @@
 //! | Mode          | Behavior |
 //! |---------------|----------|
 //! | **manual**    | Read-only tools free; write/bash need approval |
-//! | **plan**      | Read-only only; mutating tools denied with reason for the model |
+//! | **plan**      | Explore + shell freely (incl. scratch/media compute); code authoring & repo/VCS commits blocked |
 //! | **auto**      | Auto-approve tools (full auto-approve) |
 //!
 //! Mode is held in an `Arc<AtomicU8>` so Shift+Tab / `/mode` takes effect
@@ -64,7 +64,7 @@ impl PermissionMode {
     pub fn description(self) -> &'static str {
         match self {
             Self::Manual => "approve writes & shell; reads free",
-            Self::Plan => "read-only explore — no edits or shell mutations",
+            Self::Plan => "explore + run shell freely; no code edits or repo commits",
             Self::Auto => "auto-approve tools (full auto)",
         }
     }

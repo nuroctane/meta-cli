@@ -578,6 +578,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut owner: Vec<Option<usize>> = Vec::new(); // index into `prompts`
     let mut is_prompt_head: Vec<bool> = Vec::new();
     let mut prompts: Vec<String> = Vec::new();
+    let mut prompt_cells: Vec<usize> = Vec::new(); // prompt ordinal → cell index
     let mut current: Option<usize> = None;
 
     // Rebuild hit-test maps: headers (click) + any peekable line (hover).
@@ -600,6 +601,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 plain_lines.push(String::new());
             }
             prompts.push(text.clone());
+            prompt_cells.push(cell_idx);
             current = Some(prompts.len() - 1);
         }
         let key = cell_wrap_key(cell, spin_i);
@@ -694,8 +696,9 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
 
     let vis_lo = top as usize;
     let vis_hi = (vis_lo + body_h as usize).min(wrapped.len());
-    let sticky: Option<String> = sticky_owner(&owner, &is_prompt_head, vis_lo, vis_hi)
-        .map(|oi| prompts[oi].clone());
+    let sticky_oi = sticky_owner(&owner, &is_prompt_head, vis_lo, vis_hi);
+    let sticky: Option<String> = sticky_oi.map(|oi| prompts[oi].clone());
+    let sticky_cell = sticky_oi.and_then(|oi| prompt_cells.get(oi).copied());
     let sticky_h = if sticky.is_some() { STICKY_H } else { 0 };
     let body_y = area.y + sticky_h;
     let body_h = viewport.saturating_sub(sticky_h);
@@ -735,16 +738,19 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(visible).style(theme::style_canvas()), body_rect);
 
     if let Some(prompt) = sticky {
-        draw_sticky_banner(
-            f,
-            &prompt,
-            Rect {
-                x: area.x,
-                y: area.y,
-                width: area.width.saturating_sub(sb_w),
-                height: sticky_h,
-            },
-        );
+        let banner = Rect {
+            x: area.x,
+            y: area.y,
+            width: area.width.saturating_sub(sb_w),
+            height: sticky_h,
+        };
+        draw_sticky_banner(f, &prompt, banner);
+        // Publish so right/double-click on the header opens that prompt's menu.
+        app.sticky_banner = banner;
+        app.sticky_cell = sticky_cell;
+    } else {
+        app.sticky_banner = Rect::default();
+        app.sticky_cell = None;
     }
 
     // Draggable scrollbar on the right edge of the transcript.
@@ -2653,13 +2659,11 @@ fn draw_ctx_menu(f: &mut Frame, app: &mut App) {
     // content rows + 2 border + 2 inner padding, so the shared ornate frame fits.
     let menu_w: u16 = 34.min(area.width.saturating_sub(2));
     let menu_h: u16 = CTX_ACTIONS.len() as u16 + 4;
-    // Anchor at the cursor, clamped fully on-screen.
-    let x = app
-        .mouse_col
-        .min(area.right().saturating_sub(menu_w).saturating_sub(1));
-    let y = app
-        .mouse_row
-        .min(area.bottom().saturating_sub(menu_h).saturating_sub(1));
+    // Anchor to where the menu OPENED (fixed), not the live cursor — so
+    // wheeling through the options never drifts the box.
+    let (ax, ay) = app.ctx_menu.as_ref().map(|m| m.anchor).unwrap_or((0, 0));
+    let x = ax.min(area.right().saturating_sub(menu_w).saturating_sub(1));
+    let y = ay.min(area.bottom().saturating_sub(menu_h).saturating_sub(1));
     let frame = Rect::new(x, y, menu_w, menu_h);
 
     f.render_widget(Clear, frame);

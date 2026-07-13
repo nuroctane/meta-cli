@@ -268,6 +268,9 @@ pub struct CtxMenu {
     pub cell_idx: usize,
     pub selected: usize,
     pub hit: CtxMenuHit,
+    /// Where the menu was anchored when it opened (col,row). Fixed for the
+    /// menu's lifetime so wheeling through options doesn't drift the box.
+    pub anchor: (u16, u16),
 }
 
 /// Prompt context-menu actions, in display order. Single source of truth for
@@ -618,6 +621,10 @@ pub struct App {
     pub scrollbar_track: ratatui::layout::Rect,
     /// Floating "↓ End" jump chip (hit-tested on click). Empty when hidden.
     pub jump_chip: ratatui::layout::Rect,
+    /// Sticky prompt banner rect (top overlay) and the User cell it represents,
+    /// so right/double-click on the header opens that prompt's menu too.
+    pub sticky_banner: ratatui::layout::Rect,
+    pub sticky_cell: Option<usize>,
     /// True while the user is dragging the scrollbar thumb.
     pub scrollbar_drag: bool,
     /// True while drag-selecting transcript text (not scrollbar).
@@ -815,6 +822,8 @@ pub async fn run_tui(
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         jump_chip: ratatui::layout::Rect::default(),
+        sticky_banner: ratatui::layout::Rect::default(),
+        sticky_cell: None,
         scrollbar_drag: false,
         selecting: false,
         mouse_left_down: false,
@@ -1145,6 +1154,8 @@ impl App {
                 frame: ratatui::layout::Rect::default(),
                 actions: Vec::new(),
             },
+            // Anchor to the cursor once; the box stays put while you wheel.
+            anchor: (self.mouse_col, self.mouse_row),
         });
     }
 
@@ -1679,12 +1690,10 @@ impl App {
                     self.last_click = None;
                     return;
                 }
-                // Double-click a User prompt → open its context menu. A single
-                // click on a prompt still does nothing (prompts aren't peekable),
-                // so this never fights normal clicking.
-                let over_prompt = self
-                    .cell_at_mouse_any()
-                    .filter(|&idx| matches!(self.cells.get(idx), Some(Cell::User(_))));
+                // Double-click a User prompt (in the transcript OR the sticky
+                // header) → open its context menu. A single click on a prompt
+                // still does nothing, so this never fights normal clicking.
+                let over_prompt = self.prompt_cell_at_mouse();
                 if let Some(idx) = over_prompt {
                     let dbl = self
                         .last_click
@@ -1739,10 +1748,8 @@ impl App {
                 self.select_anchor = None;
                 self.update_hover_from_mouse();
                 self.ctx_menu = None;
-                if let Some(idx) = self.cell_at_mouse_any() {
-                    if matches!(self.cells.get(idx), Some(Cell::User(_))) {
-                        self.open_ctx_menu(idx);
-                    }
+                if let Some(idx) = self.prompt_cell_at_mouse() {
+                    self.open_ctx_menu(idx);
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
@@ -1918,6 +1925,18 @@ impl App {
         let local_y = self.mouse_row.saturating_sub(body.y) as usize;
         let line_idx = self.transcript_top as usize + local_y;
         self.line_cell_all.get(line_idx).copied().flatten()
+    }
+
+    /// The User-prompt cell under the mouse — from a transcript line OR the
+    /// sticky prompt banner at the top. Single entry point for right-click and
+    /// double-click so both open the fork/revert/copy menu, header included.
+    fn prompt_cell_at_mouse(&self) -> Option<usize> {
+        // Sticky prompt banner overlays the top rows; check it first.
+        if rect_contains(self.sticky_banner, self.mouse_col, self.mouse_row) {
+            return self.sticky_cell;
+        }
+        self.cell_at_mouse_any()
+            .filter(|&i| matches!(self.cells.get(i), Some(Cell::User(_))))
     }
 
     /// Active peek target: pinned click wins, else free hover.

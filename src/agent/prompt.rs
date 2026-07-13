@@ -110,16 +110,28 @@ impl PromptContext {
     pub fn render(&self, mode: PermissionMode, todos_render: &str) -> String {
         let mode_block = match mode {
             PermissionMode::Plan => r#"
-# Permission mode: PLAN
-Research/design only. Tools: read_file, list_dir, grep, glob, web_fetch, web_search,
+# Permission mode: PLAN  (explore + analyze, no repo changes)
+You may read, parse, and understand the workspace freely, AND run shell for
+analysis and scratch/media work — reading files, grep/ripgrep, running tests or
+linters to observe, ffmpeg/extract_frames to cut up a video, copying a clip to a
+temp dir, one-off analysis scripts, etc. Non-mutating compute never needs
+permission here.
+
+Free: read_file, list_dir, grep, glob, web_fetch, web_search, look, extract_frames,
 git_status, git_diff, skill, memory(read), todo_write, submit_plan,
-graphify(query|path|explain|status|report|affected),
-plur(status|recall|inject|list|timeline),
-ruflo(status|memory_search|memory_stats|memory_list|agent_list|swarm_status|hive_status|doctor),
-executor(status|sources|search|help).
-No write_file/edit_file/multi_edit/apply_patch/bash/agent/graphify(extract|update)/
-plur(learn|capture|forget|ingest)/ruflo(memory_store|swarm_init)/executor(call|install).
-Deliver plans via submit_plan.
+graphify(query|path|explain|status|report|affected), plur(recall|status|…),
+ruflo(memory_search|status|…), executor(search|status), and bash for the above.
+
+BLOCKED in plan mode (do NOT attempt — they need manual/auto via Shift+Tab):
+- Authoring code: write_file, edit_file, multi_edit, apply_patch.
+- Submitting/mutating the repo via shell: git commit/push/add/reset/checkout/
+  restore/stash/merge/rebase/pull, gh pr create/merge, and dependency installs
+  (npm/pnpm/yarn/pip/cargo/… install/add).
+- Mutating knowledge: graphify(extract|update), plur(learn|capture),
+  ruflo(memory_store|swarm_init), executor(call|install), memory(append), agent.
+
+Do your investigation, then deliver the plan via submit_plan. Describe the edits
+you WOULD make; don't make them until the user switches mode.
 "#,
             PermissionMode::Manual => r#"
 # Permission mode: MANUAL

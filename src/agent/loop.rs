@@ -373,7 +373,10 @@ impl AgentRunner {
                     let (msg, result_label) = if plan_block {
                         (
                             format!(
-                                "blocked: plan mode. Switch to manual/auto (Shift+Tab) for {}.",
+                                "blocked in plan mode — {} needs manual/auto (Shift+Tab). \
+                                 Plan allows reads, analysis, and non-mutating shell (incl. \
+                                 ffmpeg/scratch work); it blocks code edits and repo/VCS commits. \
+                                 Describe the change instead, or ask the user to switch mode.",
                                 call.name
                             ),
                             "blocked · plan mode".into(),
@@ -489,12 +492,34 @@ impl AgentRunner {
         match mode {
             PermissionMode::Auto => true,
             PermissionMode::Plan => {
+                // Reading / parsing / analysis run freely.
                 if read_only && name != "agent" {
-                    true
-                } else {
-                    let _ = tx.send(AgentEvent::Status(format!("plan mode blocked · {name}")));
-                    false
+                    return true;
                 }
+                // Scratch/media compute (ffmpeg keyframes) is explicitly allowed —
+                // "cut up a video and do random shit" without a prompt.
+                if name == "extract_frames" {
+                    return true;
+                }
+                // Shell: free for analysis/scratch; refused only for repo/VCS
+                // mutations or dependency installs.
+                if name == "bash" {
+                    let cmd = serde_json::from_str::<Value>(args)
+                        .ok()
+                        .and_then(|v| v.get("command").and_then(|c| c.as_str()).map(String::from))
+                        .unwrap_or_default();
+                    return match plan_blocks_shell(&cmd) {
+                        None => true,
+                        Some(reason) => {
+                            let _ = tx.send(AgentEvent::Status(format!("plan mode · {reason}")));
+                            false
+                        }
+                    };
+                }
+                // Code authoring (write/edit/…), agent, and mutating knowledge
+                // ops stay blocked.
+                let _ = tx.send(AgentEvent::Status(format!("plan mode blocked · {name}")));
+                false
             }
             PermissionMode::Manual => {
                 if read_only {
@@ -665,6 +690,52 @@ mod tests {
     }
 
     #[test]
+    fn plan_shell_allows_analysis_blocks_repo_mutation() {
+        // Reading / parsing / scratch / media compute — all free in plan mode.
+        for ok in [
+            "ls -la",
+            "cat src/main.rs",
+            "grep -rn TODO src",
+            "rg 'fn main' -n",
+            "python analyze.py --report",
+            "cargo build",
+            "cargo test",
+            "npm run build",
+            "ffmpeg -i demo.mp4 -vf fps=1 /tmp/f%02d.jpg",
+            "cp demo.mp4 /tmp/clip.mp4",
+            "git status",
+            "git diff HEAD~1",
+            "git log --oneline",
+            "git fetch origin",
+        ] {
+            assert!(plan_blocks_shell(ok).is_none(), "should allow: {ok}");
+        }
+        // Repo/VCS mutation, publishing, and installs — blocked.
+        for bad in [
+            "git commit -m 'x'",
+            "git push origin main",
+            "git add -A",
+            "git checkout main",
+            "git reset --hard",
+            "git restore src/x.rs",
+            "git rebase -i HEAD~3",
+            "git pull",
+            "gh pr create --fill",
+            "gh pr merge 12",
+            "npm install",
+            "npm i react",
+            "pnpm add lodash",
+            "yarn add axios",
+            "pip install requests",
+            "cargo add serde",
+            "cargo install ripgrep",
+            "cargo update",
+        ] {
+            assert!(plan_blocks_shell(bad).is_some(), "should block: {bad}");
+        }
+    }
+
+    #[test]
     fn plur_and_ruflo_gates() {
         assert!(is_read_only_call("plur", r#"{"action":"recall","query":"x"}"#));
         assert!(is_read_only_call("plur", r#"{"action":"status"}"#));
@@ -758,6 +829,48 @@ fn is_parallel_safe(name: &str, args: &str) -> bool {
             | "plur"
             | "ruflo"
     )
+}
+
+/// In PLAN mode, shell runs freely for reading, parsing, analysis, and scratch
+/// or media work (ffmpeg keyframes, copying a clip to temp, analysis scripts).
+/// It is refused only when it would change the repository's committed state or
+/// install dependencies — i.e. "no submitting changes / no code input", while
+/// non-mutating compute stays free. Returns a short reason when blocked.
+pub fn plan_blocks_shell(command: &str) -> Option<&'static str> {
+    let c = format!(" {} ", command.to_ascii_lowercase().replace(['\t', '\n'], " "));
+    // Git working-tree / index / publish mutations (fetch is read-only, allowed).
+    const GIT_MUT: &[&str] = &[
+        "git commit", "git push", "git add", "git reset", "git checkout", "git restore",
+        "git stash", "git merge", "git rebase", "git cherry-pick", "git revert", "git rm",
+        "git mv", "git clean", "git apply", "git tag ", "git pull", "git switch",
+    ];
+    if GIT_MUT.iter().any(|p| c.contains(p)) {
+        return Some("git repo/VCS mutation is blocked in plan mode — Shift+Tab to manual/auto to commit or change tracked files");
+    }
+    // PR / release publishing via gh.
+    const GH_MUT: &[&str] = &[
+        "gh pr create", "gh pr merge", "gh pr close", "gh pr edit", "gh pr ready",
+        "gh pr comment", "gh pr reopen", "gh release create", "gh release edit",
+        "gh release delete", "gh repo create", "gh repo delete", "gh repo edit",
+        "gh issue create", "gh issue edit", "gh issue close",
+    ];
+    if GH_MUT.iter().any(|p| c.contains(p)) {
+        return Some("publishing (gh) is blocked in plan mode");
+    }
+    // Dependency installs mutate lockfiles / the environment.
+    const DEP_MUT: &[&str] = &[
+        "npm install", "npm i ", "npm ci", "npm add", "npm uninstall", "npm remove",
+        "pnpm add", "pnpm install", "pnpm remove", "yarn add", "yarn install", "yarn remove",
+        "bun add", "bun install", "pip install", "pip uninstall", "pip3 install",
+        "pip3 uninstall", "poetry add", "poetry install", "poetry remove", "cargo add",
+        "cargo install", "cargo remove", "cargo publish", "cargo update", "gem install",
+        "bundle install", "bundle update", "go get ", "go install", "apt install",
+        "apt-get install", "brew install", "dnf install", "yum install",
+    ];
+    if DEP_MUT.iter().any(|p| c.contains(p)) {
+        return Some("dependency install/mutation is blocked in plan mode");
+    }
+    None
 }
 
 /// Attach any media queued by `look` / `extract_frames` as a multimodal user item.

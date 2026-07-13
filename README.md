@@ -9,7 +9,7 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.6.10** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
+**v0.6.11** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
 
 | Surface | What ships |
 |---------|------------|
@@ -185,7 +185,7 @@ meta "fix the bug"          # start with a prompt
 meta "design from ref.mp4"   # vision: auto-attach media if path exists
 meta -c                      # continue last session in this directory
 meta -r <session-id>         # resume a session
-meta --mode plan "…"         # plan mode (read-only tools; look is free)
+meta --mode plan "…"         # plan mode (explore + shell freely; no edits/commits)
 meta run "…" -y              # headless + auto-approve
 meta sessions
 meta usage
@@ -204,7 +204,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | Mode | Behavior |
 |------|----------|
 | **manual** | Reads free (`look`, reads, …); writes / shell / `extract_frames` need approval (`y` / `a` / `n`) |
-| **plan** | Research only — read tools + `look` + graphify query + plur/ruflo search |
+| **plan** | Explore + analyze freely — reads, `look`, graphify/plur/ruflo queries, **and shell** for reading/parsing/tests/scratch + media compute (`ffmpeg`, `extract_frames`, copy a clip). Blocks only **code authoring** (`write_file`/`edit_file`/`multi_edit`/`apply_patch`) and **repo/VCS mutations** (git commit/push/add/reset/…, `gh pr create`, dependency installs) |
 | **auto** | Auto-approve tools (`-y` / `--mode auto`) |
 
 ---
