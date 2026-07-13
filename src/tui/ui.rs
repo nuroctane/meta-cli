@@ -2152,9 +2152,13 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
     let inner = modal_inner(rect);
 
     let sel = app.palette_idx.min(matches.len() - 1);
-    // Scroll the window so the selection is always visible (>10 commands).
     let vis = inner.height as usize;
-    let start = sel.saturating_sub(vis.saturating_sub(1));
+    // Clamp palette_scroll so the keyboard selection is always visible.
+    let mut start = app.palette_scroll;
+    start = start.min(sel);
+    start = start.max(sel.saturating_sub(vis.saturating_sub(1)));
+    let max_scroll = matches.len().saturating_sub(vis);
+    start = start.min(max_scroll);
     let lines: Vec<Line> = matches
         .iter()
         .enumerate()

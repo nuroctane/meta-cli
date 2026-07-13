@@ -600,6 +600,7 @@ pub struct App {
     pub approval: Option<ApprovalState>,
     pub picker: Option<SessionPicker>,
     pub palette_idx: usize,
+    pub palette_scroll: usize,
     pub quit_armed: Option<Instant>,
 
     tx: mpsc::UnboundedSender<AgentEvent>,
@@ -764,6 +765,7 @@ pub async fn run_tui(
         approval: None,
         picker: None,
         palette_idx: 0,
+        palette_scroll: 0,
         quit_armed: None,
         tx,
         rx,
@@ -949,6 +951,22 @@ impl App {
         !self.palette_matches().is_empty()
     }
 
+    /// Clamp palette_scroll so the selected item is always visible.
+    fn clamp_palette_scroll(&mut self) {
+        let n = self.palette_matches().len();
+        if n == 0 {
+            self.palette_scroll = 0;
+            return;
+        }
+        let sel = self.palette_idx.min(n - 1);
+        // Approximate visible rows (actual value set by draw, but 10 is the cap).
+        let vis = 10usize;
+        self.palette_scroll = self.palette_scroll.min(sel);
+        self.palette_scroll = self.palette_scroll.max(sel.saturating_sub(vis.saturating_sub(1)));
+        let max_scroll = n.saturating_sub(vis);
+        self.palette_scroll = self.palette_scroll.min(max_scroll);
+    }
+
     // ── arrow-key policy ───────────────────────────────────────────────
     fn arrow_action(&self, up: bool) -> ArrowAction {
         let on_edge = if up {
@@ -1109,6 +1127,7 @@ impl App {
                         self.input.set_text(&format!("{name} "));
                     }
                     self.palette_idx = 0;
+                    self.palette_scroll = 0;
                     return;
                 }
                 let text = self.input.text();
@@ -1130,6 +1149,7 @@ impl App {
                     let idx = self.palette_idx.min(matches.len().saturating_sub(1));
                     self.input.set_text(&format!("{} ", matches[idx].0));
                     self.palette_idx = 0;
+                    self.palette_scroll = 0;
                 }
             }
             // Arrows scroll the transcript. They only move the caret when you
@@ -1139,7 +1159,10 @@ impl App {
             KeyCode::Up if alt => self.input.history_prev(),
             KeyCode::Down if alt => self.input.history_next(),
             KeyCode::Up => match self.arrow_action(true) {
-                ArrowAction::Palette => self.palette_idx = self.palette_idx.saturating_sub(1),
+                ArrowAction::Palette => {
+                    self.palette_idx = self.palette_idx.saturating_sub(1);
+                    self.clamp_palette_scroll();
+                }
                 ArrowAction::Caret => self.input.move_up_line(),
                 ArrowAction::Scroll => self.scroll_up(1),
             },
@@ -1149,6 +1172,7 @@ impl App {
                     if self.palette_idx + 1 < n {
                         self.palette_idx += 1;
                     }
+                    self.clamp_palette_scroll();
                 }
                 ArrowAction::Caret => self.input.move_down_line(),
                 ArrowAction::Scroll => self.scroll_down(1),
@@ -1225,6 +1249,7 @@ impl App {
             KeyCode::Char(c) if !ctrl && !alt => {
                 self.input.insert_char(c);
                 self.palette_idx = 0;
+                self.palette_scroll = 0;
             }
             _ => {}
         }
@@ -1262,14 +1287,26 @@ impl App {
 
         match m.kind {
             MouseEventKind::ScrollUp => {
-                // Always works — including during streaming and under approval.
-                self.scroll_up(3);
+                if self.palette_visible() {
+                    self.palette_scroll = self.palette_scroll.saturating_sub(1);
+                } else {
+                    // Always works — including during streaming and under approval.
+                    self.scroll_up(3);
+                }
                 if !approval_open {
                     self.update_hover_from_mouse();
                 }
             }
             MouseEventKind::ScrollDown => {
-                self.scroll_down(3);
+                if self.palette_visible() {
+                    let n = self.palette_matches().len();
+                    let max_scroll = n.saturating_sub(1);
+                    if self.palette_scroll < max_scroll {
+                        self.palette_scroll += 1;
+                    }
+                } else {
+                    self.scroll_down(3);
+                }
                 if !approval_open {
                     self.update_hover_from_mouse();
                 }
