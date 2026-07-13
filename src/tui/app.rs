@@ -319,6 +319,7 @@ pub struct ApprovalState {
 }
 
 /// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
+#[derive(Debug, Clone)]
 pub struct SessionRow {
     pub id: String,
     /// Relative time label ("2h ago", "just now").
@@ -336,7 +337,12 @@ pub struct SessionRow {
 /// Interactive sessions browser — open with `/sessions`, `/resume`, or Ctrl+R.
 pub struct SessionPicker {
     pub rows: Vec<SessionRow>,
+    /// Selected entry (absolute index into `visible()`).
     pub idx: usize,
+    /// First visible entry — scroll is entry-by-entry, never jumps a page.
+    pub scroll: usize,
+    /// How many entries fit in the body (set by last draw).
+    pub vis_page: usize,
     /// Only show sessions from this workspace.
     pub this_cwd_only: bool,
     /// Hit-test geometry filled by the last draw (screen coords).
@@ -366,6 +372,28 @@ impl SessionPicker {
             .collect()
     }
 
+    /// Keep selection in view by shifting the viewport one entry at a time.
+    pub fn ensure_visible(&mut self) {
+        let count = self.visible().len();
+        if count == 0 {
+            self.idx = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.idx = self.idx.min(count - 1);
+        let page = self.vis_page.max(1);
+        if self.idx < self.scroll {
+            self.scroll = self.idx;
+        } else if self.idx >= self.scroll.saturating_add(page) {
+            self.scroll = self.idx + 1 - page;
+        }
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+    }
+
+    /// Move selection by `delta` entries (wheel / arrows). Viewport follows gently.
     pub fn move_by(&mut self, delta: i32) {
         let count = self.visible().len();
         if count == 0 {
@@ -376,6 +404,18 @@ impl SessionPicker {
         } else {
             self.idx = (self.idx + delta as usize).min(count - 1);
         }
+        self.ensure_visible();
+    }
+
+    pub fn set_idx(&mut self, i: usize) {
+        let count = self.visible().len();
+        if count == 0 {
+            self.idx = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.idx = i.min(count - 1);
+        self.ensure_visible();
     }
 }
 
@@ -654,6 +694,10 @@ pub async fn run_tui(
 
         // Spinners / streaming caret only animate while a turn is in flight.
         if app.busy {
+            dirty = true;
+        }
+        // Sessions modal: soft border/separator rotation while open.
+        if app.picker.is_some() {
             dirty = true;
         }
         // Brief expand/collapse settle highlight (ease-out, < 200ms).
@@ -1364,6 +1408,8 @@ impl App {
         self.picker = Some(SessionPicker {
             rows,
             idx: 0,
+            scroll: 0,
+            vis_page: 1,
             this_cwd_only: any_here,
             hit: PickerHit::default(),
         });
@@ -1400,8 +1446,14 @@ impl App {
             KeyCode::Down | KeyCode::Char('j') => p.move_by(1),
             KeyCode::PageUp => p.move_by(-5),
             KeyCode::PageDown => p.move_by(5),
-            KeyCode::Home => p.idx = 0,
-            KeyCode::End => p.idx = count.saturating_sub(1),
+            KeyCode::Home => {
+                p.idx = 0;
+                p.ensure_visible();
+            }
+            KeyCode::End => {
+                p.idx = count.saturating_sub(1);
+                p.ensure_visible();
+            }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('a') | KeyCode::Char(' ') => {
                 self.picker_toggle_scope();
             }
@@ -1442,7 +1494,7 @@ impl App {
                     if rect_contains(*r, col, row) {
                         let same = self.picker.as_ref().map(|p| p.idx == *i).unwrap_or(false);
                         if let Some(p) = &mut self.picker {
-                            p.idx = *i;
+                            p.set_idx(*i);
                         }
                         if same {
                             self.picker_confirm();

@@ -55,14 +55,23 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 // ── sessions picker (`/sessions` · `/resume` · Ctrl+R) ────────────────────
-// Prompt-first modal: double border, scope chip, ✕ close, scrollable list.
+// Thick custom frame, rotating border accents + entry separators, entry-stable scroll.
 fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
-    let Some(p) = &app.picker else { return };
-    let rows = p.visible();
-    let total = rows.len();
+    if app.picker.is_none() {
+        return;
+    }
+    let phase = (app.spinner_epoch.elapsed().as_millis() / theme::SPINNER_MS) as usize;
+    let spin = theme::SPINNER[phase % theme::SPINNER.len()];
 
-    let w = 80.min(area.width.saturating_sub(4)).max(52);
-    let h = 20.min(area.height.saturating_sub(2)).max(12);
+    // Snapshot list data so we can mutate picker hit/scroll freely.
+    let (total, this_cwd_only, mut sel, mut start) = {
+        let p = app.picker.as_ref().unwrap();
+        let total = p.visible().len();
+        (total, p.this_cwd_only, p.idx, p.scroll)
+    };
+
+    let w = 82.min(area.width.saturating_sub(4)).max(54);
+    let h = 22.min(area.height.saturating_sub(2)).max(12);
     let rect = Rect {
         x: (area.width.saturating_sub(w)) / 2,
         y: (area.height.saturating_sub(h)) / 2,
@@ -70,51 +79,34 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         height: h,
     };
     f.render_widget(Clear, rect);
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme::SURFACE_2)),
+        rect,
+    );
 
-    let scope_label = if p.this_cwd_only { "here" } else { "all" };
-    let title_left = format!("  sessions  ·  {total}  ");
-    // Title right: scope chip + close control (hit-tested below).
-    let title_right = format!("  [{scope_label}]   ✕  ");
+    let scope_label = if this_cwd_only { "here" } else { "all" };
+    let title = format!(" {spin}  sessions  ·  {total} ");
+    let footer = " ↑↓/wheel  ·  ↵ open  ·  tab scope  ·  esc/✕ ";
+    draw_picker_frame(f, rect, phase, &title, scope_label, footer);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Double)
-        .border_style(Style::default().fg(theme::META_BLUE))
-        .style(Style::default().bg(theme::SURFACE_2))
-        .title(Span::styled(
-            title_left,
-            Style::default()
-                .fg(theme::META_BLUE)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .title(
-            Line::from(Span::styled(
-                title_right.clone(),
-                Style::default().fg(theme::MUTED),
-            ))
-            .right_aligned(),
-        )
-        .title_bottom(Span::styled(
-            "  ↑↓ / wheel  move   ↵ open   tab/space scope   esc / ✕ close  ",
-            Style::default().fg(theme::FAINT),
-        ));
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
+    let pad = 2u16;
+    let inner = Rect {
+        x: rect.x.saturating_add(pad),
+        y: rect.y.saturating_add(pad),
+        width: rect.width.saturating_sub(pad * 2),
+        height: rect.height.saturating_sub(pad * 2),
+    };
 
-    // Close button ≈ last 4 cols of top border title area.
-    let close_w = 3u16;
     let close = Rect {
-        x: rect.x + rect.width.saturating_sub(close_w + 2),
+        x: rect.x + rect.width.saturating_sub(5),
         y: rect.y,
-        width: close_w + 1,
+        width: 3,
         height: 1,
     };
-    // Scope chip sits just left of close on the title row.
-    let scope_w = (scope_label.len() as u16) + 4; // "[here]" / "[all]"
     let scope = Rect {
-        x: close.x.saturating_sub(scope_w + 2),
+        x: close.x.saturating_sub(8),
         y: rect.y,
-        width: scope_w,
+        width: 7,
         height: 1,
     };
 
@@ -138,27 +130,45 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         );
         if let Some(p) = &mut app.picker {
             p.hit = hit;
+            p.vis_page = 1;
         }
         return;
     }
 
-    // 2 lines per session: prompt (primary) + meta (quiet).
+    const CONTENT: usize = 2;
+    const SEP: usize = 1;
+    let stride = CONTENT + SEP;
     let body_h = inner.height as usize;
-    let per_row = 2usize;
-    let vis_rows = (body_h / per_row).max(1);
-    let sel = p.idx.min(total - 1);
-    let start = sel.saturating_sub(vis_rows.saturating_sub(1));
-    let col_w = (inner.width as usize).saturating_sub(4).max(20);
+    let vis_rows = (body_h / stride).max(1);
 
-    // Subtle top rule under title (separator feel inside double border).
+    if let Some(p) = &mut app.picker {
+        p.vis_page = vis_rows;
+        p.ensure_visible();
+        sel = p.idx;
+        start = p.scroll;
+    }
+
+    let col_w = (inner.width as usize).saturating_sub(4).max(20);
+    let rows_snapshot: Vec<super::app::SessionRow> = app
+        .picker
+        .as_ref()
+        .unwrap()
+        .visible()
+        .into_iter()
+        .cloned()
+        .collect();
+
     let mut lines: Vec<Line> = Vec::new();
     let mut drawn = 0usize;
-    for (i, r) in rows.iter().enumerate().skip(start).take(vis_rows) {
+    for (i, r) in rows_snapshot
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(vis_rows)
+    {
         let selected = i == sel;
         let bg = if selected {
             theme::META_BLUE
-        } else if drawn % 2 == 1 {
-            theme::SURFACE // zebra for readability
         } else {
             theme::SURFACE_2
         };
@@ -170,7 +180,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         };
         let marker = if selected { "❯ " } else { "  " };
 
-        let row_y = inner.y + (drawn as u16 * 2);
+        let row_y = inner.y + (drawn as u16 * stride as u16);
         if row_y + 1 < inner.y + inner.height {
             hit.rows.push((
                 i,
@@ -178,7 +188,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
                     x: inner.x,
                     y: row_y,
                     width: inner.width,
-                    height: 2,
+                    height: CONTENT as u16,
                 },
             ));
         }
@@ -187,11 +197,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
             Span::styled(
                 marker.to_string(),
                 Style::default()
-                    .fg(if selected {
-                        theme::BG
-                    } else {
-                        theme::META_BLUE
-                    })
+                    .fg(if selected { theme::BG } else { theme::META_BLUE })
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
             ),
@@ -209,12 +215,12 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         ]));
 
         let short = &r.id[..8.min(r.id.len())];
-        let place = if p.this_cwd_only {
+        let place = if this_cwd_only {
             String::new()
         } else {
             format!("  ·  {}", short_path(&r.cwd))
         };
-        let here = if r.here && !p.this_cwd_only {
+        let here = if r.here && !this_cwd_only {
             "  ·  here"
         } else {
             ""
@@ -234,12 +240,8 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
             truncate(&meta, col_w + 2),
             Style::default().fg(meta_fg).bg(bg),
         )));
+        lines.push(picker_separator_line(inner.width as usize, phase, i));
         drawn += 1;
-    }
-
-    // Scroll cue when more items above/below.
-    if start > 0 || start + vis_rows < total {
-        // soft indicator in footer already; optional mid-list not needed
     }
 
     f.render_widget(
@@ -250,6 +252,158 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(p) = &mut app.picker {
         p.hit = hit;
     }
+}
+
+/// Thick double-line frame with a traveling border accent (phase).
+fn draw_picker_frame(
+    f: &mut Frame,
+    rect: Rect,
+    phase: usize,
+    title: &str,
+    scope_label: &str,
+    footer: &str,
+) {
+    let buf = f.buffer_mut();
+    let border = Style::default().fg(theme::META_BLUE).bg(theme::SURFACE_2);
+    let accent = Style::default()
+        .fg(theme::META_BLUE_SKY)
+        .bg(theme::SURFACE_2)
+        .add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(theme::BORDER).bg(theme::SURFACE_2);
+    let title_s = Style::default()
+        .fg(theme::META_BLUE)
+        .bg(theme::SURFACE_2)
+        .add_modifier(Modifier::BOLD);
+    let mute = Style::default().fg(theme::MUTED).bg(theme::SURFACE_2);
+
+    let x0 = rect.x;
+    let y0 = rect.y;
+    let x1 = rect.x + rect.width.saturating_sub(1);
+    let y1 = rect.y + rect.height.saturating_sub(1);
+    if rect.width < 6 || rect.height < 4 {
+        return;
+    }
+
+    // Corners (thick double)
+    buf[(x0, y0)].set_char('╔').set_style(border);
+    buf[(x1, y0)].set_char('╗').set_style(border);
+    buf[(x0, y1)].set_char('╚').set_style(border);
+    buf[(x1, y1)].set_char('╝').set_style(border);
+
+    // Perimeter length for traveling accent
+    let top_len = rect.width.saturating_sub(2) as usize;
+    let side_len = rect.height.saturating_sub(2) as usize;
+    let peri = top_len
+        .saturating_mul(2)
+        .saturating_add(side_len.saturating_mul(2))
+        .max(1);
+    let head = phase % peri;
+
+    // Top / bottom edges
+    for i in 0..top_len {
+        let x = x0 + 1 + i as u16;
+        let on = i == head || i == (head + peri / 3) % peri;
+        let st = if on { accent } else { border };
+        buf[(x, y0)].set_char('═').set_style(st);
+        let bi = top_len + side_len + (top_len - 1 - i);
+        let on_b = bi % peri == head || bi % peri == (head + peri / 3) % peri;
+        buf[(x, y1)]
+            .set_char('═')
+            .set_style(if on_b { accent } else { border });
+    }
+    // Sides
+    for i in 0..side_len {
+        let y = y0 + 1 + i as u16;
+        let ri = top_len + i;
+        let li = top_len + side_len + top_len + (side_len - 1 - i);
+        let on_r = ri % peri == head;
+        let on_l = li % peri == head;
+        buf[(x1, y)]
+            .set_char('║')
+            .set_style(if on_r { accent } else { border });
+        buf[(x0, y)]
+            .set_char('║')
+            .set_style(if on_l { accent } else { border });
+    }
+
+    // Inner hairline (thicker feel)
+    if rect.width > 4 && rect.height > 4 {
+        let ix0 = x0 + 1;
+        let iy0 = y0 + 1;
+        let ix1 = x1 - 1;
+        let iy1 = y1 - 1;
+        buf[(ix0, iy0)].set_char('┌').set_style(dim);
+        buf[(ix1, iy0)].set_char('┐').set_style(dim);
+        buf[(ix0, iy1)].set_char('└').set_style(dim);
+        buf[(ix1, iy1)].set_char('┘').set_style(dim);
+        for x in (ix0 + 1)..ix1 {
+            buf[(x, iy0)].set_char('─').set_style(dim);
+            buf[(x, iy1)].set_char('─').set_style(dim);
+        }
+        for y in (iy0 + 1)..iy1 {
+            buf[(ix0, y)].set_char('│').set_style(dim);
+            buf[(ix1, y)].set_char('│').set_style(dim);
+        }
+    }
+
+    // Title into top edge
+    let title_chars: Vec<char> = title.chars().collect();
+    let max_t = top_len.saturating_sub(14).max(8);
+    for (i, ch) in title_chars.iter().take(max_t).enumerate() {
+        let x = x0 + 2 + i as u16;
+        if x < x1 {
+            buf[(x, y0)].set_char(*ch).set_style(title_s);
+        }
+    }
+    // Scope + close on the right of top edge
+    let right = format!(" [{scope_label}]  ✕ ");
+    let rc: Vec<char> = right.chars().collect();
+    let start_x = x1.saturating_sub(rc.len() as u16 + 1);
+    for (i, ch) in rc.iter().enumerate() {
+        let x = start_x + i as u16;
+        if x > x0 && x < x1 {
+            let st = if *ch == '✕' {
+                Style::default()
+                    .fg(theme::ERROR)
+                    .bg(theme::SURFACE_2)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                mute
+            };
+            buf[(x, y0)].set_char(*ch).set_style(st);
+        }
+    }
+
+    // Footer into bottom edge
+    let fc: Vec<char> = footer.chars().collect();
+    let max_f = top_len.saturating_sub(2);
+    for (i, ch) in fc.iter().take(max_f).enumerate() {
+        let x = x0 + 2 + i as u16;
+        if x < x1 {
+            buf[(x, y1)]
+                .set_char(*ch)
+                .set_style(Style::default().fg(theme::FAINT).bg(theme::SURFACE_2));
+        }
+    }
+}
+
+/// Soft rotating separator between session rows.
+fn picker_separator_line(width: usize, phase: usize, row_i: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let glyphs = ['·', '─', '·', '·', '─', '·'];
+    let mut s = String::with_capacity(width);
+    s.push_str("  ");
+    let w = width.saturating_sub(2);
+    for i in 0..w {
+        let g = glyphs[(i + phase + row_i * 2) % glyphs.len()];
+        s.push(g);
+    }
+    Line::from(Span::styled(
+        s,
+        Style::default().fg(theme::BORDER).bg(theme::SURFACE_2),
+    ))
 }
 
 // ── transcript ─────────────────────────────────────────────────────────────
