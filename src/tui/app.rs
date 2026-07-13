@@ -53,7 +53,6 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
     ("/init", "generate a META.md project guide"),
-    ("/mouse", "how mouse works: drag-select · scrollbar · peek"),
     ("/config", "show config + data paths"),
     ("/exit", "quit"),
 ];
@@ -468,8 +467,7 @@ struct TermGuard;
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        // Always release mouse so the host terminal regains native selection.
-        disable_app_mouse();
+        disable_mouse();
         let _ = stdout().execute(Show);
         let _ = disable_raw_mode();
         let _ = stdout().execute(DisableBracketedPaste);
@@ -477,22 +475,16 @@ impl Drop for TermGuard {
     }
 }
 
-/// Always-on app mouse: wheel, scrollbar drag, in-app text select, click-peek.
-///
-/// Plain drag on the transcript selects text inside Meta (highlighted + auto
-/// copied on release / Ctrl+C). Drag on the right-edge scrollbar scrolls.
-/// No Shift required — selection is first-class in the app.
-fn enable_app_mouse() {
+/// Capture mouse for drag-select, scrollbar, wheel, click-peek (always on).
+fn enable_mouse() {
     let _ = stdout().execute(EnableMouseCapture);
-    // 1000/1002 = buttons+drag (scrollbar); 1003 = free hover when supported;
-    // 1006 = SGR coords for wide terminals.
+    // buttons + drag + hover + SGR coords
     let mut out = stdout();
     let _ = write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
     let _ = out.flush();
 }
 
-/// Tear down mouse modes on exit (never leave the host terminal "stuck").
-fn disable_app_mouse() {
+fn disable_mouse() {
     let mut out = stdout();
     let _ = write!(out, "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1006l");
     let _ = out.flush();
@@ -512,9 +504,7 @@ pub async fn run_tui(
     enable_raw_mode()?;
     stdout().execute(EnterAlternateScreen)?;
     stdout().execute(EnableBracketedPaste)?;
-    // Mouse capture is ALWAYS on so scrollbar drag / wheel / click-peek never
-    // depend on a mode toggle. Select text with Shift+drag (host terminal).
-    enable_app_mouse();
+    enable_mouse();
     // Hardware cursor hidden — we paint a Meta blue block caret ourselves.
     stdout().execute(Hide)?;
     let _guard = TermGuard;
@@ -767,21 +757,20 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         match key.code {
-            // Ctrl+C: copy transcript selection → input selection → else
+            // Ctrl+C: copy selection (transcript first, then input) → else
             // interrupt / clear / double-tap quit.
             KeyCode::Char('c') if ctrl => {
                 if let Some(t) = self.selected_transcript_text() {
                     if !t.is_empty() {
                         clipboard_set(&t);
-                        self.push_note(Tone::Neutral, format!("copied {} chars", t.chars().count()));
                         return;
                     }
                 }
-                if self.input.has_selection() {
-                    if let Some(t) = self.input.selected_text() {
+                if let Some(t) = self.input.selected_text() {
+                    if !t.is_empty() {
                         clipboard_set(&t);
+                        return;
                     }
-                    return;
                 }
                 if self.busy {
                     self.interrupt();
@@ -802,19 +791,23 @@ impl App {
                 self.should_quit = true;
                 return;
             }
-            // Ctrl+V: paste system clipboard into the input (bracketed paste
-            // also works for terminal pastes).
+            // Ctrl+V: paste into the input (replaces any input selection).
             KeyCode::Char('v') if ctrl => {
                 if let Some(t) = clipboard_get() {
                     self.input.insert_str(&t);
                 }
                 return;
             }
-            // Ctrl+X: cut selection to clipboard.
+            // Ctrl+X: cut input selection (or whole input if none).
             KeyCode::Char('x') if ctrl => {
-                if let Some(t) = self.input.selected_text() {
-                    clipboard_set(&t);
-                    self.input.delete_selection();
+                if self.input.has_selection() {
+                    if let Some(t) = self.input.selected_text() {
+                        clipboard_set(&t);
+                        self.input.delete_selection();
+                    }
+                } else if !self.input.is_empty() {
+                    clipboard_set(&self.input.text());
+                    self.input.clear();
                 }
                 return;
             }
@@ -930,8 +923,27 @@ impl App {
                 self.scroll_from_bottom = 0;
             }
             KeyCode::Char('r') if ctrl => self.open_session_picker(),
-            // Ctrl+A: select all in the input box (standard editor, not line-home).
-            KeyCode::Char('a') if ctrl => self.input.select_all(),
+            // Ctrl+A: select all input text; if input empty, select whole transcript.
+            KeyCode::Char('a') if ctrl => {
+                if !self.input.is_empty() {
+                    self.input.select_all();
+                } else if !self.plain_lines.is_empty() {
+                    let last = self.plain_lines.len().saturating_sub(1);
+                    let end_col = self.plain_lines[last].chars().count();
+                    self.selection = Some(TextRange {
+                        start: TextPos { line: 0, col: 0 },
+                        end: TextPos {
+                            line: last,
+                            col: end_col,
+                        },
+                    });
+                    if let Some(t) = self.selected_transcript_text() {
+                        if !t.trim().is_empty() {
+                            clipboard_set(&t);
+                        }
+                    }
+                }
+            }
             KeyCode::Char('e') if ctrl => self.input.move_line_end(),
             KeyCode::Char('u') if ctrl => self.input.delete_to_line_start(),
             KeyCode::Char('w') if ctrl => self.input.delete_word_back(),
@@ -1937,7 +1949,6 @@ impl App {
                      agent sessions can use as project instructions. Keep it under 120 lines.",
                 );
             }
-            "/mouse" => self.cmd_mouse(),
             "/graphify" => self.cmd_graphify(&arg),
             "/plur" => self.cmd_plur(&arg),
             "/ruflo" => self.cmd_ruflo(&arg),
@@ -2269,21 +2280,6 @@ impl App {
                 interrupted,
             });
         });
-    }
-
-    /// Mouse is always captured. Explains drag-select vs scrollbar drag.
-    fn cmd_mouse(&mut self) {
-        self.cfg.mouse = true;
-        enable_app_mouse();
-        let _ = crate::config::save_config(&self.cfg);
-        self.push_note(
-            Tone::Mode,
-            "mouse always on\n  \
-             drag on transcript  →  select text (auto-copies on release; Ctrl+C too)\n  \
-             drag right scrollbar  →  scroll history\n  \
-             wheel · click card to peek · ▸ expands · click input for caret"
-                .into(),
-        );
     }
 
     fn cmd_usage(&mut self) {

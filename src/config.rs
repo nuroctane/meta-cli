@@ -59,11 +59,6 @@ pub struct Config {
     /// Model context window (tokens) — used for the ctx% meter in the TUI.
     #[serde(default = "default_context_window")]
     pub context_window: u64,
-    /// Legacy field (kept for config compatibility). Mouse capture is always
-    /// enabled at runtime so scrollbar drag never depends on a mode. Text
-    /// selection uses **Shift+drag** in the host terminal.
-    #[serde(default = "default_true")]
-    pub mouse: bool,
 }
 
 fn default_model() -> String {
@@ -94,7 +89,6 @@ impl Default for Config {
             max_turns: default_max_turns(),
             stream: true,
             context_window: default_context_window(),
-            mouse: true,
         }
     }
 }
