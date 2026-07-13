@@ -29,8 +29,7 @@ meta -r <session-id>    # resume specific session
 | `↑` `↓` · mouse wheel · drag scrollbar | Scroll transcript |
 | **Drag on chat text** | Select + auto-copy (keeps range while you scroll; works on expanded thought/tool bodies) |
 | **Click `↓ N · End`** | Jump to latest message |
-| Hover thought / tool header | Temporary quickview (closes when you move off) |
-| Click **click to peek** / card header | Stable peek (Esc · outside · ✕) |
+| Click the exact **click to peek** text | Opens stable dialogue (frozen position; Esc · outside · ✕ only) |
 | Click `▸` | Expand / collapse in place |
 | **Ctrl+C** (peek open, no selection) | Copy full thought / tool body |
 | **Right-click or double-click a prompt** | Prompt menu: **fork · revert · copy** (works on the sticky header too) |

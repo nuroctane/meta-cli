@@ -360,53 +360,34 @@ pub fn decide_arrow_action(input_empty: bool, on_edge: bool, palette_open: bool)
 /// Outcome of a click in the transcript body.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TranscriptClick {
-    /// Expand/collapse a collapsible card in place (chevron only).
+    /// Expand/collapse via the left chevron only.
     ToggleExpand(usize),
-    /// Open a **stable** peek (click on the header / "click to peek" row).
+    /// Open stable peek — **only** when the pointer is on the literal
+    /// `"click to peek"` substring (see `hit_click_to_peek`).
     OpenPeek(usize),
-    /// Dismiss the open stable peek.
-    Dismiss,
+    /// No-op for this click (stable peek is closed only via Esc / outside / ✕).
+    None,
 }
 
-/// Pure resolution of a transcript click — the single source of truth for what
-/// clicking a line does. Kept side-effect-free so it can be unit-tested.
+/// Pure click resolution.
 ///
-/// - `chevron`: left gutter (~3 cols) → expand/collapse.
-/// - `header`: collapsible card header line (where "click to peek" lives).
-/// - `peekable`: any line of a peekable cell (hover quickview uses this).
-/// - `open_peek`: currently open **stable** peek cell (from a prior click).
-/// - `target_collapsible`: whether the target can expand in place.
+/// - `chevron` + `header_cell`: expand/collapse.
+/// - `click_to_peek_cell`: mouse is inside the exact "click to peek" text span.
+/// - Everything else: no open, no dismiss (dismiss is handled by the peek box).
 pub fn resolve_transcript_click(
     chevron: bool,
-    header: Option<usize>,
-    peekable: Option<usize>,
-    open_peek: Option<usize>,
-    target_collapsible: bool,
+    header_cell: Option<usize>,
+    click_to_peek_cell: Option<usize>,
 ) -> TranscriptClick {
-    // Left-gutter click on a collapsible header → expand/collapse in place.
     if chevron {
-        if let Some(h) = header {
+        if let Some(h) = header_cell {
             return TranscriptClick::ToggleExpand(h);
         }
     }
-    // Stable peek only from the header row ("click to peek"), not card body.
-    if let Some(h) = header {
-        if open_peek == Some(h) {
-            return TranscriptClick::Dismiss;
-        }
-        return TranscriptClick::OpenPeek(h);
+    if let Some(c) = click_to_peek_cell {
+        return TranscriptClick::OpenPeek(c);
     }
-    // Turn timing strip etc. (peekable, not collapsible) — click opens stable peek.
-    if let Some(idx) = peekable {
-        if !target_collapsible {
-            if open_peek == Some(idx) {
-                return TranscriptClick::Dismiss;
-            }
-            return TranscriptClick::OpenPeek(idx);
-        }
-        // Expanded tool/thought body lines: hover only; click does not open peek.
-    }
-    TranscriptClick::Dismiss
+    TranscriptClick::None
 }
 
 pub struct ApprovalState {
@@ -680,21 +661,24 @@ pub struct App {
     /// Per wrapped transcript line: `Some(cell_idx)` when that line is a
     /// collapsible card header (click to expand/collapse).
     pub hit_headers: Vec<Option<usize>>,
-    /// Per wrapped line → owning peekable cell (hover dialogue).
+    /// Per wrapped line → owning peekable cell (legacy map; hover peeks removed).
     pub line_cells: Vec<Option<usize>>,
     /// Per wrapped line → owning cell index (ALL cell types, for right-click hit-testing).
     pub line_cell_all: Vec<Option<usize>>,
+    /// Absolute line → (`cell_idx`, display_col_start, display_col_end) for the
+    /// exact `"click to peek"` text span. Only this hitbox opens the dialogue.
+    pub hit_click_to_peek: Vec<Option<(usize, usize, usize)>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
     pub expand_flash: Option<(usize, Instant)>,
-    /// Cell under the mouse for temporary hover quickview.
+    /// Unused (hover peeks removed — kept so field layout stays simple).
     pub hover_cell: Option<usize>,
-    /// Stable click-to-peek window — until Esc / outside / ✕.
+    /// Stable click-to-peek: cell index while open.
     pub peek_open: Option<usize>,
-    /// Frozen top-left of the stable peek (set once on open).
-    pub peek_origin: Option<(u16, u16)>,
-    /// Bounds of the peek box (for click-outside dismissal). Set each draw.
+    /// Frozen dialogue geometry — set **once** on first draw, never moves.
+    pub peek_frozen: Option<ratatui::layout::Rect>,
+    /// Bounds used for outside-click / ✕ (equals `peek_frozen` while open).
     pub peek_box: ratatui::layout::Rect,
     /// Clickable ✕ close rect on the peek box.
     pub peek_close: ratatui::layout::Rect,
@@ -894,11 +878,12 @@ pub async fn run_tui(
         hit_headers: Vec::new(),
         line_cells: Vec::new(),
         line_cell_all: Vec::new(),
+        hit_click_to_peek: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
         hover_cell: None,
         peek_open: None,
-        peek_origin: None,
+        peek_frozen: None,
         peek_box: ratatui::layout::Rect::default(),
         peek_close: ratatui::layout::Rect::default(),
         ctx_menu: None,
@@ -1421,8 +1406,7 @@ impl App {
 
     /// Clear transient transcript interaction state after cells change.
     fn reset_transcript_interaction(&mut self) {
-        self.peek_open = None;
-        self.peek_origin = None;
+        self.close_peek();
         self.hover_cell = None;
         self.selection = None;
         self.select_anchor = None;
@@ -1432,15 +1416,19 @@ impl App {
 
     fn close_peek(&mut self) {
         self.peek_open = None;
-        self.peek_origin = None;
+        self.peek_frozen = None;
+        self.peek_box = ratatui::layout::Rect::default();
+        self.peek_close = ratatui::layout::Rect::default();
+        self.peek_scroll = 0;
+        self.peek_scroll_cell = None;
     }
 
     fn open_stable_peek(&mut self, idx: usize) {
+        // Geometry is frozen on the *first draw* of this open (not from mouse).
         self.peek_open = Some(idx);
-        self.peek_origin = Some((
-            self.mouse_col.saturating_sub(2),
-            self.mouse_row.saturating_sub(1),
-        ));
+        self.peek_frozen = None;
+        self.peek_scroll = 0;
+        self.peek_scroll_cell = Some(idx);
         self.hover_cell = None;
     }
 
@@ -2097,20 +2085,9 @@ impl App {
         Some(out)
     }
 
-    /// Temporary hover quickview: only while the pointer is on that card's
-    /// text (or on the floating hover box). Leaves the moment you move off.
-    /// Stable click-peek ignores hover.
+    /// Hover peeks removed — keep mouse tracking for other UI only.
     fn update_hover_from_mouse(&mut self) {
-        if self.peek_open.is_some() {
-            return;
-        }
-        if self.hover_cell.is_some()
-            && self.peek_box.width > 0
-            && rect_contains(self.peek_box, self.mouse_col, self.mouse_row)
-        {
-            return;
-        }
-        self.hover_cell = self.cell_at_mouse();
+        self.hover_cell = None;
     }
 
     fn cell_at_mouse(&self) -> Option<usize> {
@@ -2157,13 +2134,9 @@ impl App {
             .filter(|&i| matches!(self.cells.get(i), Some(Cell::User(_))))
     }
 
-    /// Stable click-peek wins; otherwise temporary hover quickview.
+    /// Only the stable click-to-peek dialogue (no hover peeks).
     pub fn active_peek_cell(&self) -> Option<usize> {
-        self.peek_open.or(self.hover_cell)
-    }
-
-    pub fn peek_is_stable(&self) -> bool {
-        self.peek_open.is_some()
+        self.peek_open
     }
 
     /// Decoded terminal-graphics protocol for an image path, lazily built and
@@ -3031,10 +3004,9 @@ impl App {
 
     /// Map a click in the transcript body.
     ///
-    /// - Click left edge / chevron (first ~3 cells): expand/collapse in place.
-    /// - Click anywhere else on a peekable card: pin the full-content dialogue
-    ///   (works without free mouse-move — many hosts never emit hover events).
-    /// - Second click on the same pinned card expands (if collapsible).
+    /// - Chevron (left ~3 cols on a header): expand/collapse.
+    /// - Exact `"click to peek"` text span only: open stable dialogue.
+    /// - Closing the dialogue is **never** done here — only Esc / outside / ✕.
     fn click_transcript(&mut self, col: u16, row: u16) {
         let body = self.transcript_body;
         if body.width == 0 || body.height == 0 {
@@ -3043,27 +3015,36 @@ impl App {
         if col < body.x || col >= body.right() || row < body.y || row >= body.bottom() {
             return;
         }
+        // While a stable peek is open, transcript clicks do nothing (outside
+        // handling already ran in on_mouse and may have closed the box).
+        if self.peek_open.is_some() {
+            return;
+        }
         let local_y = row.saturating_sub(body.y) as usize;
-        let local_x = col.saturating_sub(body.x);
+        let local_x = col.saturating_sub(body.x) as usize;
         let line_idx = self.transcript_top as usize + local_y;
 
         let header = self.hit_headers.get(line_idx).copied().flatten();
-        let peekable = self.line_cells.get(line_idx).copied().flatten();
         let chevron = local_x <= 3;
-        let target_collapsible = peekable
-            .or(header)
-            .and_then(|i| self.cells.get(i))
-            .map(|c| c.is_collapsible())
-            .unwrap_or(false);
+        let click_to_peek = self
+            .hit_click_to_peek
+            .get(line_idx)
+            .copied()
+            .flatten()
+            .and_then(|(cell, lo, hi)| {
+                if local_x >= lo && local_x < hi {
+                    Some(cell)
+                } else {
+                    None
+                }
+            });
 
-        match resolve_transcript_click(chevron, header, peekable, self.peek_open, target_collapsible)
-        {
+        match resolve_transcript_click(chevron, header, click_to_peek) {
             TranscriptClick::ToggleExpand(i) => {
                 self.toggle_cell_expand(i);
-                self.close_peek();
             }
             TranscriptClick::OpenPeek(i) => self.open_stable_peek(i),
-            TranscriptClick::Dismiss => self.close_peek(),
+            TranscriptClick::None => {}
         }
     }
 
@@ -3548,67 +3529,39 @@ mod tests {
     }
 
     #[test]
-    fn clicking_finished_turn_strip_opens_the_peek() {
-        // The turn-done strip is peekable but NOT collapsible and has no header.
-        // A click anywhere on it (gutter or body) must PIN its peek.
-        let strip = Some(7);
-        // body click
+    fn only_click_to_peek_text_opens_dialogue() {
+        // OpenPeek only when click_to_peek_cell is Some — never from bare header.
         assert_eq!(
-            resolve_transcript_click(false, None, strip, None, false),
-            TranscriptClick::OpenPeek(7)
+            resolve_transcript_click(false, Some(3), None),
+            TranscriptClick::None
         );
-        // gutter click (no header) still pins — never a dead click.
         assert_eq!(
-            resolve_transcript_click(true, None, strip, None, false),
-            TranscriptClick::OpenPeek(7)
-        );
-        // second click closes it (non-collapsible → dismiss, not toggle).
-        assert_eq!(
-            resolve_transcript_click(false, None, strip, Some(7), false),
-            TranscriptClick::Dismiss
-        );
-    }
-
-    #[test]
-    fn clicking_collapsible_header_opens_stable_peek() {
-        let card = Some(3);
-        assert_eq!(
-            resolve_transcript_click(false, card, card, None, true),
+            resolve_transcript_click(false, Some(3), Some(3)),
             TranscriptClick::OpenPeek(3)
         );
+        // Chevron expands even without click-to-peek hit.
         assert_eq!(
-            resolve_transcript_click(true, card, card, None, true),
+            resolve_transcript_click(true, Some(3), None),
             TranscriptClick::ToggleExpand(3)
         );
+        // Turn strip / body without ctp hitbox: no open.
         assert_eq!(
-            resolve_transcript_click(false, card, card, Some(3), true),
-            TranscriptClick::Dismiss
+            resolve_transcript_click(false, None, None),
+            TranscriptClick::None
         );
     }
 
     #[test]
     fn open_peek_dismisses_on_every_side_and_close() {
         use ratatui::layout::Rect;
-        // Box at (10,5) 30x12 → spans cols 10..40, rows 5..17. ✕ at top-right.
         let box_ = Rect::new(10, 5, 30, 12);
-        let close = Rect::new(box_.x + box_.width - 4, box_.y, 3, 1); // (36,5) 3x1
-        // Inside → stays open.
+        let close = Rect::new(box_.x + box_.width - 4, box_.y, 3, 1);
         assert!(!peek_click_dismisses(close, box_, 20, 10));
-        // The ✕ → closes.
         assert!(peek_click_dismisses(close, box_, 37, 5));
-        // Every outside direction closes — including BELOW (the reported bug).
         assert!(peek_click_dismisses(close, box_, 20, 20), "below must close");
         assert!(peek_click_dismisses(close, box_, 20, 2), "above must close");
         assert!(peek_click_dismisses(close, box_, 2, 10), "left must close");
         assert!(peek_click_dismisses(close, box_, 50, 10), "right must close");
-    }
-
-    #[test]
-    fn clicking_empty_space_dismisses() {
-        assert_eq!(
-            resolve_transcript_click(false, None, None, Some(2), false),
-            TranscriptClick::Dismiss
-        );
     }
 
     #[test]

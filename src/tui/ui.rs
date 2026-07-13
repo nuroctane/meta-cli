@@ -585,10 +585,11 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut prompt_cells: Vec<usize> = Vec::new(); // prompt ordinal → cell index
     let mut current: Option<usize> = None;
 
-    // Rebuild hit-test maps: headers (click) + any peekable line (hover).
+    // Rebuild hit-test maps: headers, peekable lines, exact "click to peek" span.
     let mut hit_headers: Vec<Option<usize>> = Vec::new();
     let mut line_cells: Vec<Option<usize>> = Vec::new();
     let mut line_cell_all: Vec<Option<usize>> = Vec::new();
+    let mut hit_click_to_peek: Vec<Option<(usize, usize, usize)>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
@@ -602,6 +603,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 hit_headers.push(None);
                 line_cells.push(None);
                 line_cell_all.push(None);
+                hit_click_to_peek.push(None);
                 plain_lines.push(String::new());
             }
             prompts.push(text.clone());
@@ -644,26 +646,39 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             if is_header {
                 header_marked = true;
             }
-            plain_lines.push(line_to_plain(&line));
+            let plain = line_to_plain(&line);
+            // Exact hitbox for the words "click to peek" (display columns).
+            let ctp = if is_header {
+                if let Some(byte_i) = plain.find("click to peek") {
+                    let start = plain[..byte_i].chars().count();
+                    let end = start + "click to peek".chars().count();
+                    Some((cell_idx, start, end))
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            plain_lines.push(plain);
             wrapped.push(line);
             owner.push(current);
             // A User cell renders spacer → top border → padding → first text
             // row; any of those on screen means the prompt itself is visible.
             is_prompt_head.push(matches!(cell, Cell::User(_)) && i <= 3);
             hit_headers.push(if is_header { Some(cell_idx) } else { None });
-            // Hover any non-blank line of a peekable card (incl. turn strip).
             line_cells.push(if peekable && !empty {
                 Some(cell_idx)
             } else {
                 None
             });
-            // All non-blank lines map to their cell for right-click targeting.
             line_cell_all.push(if !empty { Some(cell_idx) } else { None });
+            hit_click_to_peek.push(ctp);
         }
     }
     app.hit_headers = hit_headers;
     app.line_cells = line_cells;
     app.line_cell_all = line_cell_all;
+    app.hit_click_to_peek = hit_click_to_peek;
     app.plain_lines = plain_lines;
 
     let total = wrapped.len() as u16;
@@ -1499,39 +1514,23 @@ fn apply_selection_style(line: Line<'static>, line_idx: usize, range: TextRange)
     Line::from(spans)
 }
 
-/// Floating dialogue: full thought / tool / turn content.
-///
-/// Uses click-pinned peek first (always works). Free hover only when the
-/// terminal emits all-motion mouse events (we enable CSI ?1003h for that).
-/// Draws the floating peek dialogue. Returns the box + clickable-✕ rects (for
-/// click-outside / ✕ dismissal), or None when nothing is shown.
+/// Stable click-to-peek dialogue only (hover peeks removed).
+/// Geometry is frozen on first open and never moves until closed.
 fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Rect)> {
     let idx = app.active_peek_cell()?;
-    // New target → start reading it from the top.
-    if app.peek_scroll_cell != Some(idx) {
-        app.peek_scroll_cell = Some(idx);
-        app.peek_scroll = 0;
-    }
 
-    // Snapshot what we need so the cell borrow ends before we touch the
-    // (mutable) image cache below.
     struct PeekData {
         title: String,
         body: String,
         hue: Color,
         diff: Option<Vec<String>>,
         thinking: bool,
-        // Only read by the image-peek render path; harmless string otherwise.
         #[cfg_attr(not(feature = "image-peek"), allow(dead_code))]
         image: Option<String>,
     }
     let p = {
         let cell = app.cells.get(idx)?;
         if !cell.is_peekable() {
-            return None;
-        }
-        // If already expanded in-place, skip the floating box (content is visible).
-        if cell.is_collapsible() && cell.expanded() {
             return None;
         }
         let hue = match cell {
@@ -1552,7 +1551,6 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
             } else {
                 None
             };
-            // Vision tools: peek shows the actual picture when possible.
             let image = if name == "look" {
                 image_arg_path(args)
             } else {
@@ -1571,77 +1569,45 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
             image,
         }
     };
-    let stable = app.peek_is_stable();
 
-    let max_w = (area.width.saturating_mul(7) / 10).clamp(40, 96);
-    let max_h = (area.height.saturating_mul(6) / 10).clamp(8, 28);
-    let w = max_w.min(area.width.saturating_sub(4));
-    let h = max_h.min(area.height.saturating_sub(2));
-    if w < 20 || h < 5 {
-        return None;
-    }
-
-    // Stable (click): freeze origin. Hover: follow near the pointer (temporary).
-    let (mut x, mut y) = if stable {
-        if let Some((ox, oy)) = app.peek_origin {
-            (ox.min(area.width.saturating_sub(w)), oy.min(area.height.saturating_sub(h)))
-        } else {
-            (
-                area.width.saturating_sub(w) / 2,
-                area.height.saturating_sub(h) / 3,
-            )
+    // Freeze geometry once — never re-anchor to mouse or re-center.
+    let rect = if let Some(r) = app.peek_frozen {
+        r
+    } else {
+        let w = (area.width.saturating_mul(7) / 10).clamp(40, 96).min(area.width.saturating_sub(4));
+        let h = (area.height.saturating_mul(6) / 10).clamp(8, 28).min(area.height.saturating_sub(2));
+        if w < 20 || h < 5 {
+            return None;
         }
-    } else {
-        (
-            app.mouse_col.saturating_add(2),
-            app.mouse_row.saturating_add(1),
-        )
-    };
-    if x + w > area.width {
-        x = area.width.saturating_sub(w);
-    }
-    if y + h > area.height {
-        y = if stable {
-            area.height.saturating_sub(h)
-        } else {
-            app.mouse_row.saturating_sub(h).min(area.height.saturating_sub(h))
+        let x = area.width.saturating_sub(w) / 2;
+        let y = area.height.saturating_sub(h) / 3;
+        let r = Rect {
+            x,
+            y,
+            width: w,
+            height: h,
         };
-    }
-    if y + h > area.height {
-        y = area.height.saturating_sub(h);
-    }
-    // Remember freeze point if stable opened without origin.
-    if stable && app.peek_origin.is_none() {
-        app.peek_origin = Some((x, y));
-    }
-    let rect = Rect {
-        x,
-        y,
-        width: w,
-        height: h,
+        app.peek_frozen = Some(r);
+        r
     };
-    f.render_widget(Clear, rect);
-    f.render_widget(
-        Block::default().style(Style::default().bg(theme::SURFACE_2)),
-        rect,
-    );
 
-    let footer = if stable {
-        "  wheel scroll  ·  ✕ / outside / esc close  ·  Ctrl+C copy  "
-    } else {
-        "  hover quickview  ·  click header to keep open  ·  move away to close  "
-    };
-    let phase = modal_phase(app);
-    draw_modal_frame(
-        f,
+    f.render_widget(Clear, rect);
+    // Static frame — no phase/pulse animation (that felt jumpy).
+    f.render_widget(
+        Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(p.hue))
+            .style(Style::default().bg(theme::SURFACE_2))
+            .title(format!(" {} ", p.title))
+            .title_bottom(" Esc · outside · ✕ · Ctrl+C "),
         rect,
-        phase,
-        p.hue,
-        &format!(" {} ", p.title),
-        None,
-        footer,
     );
-    let inner = modal_inner(rect);
+    let inner = Rect {
+        x: rect.x.saturating_add(1),
+        y: rect.y.saturating_add(1),
+        width: rect.width.saturating_sub(2),
+        height: rect.height.saturating_sub(2),
+    };
 
     // Clickable ✕ on the top-right of the box (matches the sessions picker).
     let close = Rect::new(rect.x + rect.width.saturating_sub(4), rect.y, 3, 1);
