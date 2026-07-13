@@ -1,5 +1,5 @@
-//! Install Meta-bundled SKILL.md packs for plur / ruflo / graphify into
-//! `~/.meta/skills/` so the agent discovers them on first launch.
+//! Install Meta-bundled SKILL packs into `~/.meta/skills/` so the agent
+//! discovers them on first launch (also mirrors to `~/.agents/skills`).
 
 use crate::config::muse_home;
 use crate::error::Result;
@@ -20,6 +20,18 @@ pub fn install_bundled_skills() -> Result<Vec<String>> {
         installed.push(name.to_string());
     }
 
+    // Multi-file packs (resume-session reader + thin wrappers).
+    for (name, files) in MULTI_FILE_PACKS {
+        let dir = root.join(name);
+        fs::create_dir_all(&dir)?;
+        for (filename, body) in *files {
+            fs::write(dir.join(filename), body)?;
+        }
+        if !installed.iter().any(|n| n == name) {
+            installed.push((*name).to_string());
+        }
+    }
+
     // Also mirror into ~/.agents/skills for cross-framework discovery.
     if let Some(home) = dirs::home_dir() {
         let agents = home.join(".agents").join("skills");
@@ -28,6 +40,13 @@ pub fn install_bundled_skills() -> Result<Vec<String>> {
             let dir = agents.join(name);
             let _ = fs::create_dir_all(&dir);
             let _ = fs::write(dir.join("SKILL.md"), body);
+        }
+        for (name, files) in MULTI_FILE_PACKS {
+            let dir = agents.join(name);
+            let _ = fs::create_dir_all(&dir);
+            for (filename, body) in *files {
+                let _ = fs::write(dir.join(filename), body);
+            }
         }
     }
 
@@ -47,6 +66,55 @@ const BUNDLED: &[(&str, &str)] = &[
     ("plur", PLUR_SKILL),
     ("ruflo", RUFLO_SKILL),
     ("graphify", GRAPHIFY_SKILL),
+];
+
+/// Packs with extra files (Python reader, CORE.md). Paths relative to crate root.
+const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
+    (
+        "resume-session",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../skills/resume-session/SKILL.md"),
+            ),
+            (
+                "CORE.md",
+                include_str!("../../skills/resume-session/CORE.md"),
+            ),
+            (
+                "session_reader.py",
+                include_str!("../../skills/resume-session/session_reader.py"),
+            ),
+        ],
+    ),
+    (
+        "resume-claude",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/resume-claude/SKILL.md"),
+        )],
+    ),
+    (
+        "resume-codex",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/resume-codex/SKILL.md"),
+        )],
+    ),
+    (
+        "resume-cursor",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/resume-cursor/SKILL.md"),
+        )],
+    ),
+    (
+        "resume-meta",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/resume-meta/SKILL.md"),
+        )],
+    ),
 ];
 
 const PLUR_SKILL: &str = r#"---

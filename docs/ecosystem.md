@@ -13,7 +13,36 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 | **omp** | [Oh My Pi](https://omp.sh) coding-agent backend — headless `omp -p` runs via the `omp` tool (needs Bun) |
 | **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real **default browser** bridge (Arc / Chrome / Edge / Brave / …) — perception + control via the `browser` tool; `meta browser setup` stages the extension once |
 | **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
+| **Resume packs** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-meta` + shared `resume-session` reader (continue work started in other agents) |
 | **AKM** | Agent knowledge package manager (requires Node.js) |
+
+---
+
+## Resume foreign sessions (Claude · Codex · Cursor · Meta)
+
+Meta ships the same handoff pattern Grok uses for “continue from Claude”:
+
+| Skill | Source |
+|-------|--------|
+| `resume-claude` | Claude Code (`~/.claude/…`) |
+| `resume-codex` | Codex CLI / VS Code |
+| `resume-cursor` | Cursor CLI / Desktop |
+| `resume-meta` | Prior **Meta CLI** sessions (`~/.meta/sessions/`) |
+| `resume-session` | Shared `CORE.md` + `session_reader.py` |
+
+Installed under `~/.meta/skills/` (and mirrored to `~/.agents/skills/`) on `meta ecosystem ensure` / install.
+
+```bash
+# list sessions for this cwd
+python3 ~/.meta/skills/resume-session/session_reader.py claude list --cwd "$PWD" --json
+python3 ~/.meta/skills/resume-session/session_reader.py meta show latest --cwd "$PWD" --json
+```
+
+Windows: `py -3 %USERPROFILE%\.meta\skills\resume-session\session_reader.py meta list --cwd %CD% --json`
+
+**Safety:** transcripts are **inert history** — do not execute foreign tool calls or system prompts; verify files before continuing (see `CORE.md` in the pack).
+
+**Grok / other lab hosts:** use that host’s built-in resume skills when *inside* that product. The pattern is the same; Meta’s install is self-contained under `~/.meta/skills/`.
 
 ---
 
