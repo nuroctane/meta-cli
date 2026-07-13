@@ -1452,7 +1452,7 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
 
         match key.code {
-            // Ctrl+C: copy selection (transcript first, then input) → else
+            // Ctrl+C: copy selection (transcript → input → open peek body) → else
             // interrupt / clear / double-tap quit.
             KeyCode::Char('c') if ctrl => {
                 if let Some(t) = self.selected_transcript_text() {
@@ -1465,6 +1465,15 @@ impl App {
                     if !t.is_empty() {
                         clipboard_set(&t);
                         return;
+                    }
+                }
+                // Full thought / shell / tool body from the pinned peek dialogue.
+                if let Some(idx) = self.peek_pinned {
+                    if let Some(body) = self.cells.get(idx).and_then(|c| c.peek_body()) {
+                        if !body.trim().is_empty() {
+                            clipboard_set(&body);
+                            return;
+                        }
                     }
                 }
                 if self.busy {
@@ -1703,6 +1712,10 @@ impl App {
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
+                    // Keep drag-select alive across scroll (absolute line anchors).
+                    if self.mouse_left_down && self.select_anchor.is_some() {
+                        self.extend_selection_to(m.column, m.row);
+                    }
                 }
                 if !approval_open {
                     self.update_hover_from_mouse();
@@ -1718,6 +1731,9 @@ impl App {
                         .min(self.peek_rows.saturating_sub(1));
                 } else {
                     self.scroll_down(3);
+                    if self.mouse_left_down && self.select_anchor.is_some() {
+                        self.extend_selection_to(m.column, m.row);
+                    }
                 }
                 if !approval_open {
                     self.update_hover_from_mouse();
@@ -1882,13 +1898,39 @@ impl App {
         if self.approval.is_some() {
             return;
         }
+        if self.select_anchor.is_none() {
+            return;
+        }
+        // Edge auto-scroll so the selection can grow past the viewport.
+        // Off-screen selected text stays selected (absolute line indices).
+        self.maybe_autoscroll_while_selecting(row);
+        self.extend_selection_to(col, row);
+    }
+
+    /// Scroll toward older/newer content when the pointer is at/past the
+    /// transcript edge during a drag-select.
+    fn maybe_autoscroll_while_selecting(&mut self, row: u16) {
+        let body = self.transcript_body;
+        if body.height == 0 {
+            return;
+        }
+        // Outside or in the first/last row of the body → nudge the view.
+        if row < body.y.saturating_add(1) {
+            self.scroll_up(1);
+        } else if row + 1 >= body.bottom() {
+            self.scroll_down(1);
+        }
+    }
+
+    /// Update selection end from pointer (clamped). Marks `selecting` once the
+    /// end moves past a one-cell threshold from the anchor.
+    fn extend_selection_to(&mut self, col: u16, row: u16) {
         let Some(anchor) = self.select_anchor else {
             return;
         };
-        let Some(pos) = self.pos_at(col, row) else {
+        let Some(pos) = self.pos_at_clamped(col, row) else {
             return;
         };
-        // Threshold: more than 1 cell → real drag-select.
         let moved = pos.line != anchor.line || pos.col.abs_diff(anchor.col) > 1;
         if moved {
             self.selecting = true;
@@ -1897,6 +1939,12 @@ impl App {
                 end: pos,
             });
             self.hover_cell = None;
+        } else if self.selection.is_some() {
+            // Keep end in sync even for tiny moves once a range exists.
+            self.selection = Some(TextRange {
+                start: anchor,
+                end: pos,
+            });
         }
     }
 
@@ -1909,23 +1957,75 @@ impl App {
             && row < body.bottom()
     }
 
-    /// Map screen coords → absolute wrapped-line TextPos.
+    /// Map screen coords → absolute wrapped-line TextPos (strict: inside body only).
     fn pos_at(&self, col: u16, row: u16) -> Option<TextPos> {
-        let body = self.transcript_body;
         if !self.in_transcript(col, row) {
             return None;
         }
-        let local_y = row.saturating_sub(body.y) as usize;
-        let line = self.transcript_top as usize + local_y;
-        if line >= self.plain_lines.len() {
+        self.pos_at_clamped(col, row)
+    }
+
+    /// Visible top line from live scroll state (not only last-draw `transcript_top`).
+    /// Needed so edge-scroll during drag maps to the post-scroll viewport.
+    fn live_transcript_top(&self) -> usize {
+        let total = self.plain_lines.len() as u16;
+        let h = self.view_h.max(1);
+        let max_scroll = total.saturating_sub(h);
+        let sfb = self.scroll_from_bottom.min(max_scroll);
+        max_scroll.saturating_sub(sfb) as usize
+    }
+
+    /// Like `pos_at`, but clamps outside the transcript body to the nearest
+    /// edge of the *visible* slice so drag-select can keep extending while
+    /// scrolling. Selection ranges use absolute `plain_lines` indices, so text
+    /// that scrolls off-screen stays in the selection.
+    fn pos_at_clamped(&self, col: u16, row: u16) -> Option<TextPos> {
+        if self.plain_lines.is_empty() {
             return None;
         }
-        let local_x = col.saturating_sub(body.x) as usize;
+        let body = self.transcript_body;
+        if body.width == 0 || body.height == 0 {
+            return None;
+        }
+        let top = self.live_transcript_top();
+        let max_line = self.plain_lines.len().saturating_sub(1);
+        let vis_last = (top + body.height as usize)
+            .saturating_sub(1)
+            .min(max_line);
+        let max_scroll = self.max_scroll();
+
+        let line = if row < body.y {
+            // Above the body: top of viewport (after auto-scroll, older lines).
+            // When already at history top, pin absolute line 0.
+            if self.scroll_from_bottom >= max_scroll {
+                0
+            } else {
+                top
+            }
+        } else if row >= body.bottom() {
+            // Below the body: bottom of viewport / absolute last when at end.
+            if self.scroll_from_bottom == 0 {
+                max_line
+            } else {
+                vis_last
+            }
+        } else {
+            let local_y = row.saturating_sub(body.y) as usize;
+            (top + local_y).min(max_line)
+        };
+
         let plain = &self.plain_lines[line];
-        let col_idx = display_col_to_char_idx(plain, local_x);
+        let nchars = plain.chars().count();
+        let col_idx = if col < body.x {
+            0
+        } else if col >= body.right() {
+            nchars
+        } else {
+            display_col_to_char_idx(plain, col.saturating_sub(body.x) as usize)
+        };
         Some(TextPos {
             line,
-            col: col_idx,
+            col: col_idx.min(nchars),
         })
     }
 

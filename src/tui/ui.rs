@@ -1288,23 +1288,18 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                                 Span::styled("(no output)".to_string(), theme::style_faint()),
                             ]));
                         } else {
+                            // Full output when expanded so drag-select / copy can
+                            // grab shell commands and long tool results (wrap
+                            // handles width — do not truncate away copyable text).
                             for (i, l) in all.iter().enumerate() {
                                 let prefix = if i == 0 { "└ " } else { "  " };
                                 let mut spans = vec![
                                     Span::raw("  ".to_string()),
                                     Span::styled(prefix.to_string(), theme::style_faint()),
                                 ];
-                                // Shell output keeps its ANSI colours (cargo,
-                                // git, ls) — parsed to spans, escapes stripped.
-                                let clean = ansi::strip(l);
-                                if clean.chars().count() > 200 {
-                                    spans.push(Span::styled(
-                                        truncate(&clean, 200),
-                                        theme::style_faint(),
-                                    ));
-                                } else {
-                                    spans.extend(ansi::line_to_spans(l, theme::style_faint()));
-                                }
+                                // Shell output keeps ANSI colours (cargo, git,
+                                // ls) — parsed to spans; plain_lines strips for copy.
+                                spans.extend(ansi::line_to_spans(l, theme::style_faint()));
                                 out.push(Line::from(spans));
                             }
                         }

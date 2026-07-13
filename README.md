@@ -317,11 +317,11 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | Key | Action |
 |-----|--------|
 | `↑` `↓` · wheel · drag scrollbar | Scroll transcript |
-| **Drag on chat text** | Select + auto-copy |
+| **Drag on chat text** | Select + auto-copy (survives scroll; expanded thought/tool text included) |
 | **Click `↓ N · End`** | Jump to latest |
 | Click card / `▸` | Peek / expand |
 | **Ctrl+A** | Select-all input (or whole transcript if input empty) |
-| **Ctrl+C** | Copy selection (transcript or input); else interrupt / double-tap quit |
+| **Ctrl+C** | Copy selection · open peek body · else interrupt / double-tap quit |
 | **Ctrl+V** | Paste into input |
 | **Ctrl+X** | Cut input selection (or whole input) |
 | `Shift+Tab` | Cycle permission mode |
