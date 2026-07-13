@@ -2,6 +2,7 @@ mod ade;
 mod agent;
 mod api;
 mod auth;
+mod bootstrap;
 mod cli;
 mod config;
 mod ecosystem;
@@ -101,6 +102,11 @@ async fn real_main() -> Result<()> {
             ade::install_orca_hook()?;
             return Ok(());
         }
+        Some(Commands::Install | Commands::SelfInstall) => {
+            // Explicit one-stop install (same as double-clicking the release EXE).
+            bootstrap::run_full_install()?;
+            return Ok(());
+        }
         Some(Commands::Doctor) => {
             run_doctor()?;
             return Ok(());
@@ -147,6 +153,21 @@ async fn real_main() -> Result<()> {
                 }
             }
             return Ok(());
+        }
+        None => {
+            // Interactive launch: one-stop install FIRST when needed (release EXE
+            // or never bootstrapped). Never open the TUI while packs are still
+            // installing in the background for a first-time machine.
+            if bootstrap::should_bootstrap_on_launch() {
+                bootstrap::run_full_install()?;
+                // Release artifact → re-exec the installed `meta` for a clean TUI.
+                if bootstrap::looks_like_release_artifact()
+                    && !bootstrap::is_running_from_install()
+                {
+                    bootstrap::reexec_installed_tui()?;
+                    return Ok(());
+                }
+            }
         }
         _ => {}
     }
@@ -265,9 +286,8 @@ async fn real_main() -> Result<()> {
     ade::write_ade_manifest(&session.id, &cfg.model, &cwd_str, usage.session_usage());
     let _ = session.save();
 
-    // Never block launch on ecosystem install (npm/uv/skill packs can take minutes).
-    // Snapshot whatever is already provisioned; optional background repair
-    // (config ecosystem_auto_ensure, default true).
+    // First open already ran a full foreground install when needed. Background
+    // ensure is TTL repair only (skips fast when the marker is fresh).
     let eco_summary = ecosystem::launch_snapshot();
     if cfg.ecosystem_auto_ensure {
         std::thread::spawn(|| {
@@ -337,6 +357,8 @@ async fn real_main() -> Result<()> {
         | Some(Commands::Usage)
         | Some(Commands::Sessions { .. })
         | Some(Commands::InstallHook)
+        | Some(Commands::Install)
+        | Some(Commands::SelfInstall)
         | Some(Commands::Doctor)
         | Some(Commands::Ecosystem { .. })
         | Some(Commands::Browser { .. }) => unreachable!(),

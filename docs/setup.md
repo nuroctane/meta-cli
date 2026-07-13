@@ -41,40 +41,29 @@ Does **everything**: Rust if needed, prereqs, build, PATH, ecosystem packs, brow
 
 ### 2. Prebuilt Windows EXE (no local compile)
 
-**Download → run → login.** No PATH ritual required for first use.
+**Same job as the one-liner** — download, run, full stack. The EXE *is* the installer.
 
 1. Open [**Releases → latest**](https://github.com/nuroctane/meta-cli/releases/latest)
 2. Download **`meta-windows-x86_64.exe`**
-3. **Double‑click it**, or from a terminal in that folder:
+3. **Double‑click it** (or `.\meta-windows-x86_64.exe`)
 
-    ```powershell
-    .\meta-windows-x86_64.exe
-    ```
+What it does **before** any TUI (console progress):
 
-4. Sign in when prompted (`/login`, or `meta auth login` if you put it on PATH)
+| Step | Action |
+|------|--------|
+| Binary | Copies itself → `%USERPROFILE%\.local\bin\meta.exe` (+ `muse.exe` alias) |
+| PATH | Adds `~\.local\bin` to User PATH |
+| Prereqs | Best-effort: node · bun · uv · rg · ffmpeg |
+| Ecosystem | `ecosystem ensure --force` (graphify · plur · ruflo · omp · browser · skills) |
+| Browser | Stages Chromium extension for your default browser |
+| Hook | Orca hook if present |
+| Auth | Saves `META_API_KEY` / `MODEL_API_KEY` if set in the environment |
+| Launch | Opens the installed `meta` TUI |
 
-Core agent works from the EXE alone. Optional extras below.
+Re-download + re-run the release EXE to upgrade. Force again anytime: `meta install`.
 
-??? note "Optional: put `meta` on your PATH"
-
-    Rename to `meta.exe` and drop it in a folder on PATH (e.g. `%USERPROFILE%\.local\bin`), then open a **new** terminal.
-
-    ```powershell
-    $bin = "$env:USERPROFILE\.local\bin"
-    New-Item -ItemType Directory -Force -Path $bin | Out-Null
-    Copy-Item -Force .\meta-windows-x86_64.exe "$bin\meta.exe"
-    $p = [Environment]::GetEnvironmentVariable("Path", "User")
-    if ($p -notlike "*$bin*") { [Environment]::SetEnvironmentVariable("Path", "$bin;$p", "User") }
-    ```
-
-??? note "Optional: full stack (Graphify · PLUR · Ruflo · omp · browser · skills)"
-
-    ```powershell
-    meta ecosystem ensure
-    meta browser setup
-    ```
-
-    Or use the **one-liner** — it installs PATH + packs for you. The TUI also runs ecosystem repair in the **background** when `ecosystem_auto_ensure` is on (default).
+!!! tip "Dev / skip"
+    `META_SKIP_BOOTSTRAP=1` skips auto-install (e.g. local cargo builds).
 
 ### 3. From a local clone
 
@@ -91,11 +80,11 @@ Same steps as the remote one-liner, using the checkout you already have.
 ```bash
 git clone https://github.com/nuroctane/meta-cli.git && cd meta-cli
 cargo build --release
-# Copy target/release/meta[.exe] → ~/.local/bin/meta (+ muse alias)
-meta ecosystem ensure
-meta browser setup
+./target/release/meta install   # Windows: .\target\release\meta.exe install
 meta auth login
 ```
+
+`meta install` is the same one-stop path the release EXE runs (binary → PATH → ecosystem → browser).
 
 ### Verify
 

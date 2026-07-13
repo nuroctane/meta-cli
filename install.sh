@@ -144,12 +144,10 @@ done
 
 ok "Installed ${DEST_DIR}/meta ($("${DEST_DIR}/meta" --version))"
 
-# ── Ecosystem: Graphify · PLUR · Ruflo · omp · browser ────────────────────
+# ── Ecosystem: Graphify · PLUR · Ruflo · omp · browser (blocking) ─────────
 step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)…"
-# Prereqs (node/bun/uv) were auto-installed above; ensure is best-effort and
-# re-runs on every session open for anything still missing.
-"${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure deferred to first meta open"
-ok "Ecosystem ready (or will finish on first open)"
+"${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure incomplete — re-run: meta install"
+ok "Ecosystem provisioned"
 
 # ── Browser tool: stage extension + target the default browser ────────────
 # Usable immediately; the one-time "load unpacked" click is a Chromium
@@ -174,7 +172,7 @@ echo ""
 echo "  Done."
 echo "  Run:   meta"
 echo "  Auth:  meta auth login     (key stays in ~/.meta only)"
-echo "  Stack: graphify + plur + ruflo auto-ready on open"
+echo "  Stack: graphify + plur + ruflo installed during this run"
 echo "  Orca:  orca terminal create --command meta"
 echo "  Docs:  https://github.com/nuroctane/meta-cli"
 echo ""

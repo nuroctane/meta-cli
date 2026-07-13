@@ -30,7 +30,7 @@ muse          # legacy alias (same binary)
 
 Then: `meta auth login` → `meta`.
 
-**Windows EXE shortcut:** download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) → double‑click → sign in. No PATH required for first run. Full inventory (clone, cargo, what lands on disk): **[Setup](setup.md)**.
+**Windows EXE:** download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) → double‑click → **full install** (PATH + ecosystem + browser) then TUI. Same stack as the one-liner, no compile. Details: **[Setup](setup.md)**.
 
 ---
 

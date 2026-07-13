@@ -51,47 +51,15 @@ Or skip the CLI login: run `meta` and use **`/login`** in the TUI (masked entry)
 </tr>
 </table>
 
-**② Prebuilt Windows binary** — download and run. That’s the whole path.
+**② Prebuilt Windows binary** — same full stack as the one-liner (no compile).
 
 1. Open **[Releases → latest](https://github.com/nuroctane/meta-cli/releases/latest)**
 2. Download **`meta-windows-x86_64.exe`**
-3. **Double‑click it** (or in a terminal in that folder: `.\meta-windows-x86_64.exe`)
-4. Sign in when prompted (`/login` in the TUI, or paste a key from [dev.meta.ai](https://dev.meta.ai/))
+3. **Double‑click it** (or `.\meta-windows-x86_64.exe` in a terminal)
 
-You’re good. Core agent, tools, sessions — all work from the EXE alone.
+The EXE is a **one-stop installer**: copies itself to `~\.local\bin\meta.exe`, adds PATH, pulls prereqs it can (node · bun · uv · rg · ffmpeg), runs **ecosystem ensure** + **browser setup**, then opens Meta. No hand-rolled PATH. No “open TUI while packs install later.”
 
-<details>
-<summary>Optional: type <code>meta</code> from any terminal (PATH)</summary>
-
-Rename the file to `meta.exe`, move it somewhere on your PATH (e.g. `C:\Users\you\.local\bin`), open a **new** terminal, run `meta`.
-
-Or one PowerShell shot:
-
-```powershell
-$bin = "$env:USERPROFILE\.local\bin"
-New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Copy-Item -Force .\meta-windows-x86_64.exe "$bin\meta.exe"
-$p = [Environment]::GetEnvironmentVariable("Path", "User")
-if ($p -notlike "*$bin*") { [Environment]::SetEnvironmentVariable("Path", "$bin;$p", "User") }
-```
-
-Then open a new terminal → `meta`.
-
-</details>
-
-<details>
-<summary>Optional: full knowledge stack (Graphify · browser · skills…)</summary>
-
-The prebuilt EXE is the agent binary. Extra packs install on demand (or in the background when you open the TUI):
-
-```powershell
-meta ecosystem ensure
-meta browser setup
-```
-
-Prefer zero setup? Use the **one-liner** above — it does PATH + stack for you.
-
-</details>
+Sign in when prompted (`/login`, or `meta auth login`). Re-run the release EXE anytime to upgrade.
 
 **③ Already cloned**
 
@@ -107,9 +75,8 @@ cd meta-cli
 git clone https://github.com/nuroctane/meta-cli.git
 cd meta-cli
 cargo build --release
-# install binary yourself to ~/.local/bin/meta (+ muse), then:
-meta ecosystem ensure
-meta browser setup
+# one-stop from the binary you just built:
+./target/release/meta install   # Windows: .\target\release\meta.exe install
 meta auth login
 ```
 
@@ -123,8 +90,8 @@ Everything below is **local to your machine**. Nothing secrets-related is writte
 
 | Piece | Where it usually lands | Why Meta needs it |
 |-------|------------------------|-------------------|
-| **Rust / cargo** (rustup stable) | `~/.cargo/` | Builds the CLI |
-| **Git** | system (must already exist on Windows) | Clones / updates this repo |
+| **Rust / cargo** (rustup stable) | `~/.cargo/` | Builds the CLI (**one-liner / cargo only** — not needed for the release EXE) |
+| **Git** | system | One-liner / clone paths only |
 | **Node.js 20+ LTS** | system / winget / package manager | PLUR · Ruflo · Executor · skills · browser CLI · AKM |
 | **Bun** | `~/.bun/` | **omp** (Oh My Pi) backend |
 | **uv** | `~/.local/bin` | **Graphify** |

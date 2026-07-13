@@ -93,6 +93,10 @@ pub enum Commands {
     },
     /// Install Orca agent hook for usage/status reporting
     InstallHook,
+    /// One-stop install: binary → PATH → prereqs → ecosystem → browser (no TUI)
+    Install,
+    /// Alias for `meta install`
+    SelfInstall,
     /// Diagnose install, auth, config, and ecosystem readiness
     Doctor,
     /// Graphify · PLUR · Ruflo ecosystem (auto-provisioned on open)

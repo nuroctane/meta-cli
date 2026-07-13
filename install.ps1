@@ -210,17 +210,14 @@ if ($userPath -notlike "*$destDir*") {
 $ver = & $dest --version
 Write-Ok "Installed $dest ($ver)"
 
-# ── Ecosystem: Graphify · PLUR · Ruflo (works on first open) ─────────────
-# Node is required for plur/ruflo; uv for graphify. Best-effort — meta also
-# re-ensures on every session start if anything is missing.
+# ── Ecosystem: Graphify · PLUR · Ruflo (blocking — same as release EXE) ─
+# Node is required for plur/ruflo; uv for graphify. Best-effort but runs now.
 Write-Step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)…"
 try {
-    # Prereqs (node/bun/uv) were auto-installed above; ensure is best-effort
-    # and re-runs on every session open for anything still missing.
     & $dest ecosystem ensure --force 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
-    Write-Ok "Ecosystem provisioned (or scheduled for first open)"
+    Write-Ok "Ecosystem provisioned"
 } catch {
-    Write-Warn "Ecosystem ensure deferred to first meta open: $($_.Exception.Message)"
+    Write-Warn "Ecosystem ensure incomplete: $($_.Exception.Message) — re-run: meta install"
 }
 
 # ── Browser tool: stage extension + target the default browser ────────────
@@ -273,7 +270,7 @@ Write-Host ""
 Write-Host "  Done." -ForegroundColor Green
 Write-Host "  Run:   meta" -ForegroundColor White
 Write-Host "  Auth:  meta auth login     (key stays in ~/.meta only)" -ForegroundColor DarkGray
-Write-Host "  Stack: graphify + plur + ruflo auto-ready on open" -ForegroundColor DarkGray
+Write-Host "  Stack: graphify + plur + ruflo installed during this run" -ForegroundColor DarkGray
 Write-Host "  Orca:  orca terminal create --command meta" -ForegroundColor DarkGray
 Write-Host "  Docs:  https://github.com/nuroctane/meta-cli" -ForegroundColor DarkGray
 Write-Host ""

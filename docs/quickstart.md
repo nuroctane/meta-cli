@@ -18,7 +18,7 @@ Your first Meta CLI session in 60 seconds.
 
 That’s the full stack (binary + PATH + prereqs + ecosystem).
 
-**Or skip install scripts entirely (Windows):** download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) and double‑click it — then sign in when prompted. Other paths: **[Setup](setup.md)**.
+**Windows without building:** download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) and double‑click — it runs the **same full install**, then opens Meta. Other paths: **[Setup](setup.md)**.
 
 ## 2. Authenticate
 
