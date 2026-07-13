@@ -10,7 +10,9 @@ use crate::api::{ApiResponse, MetaClient, StreamEvent};
 use crate::config::Config;
 use crate::error::{MuseError, Result};
 use crate::tools::media::{self, MediaAttach};
-use crate::tools::{ToolContext, ToolHost};
+use crate::tools::{
+    is_parallel_safe, is_read_only_call, ToolContext, ToolHost,
+};
 use crate::usage::{TokenUsage, UsageTracker};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -57,24 +59,8 @@ pub enum ApprovalDecision {
     Deny,
 }
 
-/// Tools that never mutate the workspace (approval-free in manual; allowed in plan).
-/// Note: `memory` is special-cased — only action=read is free; append is mutating.
-pub const READ_ONLY_TOOLS: &[&str] = &[
-    "read_file",
-    "list_dir",
-    "grep",
-    "glob",
-    "web_fetch",
-    "web_search",
-    "look",
-    "git_status",
-    "git_diff",
-    "skill",
-    "todo_write",
-    "submit_plan",
-    // extract_frames writes JPEGs — not read-only.
-    // graphify is special-cased in is_read_only_call (query/path free; extract not).
-];
+// Tool capability classification (read-only / parallel / destructive) lives in
+// `crate::tools::capabilities` — single source of truth for the agent loop.
 
 pub struct AgentRunner {
     pub client: MetaClient,
@@ -819,62 +805,6 @@ pub(crate) fn pair_interrupted(items: &mut Vec<Value>, calls: &[FunctionCallRef]
         items.push(function_call_output_item(&call_id, INTERRUPT_OUTPUT));
     }
     n
-}
-
-fn is_read_only_call(name: &str, args: &str) -> bool {
-    if name == "memory" {
-        return serde_json::from_str::<Value>(args)
-            .ok()
-            .and_then(|v| v.get("action")?.as_str().map(|s| s == "read"))
-            .unwrap_or(false);
-    }
-    if name == "graphify" {
-        return crate::tools::graphify::is_read_only_action(args);
-    }
-    if name == "plur" {
-        return crate::tools::plur::is_read_only_action(args);
-    }
-    if name == "ruflo" {
-        return crate::tools::ruflo::is_read_only_action(args);
-    }
-    if name == "executor" {
-        return crate::tools::executor_is_read_only(args);
-    }
-    // omp `run` hands the workspace to a full coding agent — write-class.
-    if name == "omp" {
-        return crate::tools::omp_is_read_only(args);
-    }
-    // browser perception (tabs/scan/snapshot/…) is free; page control is not.
-    if name == "browser" {
-        return crate::tools::browser_is_read_only(args);
-    }
-    if name == "agent" {
-        return false;
-    }
-    READ_ONLY_TOOLS.contains(&name)
-}
-
-fn is_parallel_safe(name: &str, args: &str) -> bool {
-    // Never parallelize agent or anything that needs approval / mutates.
-    if !is_read_only_call(name, args) {
-        return false;
-    }
-    matches!(
-        name,
-        "read_file"
-            | "list_dir"
-            | "grep"
-            | "glob"
-            | "web_fetch"
-            | "web_search"
-            | "look"
-            | "git_status"
-            | "git_diff"
-            | "skill"
-            | "graphify"
-            | "plur"
-            | "ruflo"
-    )
 }
 
 /// In PLAN mode, shell runs freely for reading, parsing, analysis, and scratch

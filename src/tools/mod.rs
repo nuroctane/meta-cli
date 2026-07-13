@@ -2,6 +2,7 @@ mod apply_patch;
 mod bash;
 pub mod browser;
 pub use browser::is_read_only_action as browser_is_read_only;
+pub mod capabilities;
 mod edit_file;
 mod git_diff;
 mod git_status;
@@ -36,6 +37,10 @@ use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub use capabilities::{
+    classify as classify_tool, is_concurrency_safe, is_destructive_call, is_parallel_safe,
+    is_read_only_call, ToolCaps,
+};
 pub use sandbox::{is_dangerous_workspace, resolve_safe_workspace};
 pub use shell::shell_backend;
 pub use submit_plan::{SharedPlan, SubmitPlan};
@@ -47,11 +52,29 @@ pub struct ToolContext {
     pub cancel: tokio_util::sync::CancellationToken,
 }
 
+/// Tool contract. Capability methods are **fail-closed** by default
+/// (not free, not parallel, not destructive). Override or rely on the
+/// central classifier in [`capabilities`] via the default impls.
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters_schema(&self) -> Value;
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String>;
+
+    /// Approval-free in manual when true; plan mode allows freely when true.
+    fn is_read_only(&self, args: &Value) -> bool {
+        capabilities::is_read_only(self.name(), args)
+    }
+
+    /// May join a concurrent batch. Must imply [`is_read_only`].
+    fn is_concurrency_safe(&self, args: &Value) -> bool {
+        capabilities::classify_value(self.name(), args).concurrency_safe
+    }
+
+    /// High-impact / irreversible mutator (writes, shell, agent, …).
+    fn is_destructive(&self, args: &Value) -> bool {
+        capabilities::is_destructive(self.name(), args)
+    }
 }
 
 /// Stateful tool host (todos/plan share with TUI).

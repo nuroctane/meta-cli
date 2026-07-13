@@ -8,9 +8,7 @@ pub mod subagent;
 pub mod todos;
 
 #[allow(unused_imports)]
-pub use r#loop::{
-    compact_session, spawn_turn, AgentEvent, AgentRunner, ApprovalDecision, READ_ONLY_TOOLS,
-};
+pub use r#loop::{compact_session, spawn_turn, AgentEvent, AgentRunner, ApprovalDecision};
 pub use mode::{PermissionMode, SharedMode};
 pub use session::Session;
 pub use todos::{shared_empty, SharedTodos};
