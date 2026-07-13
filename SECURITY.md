@@ -17,12 +17,13 @@ Session `input_items` may include base64 media when vision (`look` / auto-attach
 
 Older installs used `~/.muse/`. Meta CLI **gap-fills** missing files into `~/.meta/` (does not overwrite). `meta auth logout` removes auth from **both** `~/.meta` and legacy `~/.muse`.
 
-## Install scripts
+## Install scripts & release EXE
 
-`install.ps1` / `install.sh`:
+`install.ps1` / `install.sh` / release `meta-windows-*.exe` (`meta install`):
 
 - May **read** a key already present in your environment and store it under `~/.meta/` on your machine
 - Do **not** write keys into the git checkout or GitHub
+- Release EXE and `meta install` copy the binary to `~/.local/bin` and may auto-install prereqs (Node, uv, …) best-effort
 
 ## Report issues
 

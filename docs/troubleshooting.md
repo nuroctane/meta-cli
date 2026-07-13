@@ -145,9 +145,11 @@ ecosystem
     sudo apt install nodejs npm
     pip install uv
     ```
-2. Re-run:
+2. Re-run any one-shot installer:
     ```bash
-    meta ecosystem ensure --force
+    meta install
+    # or: meta ecosystem ensure --force
+    # or re-run the one-liner / double-click a fresh release EXE
     ```
 
 ### `ffmpeg not on PATH`
@@ -160,14 +162,19 @@ ecosystem
 
 Binary may be corrupted or from a different source.
 
-**Fix:** Re-run the install script:
+**Fix:** Re-run a one-shot install:
 
 ```bash
-# Windows
+# already on PATH
+meta install
+
+# Windows one-liner
 irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
 
-# macOS / Linux
+# macOS / Linux one-liner
 curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+
+# or download meta-windows-x86_64.exe from Releases and double-click
 ```
 
 ### API errors / rate limits

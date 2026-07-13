@@ -51,19 +51,20 @@ Meta CLI hardens shell execution by default:
 
 ---
 
-## Install script safety
+## Install safety
 
-`install.ps1` / `install.sh`:
+`install.ps1` / `install.sh` / release **EXE** (`meta install`):
 
 - May **read** a key already present in your environment and store it under `~/.meta/` on your machine
 - Do **not** write keys into the git checkout or GitHub
-- Verify **SHA-256** of the installed binary
+- Write the binary to `~/.local/bin` and verify **SHA-256** of the installed binary
+- Best-effort prereq installs (Node, uv, …) are local to your machine
 
 ---
 
 ## Binary integrity
 
-Each release includes a SHA-256 hash written next to the binary by the install script. `meta doctor` verifies this:
+Each release includes a SHA-256 hash written next to the binary by the installer (one-liner or EXE). `meta doctor` verifies this:
 
 ```bash
 meta doctor

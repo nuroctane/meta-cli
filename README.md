@@ -17,7 +17,7 @@ muse          # legacy alias (same binary)
 
 ## Install — dead simple
 
-One line. That’s it. The installer builds `meta`, drops it on your PATH, pulls in every runtime dependency it can, and wires the full agent stack so you’re ready to go.
+One shot. That’s it. The **one-liner** (builds from source) or the **Windows EXE** (prebuilt) each drop `meta` on your PATH, pull in every runtime dependency they can, and wire the full agent stack **before** the TUI opens.
 
 ### <img alt="Windows (PowerShell) — recommended" src="https://img.shields.io/badge/Windows_(PowerShell)_—_recommended-a855f7?style=for-the-badge">
 
@@ -88,7 +88,7 @@ meta auth login
 
 Everything below is **local to your machine**. Nothing secrets-related is written into the git repo.
 
-#### A. Tooling the installer may install (if missing)
+#### A. Tooling the one-liner / EXE may install (if missing)
 
 | Piece | Where it usually lands | Why Meta needs it |
 |-------|------------------------|-------------------|
@@ -116,6 +116,8 @@ Everything below is **local to your machine**. Nothing secrets-related is writte
 |------|---------|
 | `auth.json` | API key after login (**only place keys live**) |
 | `config.toml` | Model, effort, budgets, compact, poor mode, … |
+| `bootstrap.json` | One-stop install marker (EXE / `meta install`) |
+| `ecosystem.json` | Ecosystem ensure marker |
 | `permissions.toml` | Optional allow/deny/ask rules |
 | `hooks.toml` | Optional pre/post tool hooks |
 | `meta.log` | Tracing (not painted into the TUI) |
@@ -126,7 +128,7 @@ Everything below is **local to your machine**. Nothing secrets-related is writte
 | `browser-extension/` | Staged `tmwd_cdp_bridge` for the browser tool |
 | `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory store |
 
-#### D. Ecosystem packs (via `meta ecosystem ensure`)
+#### D. Ecosystem packs (one-liner · EXE · `meta install` / `ecosystem ensure`)
 
 Installed as **external CLIs / skill trees** when Node/uv/Bun are available — not baked into the binary:
 
@@ -148,7 +150,7 @@ Installed as **external CLIs / skill trees** when Node/uv/Bun are available — 
 | **Orca hook** | Best-effort `meta install-hook` if Orca is present |
 | **Auth from env** | If `META_API_KEY` / `MODEL_API_KEY` is set, saved to `~/.meta/auth.json` only |
 
-**That’s the full stack** — binary + PATH + runtimes + knowledge/browser packs + local data home. First `cargo build` can take a few minutes; after that, `meta` opens instantly and ecosystem repair runs in the **background**.
+**That’s the full stack** — binary + PATH + runtimes + knowledge/browser packs + local data home. One-liner first run may spend a few minutes on `cargo build`; the EXE skips compile but still runs ecosystem install **up front**. Later sessions open fast; `ecosystem_auto_ensure` only does light **background repair** when packs drift.
 
 Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** · Setup detail: [docs/setup.md](./docs/setup.md)
 
@@ -162,7 +164,7 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 | **Agent** | Manual / plan / auto · tool loop · subagents · todos · **smarter auto-compact** · **session $ / token budgets** · tool-result spill · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent — **all first-class** (no deferred demotion) |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** (`meta browser setup`) · AKM · **800+ skills** — background provision (`ecosystem_auto_ensure`) |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** — installed at setup; later open = TTL **repair** (`ecosystem_auto_ensure`) |
 | **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · **session `.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
@@ -174,8 +176,8 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 |--|--|
 | **Real agent, not a wrapper** | Custom Rust harness: modes, tools, sandbox, streaming, cancel, subagents, auto-compact |
 | **Sees media** | Muse multimodal via Responses `input_image` / `input_video` — sparse frames, not frame-by-frame spam |
-| **One-shot install** | Build · PATH · ecosystem · Orca hook · optional auth |
-| **Opens instantly** | Ecosystem repair in the **background**; TUI never blocks on npm/uv |
+| **One-shot install** | One-liner **or** Windows EXE · PATH · ecosystem · browser · Orca hook · optional auth |
+| **Install first, then TUI** | Full stack runs **before** the UI; later sessions only do light background repair |
 | **Knowledge stack** | Code graph · shared engrams · vector memory · MCP gateway · skill packs |
 | **Simple input** | Drag-select · scrollbar · **Ctrl+A / C / V / X** — no mouse “mode” toggle |
 | **Secrets stay local** | API key only in `~/.meta/auth.json` |
@@ -399,7 +401,7 @@ tool_result_max_chars = 12000   # 0 = unlimited; spill oversized tool output
 compact_keep_user_turns = 4
 compact_tool_body_max_chars = 800
 poor_mode = false
-ecosystem_auto_ensure = true    # background pack repair on TUI open
+ecosystem_auto_ensure = true    # background TTL pack repair on later TUI opens
 ```
 
 Optional files:

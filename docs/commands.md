@@ -29,6 +29,7 @@ meta <COMMAND> [ARGS]
 
 ```bash
 meta                                    # open interactive TUI
+meta install                            # one-stop stack install (same as release EXE)
 meta "fix the bug"                      # start with a prompt
 meta "design from ref.mp4"             # vision: auto-attach media
 meta -c                                 # continue last session
@@ -129,6 +130,22 @@ meta usage
 
 ---
 
+### `meta install`
+
+One-stop install — **same job as the release EXE and the shell one-liners** (minus compiling from source): copy binary → PATH → prereqs (best-effort) → ecosystem ensure → browser stage → Orca hook → optional auth from env. **No TUI** until this finishes (or until you open `meta` afterward).
+
+```bash
+meta install
+# alias:
+meta self-install
+```
+
+Double-clicking `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) runs this path automatically, then opens Meta. Force upgrade anytime with `meta install` or by re-running the release EXE.
+
+See [Setup](setup.md).
+
+---
+
 ### `meta doctor`
 
 Diagnose install, auth, config, and ecosystem readiness.
@@ -163,7 +180,7 @@ meta ecosystem <SUBCOMMAND>
 
 #### `meta ecosystem ensure`
 
-Install or repair Graphify, PLUR, Ruflo, skills, and related packs. Also runs in the **background** on TUI open when `ecosystem_auto_ensure = true` (default). Set `false` in config for a pure binary until you run this manually.
+Install or repair Graphify, PLUR, Ruflo, skills, and related packs. The one-liner, release EXE, and `meta install` already run this **in the foreground**. On later TUI opens it also runs as **background TTL repair** when `ecosystem_auto_ensure = true` (default).
 
 ```bash
 meta ecosystem ensure [--force]

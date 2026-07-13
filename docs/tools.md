@@ -146,12 +146,12 @@ mode and is blocked in plan mode: `open`, `click`, `fill`, `send_keys`, `exec`,
 `close`. `screenshot` is plan-safe perception — pair it with `look` for vision.
 Cookie reading is deliberately not exposed.
 
-**Setup is automatic.** The installer provisions the CLI, stages the
-`tmwd_cdp_bridge` extension (no download), detects your **default browser**, and
-runs `meta browser setup` — which opens that browser's `chrome://extensions`
-page. The only manual step is a one-time **Load unpacked** click (a Chromium
-security boundary that can't be scripted); the staged folder path is copied to
-your clipboard. Re-run any time with:
+**Setup is automatic.** The one-liner, release EXE, and `meta install` provision
+the CLI, stage the `tmwd_cdp_bridge` extension (no download), detect your
+**default browser**, and run browser setup — which opens that browser's
+`chrome://extensions` page. The only manual step is a one-time **Load unpacked**
+click (a Chromium security boundary that can't be scripted); the staged folder
+path is copied to your clipboard. Re-run any time with:
 
 ```bash
 meta browser setup     # stage + open the default browser's extensions page

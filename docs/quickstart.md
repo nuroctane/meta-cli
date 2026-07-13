@@ -70,22 +70,22 @@ Meta CLI has three permission modes. **Shift+Tab** cycles between them in the TU
 | Mode | Behavior |
 |------|----------|
 | **manual** (default) | Reads are free; writes, shell, and `extract_frames` require approval (`y` / `a` / `n`) |
-| **plan** | Research only — read tools + `look` + graphify query + plur/ruflo search |
+| **plan** | Explore freely — reads, `look`, knowledge queries, and shell for read/parse/tests/scratch; blocks code writes + repo/VCS mutation |
 | **auto** | Auto-approve all tools (`-y` or `--mode auto`) |
 
 ---
 
 ## What just happened?
 
-When you ran `meta`, it:
+When you installed and ran `meta`, it:
 
-1. Loaded your config from `~/.meta/config.toml`
-2. Created (or resumed) a session under `~/.meta/sessions/`
-3. Started the background ecosystem provisioner (Graphify, PLUR, Ruflo, skills)
+1. **Installed the full stack** (one-liner or EXE): binary · PATH · prereqs · ecosystem · browser stage — **before** the TUI
+2. Loaded your config from `~/.meta/config.toml`
+3. Created (or resumed) a session under `~/.meta/sessions/`
 4. Opened the streaming TUI with the Meta-blue theme
-5. Connected to the Meta Model API with your key
+5. Connected to the Meta Model API with your key (or prompted `/login`)
 
-All state lives under `~/.meta/`. No keys, sessions, or usage data are written to your project or git repo.
+Later opens only run light **background repair** if `ecosystem_auto_ensure` is on. All state lives under `~/.meta/`. No keys, sessions, or usage data are written to your project or git repo.
 
 ---
 

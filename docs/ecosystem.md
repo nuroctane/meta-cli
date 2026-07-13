@@ -19,13 +19,15 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 
 ## Auto-provisioning
 
-When you open the TUI, Meta CLI:
+**First install** (one-liner, release EXE, or `meta install`) runs `ecosystem ensure` **in the foreground** — packs land before the TUI opens.
+
+On later TUI opens, Meta CLI:
 
 1. Snapshots whatever is already provisioned (instant)
-2. If `ecosystem_auto_ensure = true` (default), spawns a **background thread** that runs `meta ecosystem ensure`
-3. The TUI never blocks on npm / uv installs
+2. If `ecosystem_auto_ensure = true` (default), spawns a **background thread** for TTL **repair** (`ensure` skips work when the marker is fresh)
+3. Day-to-day TUI open does not block on npm / uv
 
-Set `ecosystem_auto_ensure = false` in `~/.meta/config.toml` for a pure binary + chat experience until you run ensure yourself.
+Set `ecosystem_auto_ensure = false` in `~/.meta/config.toml` to skip background repair (manual `meta ecosystem ensure` / `meta install` still work).
 
 ```bash
 meta ecosystem ensure          # install / repair

@@ -28,7 +28,7 @@ compact_tool_body_max_chars = 800
 # Cost-saver prompt: skip PLUR inject, skills catalog, long memory (tools stay full)
 poor_mode = false
 
-# Background ecosystem repair on TUI open (graphify/plur/ruflo/browser packs)
+# Background TTL pack repair on later TUI opens (first install is foreground)
 ecosystem_auto_ensure = true
 ```
 
@@ -48,7 +48,7 @@ ecosystem_auto_ensure = true
 | `compact_keep_user_turns` | integer | `4` | Recent user turns kept after compaction |
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |
 | `poor_mode` | bool | `false` | Skip PLUR auto-inject, skills catalog, and long memory in the system prompt |
-| `ecosystem_auto_ensure` | bool | `true` | Background `ecosystem ensure` on TUI open; set `false` for a pure binary until you run ensure manually |
+| `ecosystem_auto_ensure` | bool | `true` | Background TTL **repair** of packs on later TUI opens (first install is foreground via one-liner / EXE / `meta install`); set `false` to skip repair |
 
 ### Reasoning effort levels
 

@@ -99,12 +99,12 @@ meta doctor
 
 Everything is **on your machine only**. Secrets never go into the git checkout. Same inventory for the PowerShell/bash one-liner **and** the prebuilt Windows EXE.
 
-### A–G · Runtimes & build tools (one-liner installs if missing)
+### A–G · Runtimes & build tools (installed if missing)
 
 | Piece | Typical location | Used for |
 |-------|------------------|----------|
-| **Rust / cargo** (rustup) | `~/.cargo/` | Compiling Meta CLI |
-| **Git** | system | Clone / update source |
+| **Rust / cargo** (rustup) | `~/.cargo/` | Compiling Meta CLI (**one-liner / cargo only** — not the release EXE) |
+| **Git** | system | Clone / update source (**one-liner / clone only**) |
 | **Node.js 20+** | system / winget / brew / apt | PLUR, Ruflo, Executor, skills, browser CLI, AKM |
 | **Bun** | `~/.bun/` | **omp** (Oh My Pi) |
 | **uv** | `~/.local/bin` | **Graphify** |
@@ -129,6 +129,8 @@ Created on first auth / first run:
 |------|---------|
 | `auth.json` | API key |
 | `config.toml` | Model, effort, budgets, compact, `poor_mode`, `ecosystem_auto_ensure`, … |
+| `bootstrap.json` | One-stop install marker (`meta install` / release EXE) |
+| `ecosystem.json` | Ecosystem ensure marker / component snapshot |
 | `permissions.toml` | Optional allow/deny/ask rules |
 | `hooks.toml` | Optional pre/post tool hooks |
 | `meta.log` | Tracing (not drawn into the TUI) |
@@ -139,7 +141,7 @@ Created on first auth / first run:
 | `browser-extension/` | Staged Chromium extension for `browser` |
 | `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory |
 
-### Ecosystem (after `ecosystem ensure`)
+### Ecosystem (installed during one-liner / EXE / `meta install`)
 
 External CLIs / packs (not inside the `meta` binary):
 
@@ -179,14 +181,22 @@ See [Authentication](authentication.md).
 
 ## Update
 
-Re-run the install one-liner, or:
+Any of:
 
 ```bash
+# one-liner again
+irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex   # Windows
+# curl -fsSL …/install.sh | bash                                                 # macOS / Linux
+
 # from a clone
 git pull && ./install.ps1   # or install.sh
-```
 
-Prebuilt users: download a newer `meta-windows-x86_64.exe` from Releases and replace `~/.local/bin/meta.exe`.
+# already have meta on PATH
+meta install
+
+# prebuilt: download newer meta-windows-x86_64.exe from Releases and double-click
+# (self-installs over ~/.local/bin/meta.exe — no hand PATH surgery)
+```
 
 ```bash
 meta doctor   # confirm version + sha256
