@@ -12,6 +12,7 @@ pub struct Auth {
 }
 
 /// Resolve API key: META_API_KEY → MODEL_API_KEY → MUSE_API_KEY (legacy) → ~/.meta/auth.json
+/// (falls back to legacy ~/.muse/auth.json and promotes it into ~/.meta when found).
 pub fn resolve_api_key() -> Result<String> {
     for var in ["META_API_KEY", "MODEL_API_KEY", "MUSE_API_KEY"] {
         if let Ok(k) = std::env::var(var) {
@@ -30,13 +31,19 @@ pub fn resolve_api_key() -> Result<String> {
             return Ok(k);
         }
     }
-    // Legacy path if migration hasn't run yet
+    // Legacy path if migration hasn't run yet — promote into ~/.meta for next time.
     let legacy = crate::config::legacy_muse_home().join("auth.json");
     if legacy.exists() {
         let text = fs::read_to_string(&legacy)?;
         let auth: Auth = serde_json::from_str(&text)?;
         let k = auth.api_key.trim().to_string();
         if !k.is_empty() {
+            let _ = crate::config::promote_legacy_file("auth.json");
+            // If promote failed (permissions), still return the key this session.
+            if !auth_path().exists() {
+                let _ = ensure_dirs();
+                let _ = save_api_key(&k);
+            }
             return Ok(k);
         }
     }
@@ -75,7 +82,12 @@ pub fn save_api_key(key: &str) -> Result<()> {
 pub fn logout() -> Result<()> {
     let path = auth_path();
     if path.exists() {
-        fs::remove_file(path)?;
+        fs::remove_file(&path)?;
+    }
+    // Also clear legacy store so resolve_api_key cannot resurrect the key.
+    let legacy = crate::config::legacy_muse_home().join("auth.json");
+    if legacy.exists() {
+        let _ = fs::remove_file(legacy);
     }
     Ok(())
 }
@@ -97,8 +109,12 @@ pub fn auth_status() -> Result<()> {
                 "MODEL_API_KEY env"
             } else if std::env::var("MUSE_API_KEY").is_ok() {
                 "MUSE_API_KEY env (legacy)"
-            } else {
+            } else if auth_path().exists() {
                 "~/.meta/auth.json"
+            } else if crate::config::legacy_muse_home().join("auth.json").exists() {
+                "~/.muse/auth.json (legacy — will promote on next save)"
+            } else {
+                "resolved"
             };
             println!("authenticated: yes");
             println!("source: {source}");

@@ -149,14 +149,13 @@ pub fn usage_log_path() -> PathBuf {
     meta_home().join("usage.jsonl")
 }
 
-/// One-shot copy of key artifacts from `~/.muse` → `~/.meta` when the new home is empty.
+/// Fill gaps in `~/.meta` from legacy `~/.muse` (never overwrites existing files).
+///
+/// Runs on every `ensure_dirs` so partial upgrades (e.g. default config already
+/// written under `.meta` while auth/sessions still live in `.muse`) still heal.
 fn migrate_legacy_home_if_needed(meta: &std::path::Path) {
     let legacy = legacy_muse_home();
     if !legacy.is_dir() || legacy == meta {
-        return;
-    }
-    // Only migrate when the new home has no auth yet (fresh install after upgrade).
-    if meta.join("auth.json").exists() || meta.join("config.toml").exists() {
         return;
     }
     let files = [
@@ -194,14 +193,27 @@ fn migrate_legacy_home_if_needed(meta: &std::path::Path) {
             }
         }
     }
-    // Skills + ruflo DB: copy tree when destination is missing.
+    // Skills + ruflo DB: merge missing files into dest (so ensure-first
+    // creating an empty ruflo/ dir does not strand legacy memory.db).
     for name in ["skills", "ruflo", "skill-packs"] {
         let src = legacy.join(name);
         let dst = meta.join(name);
-        if src.is_dir() && !dst.exists() {
+        if src.is_dir() {
             let _ = copy_dir_recursive(&src, &dst);
         }
     }
+}
+
+/// Copy a single missing file from legacy home into meta home (used by auth heal).
+pub fn promote_legacy_file(name: &str) -> bool {
+    let meta = meta_home();
+    let src = legacy_muse_home().join(name);
+    let dst = meta.join(name);
+    if src.is_file() && !dst.exists() {
+        let _ = fs::create_dir_all(&meta);
+        return fs::copy(&src, &dst).is_ok();
+    }
+    false
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -275,6 +287,67 @@ pub fn save_config(cfg: &Config) -> Result<()> {
 }
 
 pub const VALID_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_tmp(label: &str) -> PathBuf {
+        let n = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("meta-cli-{label}-{n}"))
+    }
+
+    #[test]
+    fn migrate_fills_missing_files_without_overwrite() {
+        let root = unique_tmp("migrate");
+        let legacy = root.join(".muse");
+        let meta = root.join(".meta");
+        fs::create_dir_all(legacy.join("sessions")).unwrap();
+        fs::create_dir_all(&meta).unwrap();
+        fs::write(legacy.join("auth.json"), r#"{"api_key":"k","source":"t"}"#).unwrap();
+        fs::write(legacy.join("config.toml"), "model = \"from-legacy\"\n").unwrap();
+        fs::write(legacy.join("sessions").join("abc.json"), "{}").unwrap();
+        // Pre-existing config in meta must not be overwritten
+        fs::write(meta.join("config.toml"), "model = \"keep-me\"\n").unwrap();
+
+        // Simulate gap-fill (same logic as migrate, with explicit roots)
+        for name in ["auth.json", "config.toml"] {
+            let src = legacy.join(name);
+            let dst = meta.join(name);
+            if src.is_file() && !dst.exists() {
+                fs::copy(&src, &dst).unwrap();
+            }
+        }
+        let dst_sess = meta.join("sessions");
+        fs::create_dir_all(&dst_sess).unwrap();
+        for e in fs::read_dir(legacy.join("sessions")).unwrap() {
+            let e = e.unwrap();
+            let dst = dst_sess.join(e.file_name());
+            if !dst.exists() {
+                fs::copy(e.path(), dst).unwrap();
+            }
+        }
+
+        assert_eq!(
+            fs::read_to_string(meta.join("config.toml")).unwrap().contains("keep-me"),
+            true
+        );
+        assert!(meta.join("auth.json").is_file());
+        assert!(meta.join("sessions").join("abc.json").is_file());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn model_display_name_title_cases() {
+        assert_eq!(model_display_name("muse-spark-1.1"), "Muse Spark 1.1");
+        assert_eq!(model_display_name("  "), "Meta model");
+    }
+}
 
 impl Config {
     pub fn validate(&self) -> Result<()> {

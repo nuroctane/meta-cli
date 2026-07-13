@@ -149,6 +149,9 @@ pub fn marker_path() -> PathBuf {
 /// Ensure the full Meta ecosystem is installed and initialised.
 /// Safe to call on every launch — skips heavy work when the marker is fresh.
 pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
+    // Always heal ~/.muse → ~/.meta gaps before creating empty ruflo/skills dirs.
+    let _ = crate::config::ensure_dirs();
+
     if !force {
         if let Some(cached) = load_marker_if_fresh() {
             return cached;

@@ -9,7 +9,7 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.5.14** — Production-minded agent harness, end to end:
+**v0.5.15** — Production-minded agent harness, end to end:
 
 | Surface | What ships |
 |---------|------------|

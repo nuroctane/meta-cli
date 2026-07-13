@@ -221,8 +221,9 @@ if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0
 if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0
 if "%ORCA_PANE_KEY%"=="" exit /b 0
 set "ORCA_META_HOME=%USERPROFILE%\.meta"
-if not "%META_HOME%"=="" set "ORCA_META_HOME=%META_HOME%"
+REM Match Rust meta_home(): META_HOME wins over legacy MUSE_HOME.
 if not "%MUSE_HOME%"=="" set "ORCA_META_HOME=%MUSE_HOME%"
+if not "%META_HOME%"=="" set "ORCA_META_HOME=%META_HOME%"
 "%SystemRoot%\System32\curl.exe" -sS -X POST "http://127.0.0.1:%ORCA_AGENT_HOOK_PORT%/hook/meta" ^
   --connect-timeout 0.5 --max-time 1.5 ^
   -H "Content-Type: application/x-www-form-urlencoded" ^

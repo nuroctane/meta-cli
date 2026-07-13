@@ -200,7 +200,7 @@ impl UsageTracker {
             &self.session,
         );
         let payload = serde_json::json!({
-            "type": "muse.usage",
+            "type": "meta.usage",
             "session_id": self.session_id,
             "model": self.model,
             "turn": self.turn,
@@ -271,7 +271,7 @@ impl UsageTracker {
 pub fn print_usage_summary() -> Result<()> {
     let path = status_path();
     if !path.exists() {
-        println!("no status yet (run muse first)");
+        println!("no status yet (run meta first)");
         println!("status path: {}", path.display());
         return Ok(());
     }

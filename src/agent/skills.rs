@@ -11,20 +11,21 @@ pub struct Skill {
 }
 
 /// Discover skills from (first match wins per name):
-/// - `~/.meta/skills/*/SKILL.md`  (also legacy `~/.muse/skills`)
-/// - `~/.agents/skills/*/SKILL.md`  (Agent Skills / graphify install --platform agents)
-/// - `<cwd>/.meta/skills/*/SKILL.md`  (also legacy `.muse/skills`)
-/// - `<cwd>/.agents/skills/*/SKILL.md`
+/// - `$META_HOME/skills` (or `~/.meta/skills`) — primary
+/// - legacy `~/.muse/skills`
+/// - `~/.agents/skills` (Agent Skills / graphify install --platform agents)
+/// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills`
 pub fn load_skills(cwd: &Path) -> Vec<Skill> {
     let mut out = Vec::new();
     let mut dirs = Vec::new();
+    // Honor META_HOME / MUSE_HOME via meta_home() — not a hard-coded ~/.meta.
+    dirs.push(crate::config::meta_home().join("skills"));
+    dirs.push(crate::config::legacy_muse_home().join("skills"));
     if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".meta").join("skills"));
-        dirs.push(home.join(".muse").join("skills")); // legacy
         dirs.push(home.join(".agents").join("skills"));
     }
     dirs.push(cwd.join(".meta").join("skills"));
-    dirs.push(cwd.join(".muse").join("skills")); // legacy
+    dirs.push(cwd.join(".muse").join("skills")); // legacy workspace
     dirs.push(cwd.join(".agents").join("skills"));
 
     for root in dirs {

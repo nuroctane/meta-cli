@@ -101,6 +101,7 @@ impl Session {
     }
 
     pub fn load(id: &str) -> Result<Self> {
+        ensure_dirs()?;
         let id = id.trim();
         // Allow short prefix match
         if id.len() < 36 {
@@ -109,6 +110,16 @@ impl Session {
             }
         }
         let path = sessions_dir().join(format!("{id}.json"));
+        if !path.exists() {
+            // Last resort: pull a single file from legacy ~/.muse/sessions
+            let legacy = crate::config::legacy_muse_home()
+                .join("sessions")
+                .join(format!("{id}.json"));
+            if legacy.is_file() {
+                let _ = fs::create_dir_all(sessions_dir());
+                let _ = fs::copy(&legacy, &path);
+            }
+        }
         if !path.exists() {
             return Err(MuseError::Other(format!("session not found: {id}")));
         }
