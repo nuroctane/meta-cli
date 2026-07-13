@@ -5,7 +5,7 @@
 Whenever the user says **ship**, **push**, **deploy**, **main**, **release**, **publish**, or similar:
 
 **Follow `C:\Users\david\.agents\SHIP.md` (meta-cli section).**  
-**Or:** `pwsh -File $env:USERPROFILE\.agents\ship.ps1 -Repo meta-cli -Message "…"`
+**Or:** `powershell -File $env:USERPROFILE\.agents\ship.ps1 -Repo meta-cli -Message "..."`
 
 Order for **this** repo (install is not optional):
 
