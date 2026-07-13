@@ -101,19 +101,24 @@ async fn real_main() -> Result<()> {
         _ => {}
     }
 
+    // Interactive TUI can start without a key and prompt `/login`; headless
+    // `run` still needs a key up front (no place to prompt).
+    let interactive = cli.command.is_none();
     let api_key = match resolve_api_key() {
         Ok(k) => k,
         Err(_) => {
-            if let Ok(k) = std::env::var("META_API_KEY")
+            let env_key = std::env::var("META_API_KEY")
                 .or_else(|_| std::env::var("MODEL_API_KEY"))
                 .or_else(|_| std::env::var("MUSE_API_KEY"))
-            {
-                if !k.trim().is_empty() {
-                    let _ = save_api_key(k.trim());
-                    k
-                } else {
-                    return Err(error::MuseError::NotAuthenticated);
-                }
+                .ok()
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty());
+            if let Some(k) = env_key {
+                let _ = save_api_key(&k);
+                k
+            } else if interactive {
+                // Empty key → TUI opens signed-out and auto-opens /login.
+                String::new()
             } else {
                 return Err(error::MuseError::NotAuthenticated);
             }

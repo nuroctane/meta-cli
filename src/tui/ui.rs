@@ -39,7 +39,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_input(f, app, chunks[2]); // publishes input_inner for click-to-caret
     draw_statusline(f, app, chunks[3]);
 
-    if !app.palette_matches().is_empty() && app.approval.is_none() && app.picker.is_none() {
+    if !app.palette_matches().is_empty()
+        && app.approval.is_none()
+        && app.picker.is_none()
+        && app.login.is_none()
+    {
         draw_palette(f, app, chunks[2]);
     }
     if app.approval.is_some() {
@@ -48,11 +52,98 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.picker.is_some() {
         draw_session_picker(f, app, area);
     }
+    if app.login.is_some() {
+        draw_login(f, app, area);
+    }
     // Grok-style hover dialogue over thoughts / tools / turns (above everything
     // except approval/picker, which already short-circuit interaction).
-    if app.approval.is_none() && app.picker.is_none() {
+    if app.approval.is_none() && app.picker.is_none() && app.login.is_none() {
         draw_hover_peek(f, app, area);
     }
+}
+
+// ── secure login modal (`/login`) ───────────────────────────────────────────
+fn draw_login(f: &mut Frame, app: &App, area: Rect) {
+    let Some(m) = &app.login else { return };
+    let w = 60u16.min(area.width.saturating_sub(4)).max(40);
+    // header + blank + field + blank + hint (+ error) = 6-7 rows inside frame.
+    let want: u16 = if m.error.is_some() { 11 } else { 10 };
+    let h = want.min(area.height.saturating_sub(2));
+    let rect = Rect {
+        x: (area.width.saturating_sub(w)) / 2,
+        y: (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(
+        Block::default().style(Style::default().bg(theme::SURFACE_2)),
+        rect,
+    );
+    let phase = modal_phase(app);
+    let title = if m.replacing {
+        " 🔑 replace API key "
+    } else {
+        " 🔑 sign in "
+    };
+    draw_modal_frame(
+        f,
+        rect,
+        phase,
+        theme::INDIGO,
+        title,
+        None,
+        "  enter save  ·  ctrl+v paste  ·  ctrl+u clear  ·  esc cancel  ",
+    );
+    let inner = modal_inner(rect);
+
+    // Masked field: dots for length, a blinking block caret at the end.
+    let field_w = (inner.width as usize).saturating_sub(4).max(8);
+    let dots = m.buf.chars().count().min(field_w.saturating_sub(1));
+    let mut field = "•".repeat(dots);
+    if theme::blink_on(app.spinner_epoch.elapsed()) {
+        field.push('▉');
+    }
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "  Meta Model API key".to_string(),
+            theme::style_faint(),
+        )),
+        Line::default(),
+        Line::from(vec![
+            Span::raw("  ".to_string()),
+            Span::styled(
+                format!("{field:<field_w$}"),
+                Style::default()
+                    .fg(theme::BLUE_100)
+                    .bg(theme::SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+        Line::from(vec![
+            Span::raw("  ".to_string()),
+            Span::styled(
+                format!("{} chars", m.buf.chars().count()),
+                theme::style_faint(),
+            ),
+            Span::styled(
+                "   ·   stored only in ~/.meta/auth.json".to_string(),
+                theme::style_faint(),
+            ),
+        ]),
+    ];
+    if let Some(e) = &m.error {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::raw("  ".to_string()),
+            Span::styled(truncate(e, field_w), theme::style_error()),
+        ]));
+    }
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+        inner,
+    );
 }
 
 // ── sessions picker (`/sessions` · `/resume` · Ctrl+R) ────────────────────
@@ -1747,7 +1838,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     }
 
     let text = app.input.text();
-    let focused = app.approval.is_none() && app.picker.is_none();
+    let focused = app.approval.is_none() && app.picker.is_none() && app.login.is_none();
     let sel = app.input.selection_range();
     let mut lines: Vec<Line> = Vec::new();
     let sel_style = Style::default()
@@ -1873,7 +1964,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         inner,
     );
 
-    if app.approval.is_none() && app.picker.is_none() {
+    if app.approval.is_none() && app.picker.is_none() && app.login.is_none() {
         let cx = inner.x + 2 + (cur_disp_w as u16).saturating_sub(x_off);
         let cy = inner.y + (cur_line - top) as u16;
         if cx < inner.right() && cy < inner.bottom() {

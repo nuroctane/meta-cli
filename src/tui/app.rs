@@ -53,6 +53,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
     ("/init", "generate a META.md project guide"),
+    ("/login", "enter / replace your Meta API key"),
+    ("/logout", "clear the stored API key"),
     ("/config", "show config + data paths"),
     ("/bug", "how to report an issue"),
     ("/exit", "quit"),
@@ -317,6 +319,17 @@ pub struct ApprovalState {
     pub name: String,
     pub args: String,
     pub respond: Option<oneshot::Sender<ApprovalDecision>>,
+}
+
+/// Secure in-TUI API-key entry (`/login`). The key is captured masked and
+/// never enters the transcript or the persisted input history.
+pub struct LoginModal {
+    /// The key characters typed/pasted so far (rendered as dots).
+    pub buf: String,
+    /// True when replacing an existing key (shows a slightly different hint).
+    pub replacing: bool,
+    /// Transient error to show under the field (e.g. "key too short").
+    pub error: Option<String>,
 }
 
 /// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
@@ -595,6 +608,11 @@ pub struct App {
     title_from_prompt: bool,
     /// Base text for the (animated) window title — the current prompt or "ready".
     window_base: String,
+    /// Secure API-key entry modal (`/login`), when open.
+    pub login: Option<LoginModal>,
+    /// Whether an API key is available. `/logout` flips this false and blocks
+    /// turns until `/login` provides a new key.
+    authed: bool,
 }
 
 struct TermGuard;
@@ -727,6 +745,8 @@ pub async fn run_tui(
         should_quit: false,
         title_from_prompt,
         window_base: seed_prompt.clone().unwrap_or_else(|| "ready".into()),
+        login: None,
+        authed: true,
     };
 
     app.replay_session_tail(8);
@@ -739,6 +759,16 @@ pub async fn run_tui(
     );
     if !ecosystem_summary.is_empty() {
         app.push_note(Tone::Skill, ecosystem_summary);
+    }
+
+    // Started without any API key → sign-in required before the first turn.
+    if crate::auth::resolve_api_key().is_err() {
+        app.authed = false;
+        app.push_note(
+            Tone::Mode,
+            "no API key found — press any key, then /login to sign in (or set META_API_KEY)".into(),
+        );
+        app.open_login();
     }
 
     if let Some(p) = initial_prompt {
@@ -818,7 +848,10 @@ pub async fn run_tui(
                     dirty = true;
                 }
                 Event::Paste(s) => {
-                    if app.approval.is_none() && app.picker.is_none() {
+                    if let Some(m) = &mut app.login {
+                        m.buf.push_str(s.trim());
+                        dirty = true;
+                    } else if app.approval.is_none() && app.picker.is_none() {
                         app.input.insert_str(&s);
                         dirty = true;
                     }
@@ -903,6 +936,11 @@ impl App {
 
     // ── keys ───────────────────────────────────────────────────────────
     fn on_key(&mut self, key: event::KeyEvent) {
+        // Secure login modal swallows all keys (masked key entry).
+        if self.login.is_some() {
+            self.on_login_key(key);
+            return;
+        }
         // Approval modal swallows all keys.
         if self.approval.is_some() {
             self.on_approval_key(key.code);
@@ -1607,6 +1645,85 @@ impl App {
         }
     }
 
+    // ── secure login ───────────────────────────────────────────────────
+    fn open_login(&mut self) {
+        let replacing = crate::auth::resolve_api_key().is_ok();
+        self.login = Some(LoginModal {
+            buf: String::new(),
+            replacing,
+            error: None,
+        });
+    }
+
+    fn on_login_key(&mut self, key: event::KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.login = None;
+            }
+            KeyCode::Enter => self.submit_login(),
+            KeyCode::Backspace => {
+                if let Some(m) = &mut self.login {
+                    m.buf.pop();
+                }
+            }
+            // Paste a key with Ctrl+V (keys are usually pasted, not typed).
+            KeyCode::Char('v') if ctrl => {
+                if let (Some(t), Some(m)) = (clipboard_get(), self.login.as_mut()) {
+                    m.buf.push_str(t.trim());
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(m) = &mut self.login {
+                    m.buf.clear();
+                }
+            }
+            KeyCode::Char(c) if !ctrl && !c.is_control() => {
+                if let Some(m) = &mut self.login {
+                    m.buf.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn submit_login(&mut self) {
+        let key = match &self.login {
+            Some(m) => m.buf.trim().to_string(),
+            None => return,
+        };
+        match crate::auth::save_api_key(&key) {
+            Ok(()) => {
+                // Hot-swap the client so the new key takes effect next turn.
+                match crate::api::MetaClient::new(&self.cfg.base_url, &key) {
+                    Ok(client) => {
+                        self.client = client;
+                        self.authed = true;
+                        self.login = None;
+                        self.push_note(
+                            Tone::Mode,
+                            format!(
+                                "signed in · key {} · saved to {}",
+                                crate::auth::key_fingerprint(&key),
+                                crate::config::auth_path().display()
+                            ),
+                        );
+                    }
+                    Err(e) => {
+                        if let Some(m) = &mut self.login {
+                            m.error = Some(format!("client error: {e}"));
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                if let Some(m) = &mut self.login {
+                    m.error = Some(e.to_string());
+                }
+            }
+        }
+    }
+
     fn on_approval_key(&mut self, code: KeyCode) {
         let decision = match code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
@@ -1661,6 +1778,12 @@ impl App {
     }
 
     fn start_turn(&mut self, prompt: &str) {
+        if !self.authed {
+            self.push_error(
+                "signed out — run /login to enter an API key before sending a message".into(),
+            );
+            return;
+        }
         let (Some(session), Some(usage)) = (self.session.take(), self.usage.take()) else {
             self.push_error("internal: session busy".into());
             return;
@@ -2207,6 +2330,8 @@ impl App {
             "/ecosystem" => {
                 self.push_note(Tone::Skill, crate::ecosystem::quick_status());
             }
+            "/login" => self.open_login(),
+            "/logout" => self.cmd_logout(),
             "/bug" => self.push_note(
                 Tone::Neutral,
                 "report an issue (unofficial community project)\n  \
@@ -2443,6 +2568,21 @@ impl App {
             None => self.push_error(format!(
                 "unknown mode '{arg}' — use manual, plan, or auto"
             )),
+        }
+    }
+
+    fn cmd_logout(&mut self) {
+        match crate::auth::logout() {
+            Ok(()) => {
+                self.authed = false;
+                self.push_note(
+                    Tone::Mode,
+                    "signed out — cleared the stored API key.\n  \
+                     /login to enter a new key. (env keys like META_API_KEY still apply on restart)"
+                        .into(),
+                );
+            }
+            Err(e) => self.push_error(format!("logout failed: {e}")),
         }
     }
 

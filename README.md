@@ -9,7 +9,7 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.6.5** — Production-minded agent harness, end to end:
+**v0.6.6** — Production-minded agent harness, end to end:
 
 | Surface | What ships |
 |---------|------------|
@@ -138,6 +138,10 @@ meta auth login    # → ~/.meta/auth.json only
 meta               # open the TUI
 meta doctor        # health check (incl. ffmpeg / vision)
 ```
+
+Or sign in **from inside the TUI**: run `meta` and use `/login` (secure masked key
+entry — never echoed to the transcript or history) and `/logout` (clears the stored
+key). Launching with no key opens the login prompt automatically.
 
 Key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
 
