@@ -10,6 +10,7 @@ pub mod graphify;
 mod grep;
 mod list_dir;
 mod memory_tool;
+pub mod media;
 mod multi_edit;
 pub mod plur;
 mod read_file;
@@ -78,6 +79,8 @@ impl ToolHost {
             Box::new(glob::GlobTool),
             Box::new(web_fetch::WebFetch),
             Box::new(web_search::WebSearch),
+            Box::new(media::Look),
+            Box::new(media::ExtractFrames),
             Box::new(git_status::GitStatus),
             Box::new(git_diff::GitDiff),
             Box::new(graphify::Graphify),
@@ -143,6 +146,8 @@ impl ToolHost {
             "glob" => glob::GlobTool.execute(&args, ctx),
             "web_fetch" => web_fetch::WebFetch.execute(&args, ctx),
             "web_search" => web_search::WebSearch.execute(&args, ctx),
+            "look" => media::Look.execute(&args, ctx),
+            "extract_frames" => media::ExtractFrames.execute(&args, ctx),
             "git_status" => git_status::GitStatus.execute(&args, ctx),
             "git_diff" => git_diff::GitDiff.execute(&args, ctx),
             "graphify" => graphify::Graphify.execute(&args, ctx),

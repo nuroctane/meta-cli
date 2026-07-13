@@ -241,6 +241,30 @@ pub fn user_text_item(text: &str) -> Value {
     })
 }
 
+/// Multimodal user message: text plus image/video content parts.
+///
+/// Meta Responses API: `input_image` / `input_video` with `image_url` / `video_url`
+/// (public URL or `data:` URL). See https://dev.meta.ai/docs/features/image-understanding
+pub fn user_multimodal_item(
+    text: &str,
+    media: &[(/*api type*/ &str, /*url field*/ &str, /*data url*/ &str)],
+) -> Value {
+    let mut content = vec![serde_json::json!({
+        "type": "input_text",
+        "text": text
+    })];
+    for (type_, url_field, data_url) in media {
+        let mut part = serde_json::Map::new();
+        part.insert("type".into(), Value::String((*type_).into()));
+        part.insert((*url_field).into(), Value::String((*data_url).into()));
+        content.push(Value::Object(part));
+    }
+    serde_json::json!({
+        "role": "user",
+        "content": content
+    })
+}
+
 pub fn function_call_output_item(call_id: &str, output: &str) -> Value {
     serde_json::json!({
         "type": "function_call_output",

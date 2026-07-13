@@ -9,13 +9,13 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.5.15** — Production-minded agent harness, end to end:
+**v0.6.0** — Production-minded agent harness, end to end:
 
 | Surface | What ships |
 |---------|------------|
 | **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · drag-select · always-on scrollbar · ↓ End chip · sticky prompt · sessions browser · approval mini-diff |
 | **Agent** | Manual / plan / auto modes · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
-| **Tools** | read · edit · multi_edit · apply_patch · bash · web · git · graphify · plur · ruflo · executor · skill · memory · agent |
+| **Tools** | **look · extract_frames** · read · edit · bash · web · git · knowledge stack · agent |
 | **Ecosystem** | Graphify · PLUR · Ruflo · Executor · AKM · **800+ skills** — auto-provisioned in the background |
 | **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic session/auth IO · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
@@ -54,6 +54,7 @@ muse          # legacy alias (same binary)
 | read | `read_file` `list_dir` `grep` `glob` |
 | edit | `write_file` `edit_file` `multi_edit` `apply_patch` |
 | shell | `bash` (hardened denylist + timeout) |
+| vision | `look` `extract_frames` (ffmpeg keyframes → Responses vision) |
 | web | `web_search` `web_fetch` (SSRF / obfuscated-IP blocks) |
 | git | `git_status` `git_diff` |
 | knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |

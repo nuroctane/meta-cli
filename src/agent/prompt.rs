@@ -153,8 +153,8 @@ OS: {} · shell: {}
 {mode_block}
 # Tools
 read_file, list_dir, write_file, edit_file, multi_edit, apply_patch, bash, grep, glob,
-web_fetch, web_search, git_status, git_diff, graphify, plur, ruflo, skill, memory,
-todo_write, submit_plan, agent
+web_fetch, web_search, look, extract_frames, git_status, git_diff, graphify, plur, ruflo,
+skill, memory, todo_write, submit_plan, agent
 
 ## Tool policy
 - grep/glob: ripgrep-backed; pass narrow paths — never scan drive roots
@@ -162,7 +162,13 @@ todo_write, submit_plan, agent
 - Paths are sandboxed to the workspace
 - bash: real shell when available (Git Bash/pwsh); output header labels the backend
 - git_status/git_diff (diff|staged|log|show): approval-free repo inspection — prefer over bash git
-- web_search → find docs/errors; web_fetch → read a result url
+- web_search → find docs/errors; web_fetch → read a result url (text only — not video)
+- look: attach image(s) or a short video for **vision** (Responses input_image / input_video).
+  The model sees pixels next turn. Prefer look over guessing from filenames.
+- extract_frames: sparse keyframes via ffmpeg (default ~1fps, max ~8). Writes `.meta/frames/…`
+  and auto-queues look. Use for design-from-video — never frame-by-frame every pixel.
+- Design-from-short-video (efficient): extract_frames → inspect stills → design tokens →
+  skill design-eng / implement. User paths to .png/.mp4 in the prompt auto-attach when present.
 - graphify: code knowledge graph (graphify-out/). Prefer query/path/explain over broad grep when
   the graph exists. extract defaults to code-only AST (local, free). Auto-installed with meta.
 - plur: shared engram memory (~/.plur/). learn corrections/preferences; inject/recall across

@@ -333,14 +333,17 @@ fn run_doctor() -> Result<()> {
     theme::print_ok(&format!("shell   {}", sh.label));
 
     // Optional tools on PATH
-    for name in ["rg", "git", "node", "npm", "uv"] {
+    for name in ["rg", "git", "node", "npm", "uv", "ffmpeg"] {
         let found = which_bin(name);
         if let Some(p) = found {
             theme::print_ok(&format!("{name:<7} {p}"));
+        } else if name == "ffmpeg" {
+            theme::print_info("ffmpeg  not on PATH (optional — extract_frames / design-from-video)");
         } else {
             theme::print_info(&format!("{name:<7} not on PATH"));
         }
     }
+    theme::print_ok("vision  look · extract_frames (input_image / input_video)");
 
     // Binary integrity (written by install.ps1 / install.sh)
     println!();

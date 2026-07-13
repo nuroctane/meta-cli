@@ -3,12 +3,13 @@ use super::prompt::PromptContext;
 use super::session::Session;
 use super::subagent;
 use crate::api::types::{
-    function_call_output_item, replay_output_items, user_text_item, FunctionCallRef,
-    ReasoningConfig, ResponseRequest,
+    function_call_output_item, replay_output_items, user_multimodal_item, user_text_item,
+    FunctionCallRef, ReasoningConfig, ResponseRequest,
 };
 use crate::api::{ApiResponse, MetaClient, StreamEvent};
 use crate::config::Config;
 use crate::error::{MuseError, Result};
+use crate::tools::media::{self, MediaAttach};
 use crate::tools::{ToolContext, ToolHost};
 use crate::usage::{TokenUsage, UsageTracker};
 use serde_json::Value;
@@ -65,11 +66,13 @@ pub const READ_ONLY_TOOLS: &[&str] = &[
     "glob",
     "web_fetch",
     "web_search",
+    "look",
     "git_status",
     "git_diff",
     "skill",
     "todo_write",
     "submit_plan",
+    // extract_frames writes JPEGs — not read-only.
     // graphify is special-cased in is_read_only_call (query/path free; extract not).
 ];
 
@@ -121,7 +124,25 @@ impl AgentRunner {
         cancel: &CancellationToken,
     ) -> Result<String> {
         session.push_user(user_text);
-        session.input_items.push(user_text_item(user_text));
+        // Auto-attach media paths mentioned in the user prompt (png/mp4/…).
+        let auto_notes = media::auto_attach_from_text(&self.cwd, user_text);
+        let pending = media::take_pending_media();
+        if pending.is_empty() {
+            session.input_items.push(user_text_item(user_text));
+        } else {
+            let mut text = user_text.to_string();
+            if !auto_notes.is_empty() {
+                text.push_str("\n\n[media auto-attached]\n");
+                text.push_str(&auto_notes.join("\n"));
+            }
+            session
+                .input_items
+                .push(multimodal_user_item(&text, &pending));
+            let _ = tx.send(AgentEvent::Status(format!(
+                "vision · attached {} media file(s) from prompt",
+                pending.len()
+            )));
+        }
 
         let tools = self.tools.tool_defs();
         // Disk-backed prompt parts (skills, MUSE.md, memory, shell) — read once
@@ -325,6 +346,7 @@ impl AgentRunner {
                             .input_items
                             .push(function_call_output_item(&call_id, &body));
                     }
+                    flush_pending_media(&mut session.input_items, tx);
                     idx = batch_end;
                     continue;
                 }
@@ -443,6 +465,7 @@ impl AgentRunner {
                 session
                     .input_items
                     .push(function_call_output_item(&call.call_id, &body));
+                flush_pending_media(&mut session.input_items, tx);
                 idx += 1;
             }
 
@@ -577,9 +600,9 @@ mod tests {
     #[test]
     fn parallel_safe_implies_approval_free() {
         for name in [
-            "read_file", "list_dir", "grep", "glob", "web_fetch", "web_search", "git_status",
-            "git_diff", "skill", "write_file", "edit_file", "multi_edit", "apply_patch", "bash",
-            "agent", "memory", "todo_write", "submit_plan",
+            "read_file", "list_dir", "grep", "glob", "web_fetch", "web_search", "look",
+            "extract_frames", "git_status", "git_diff", "skill", "write_file", "edit_file",
+            "multi_edit", "apply_patch", "bash", "agent", "memory", "todo_write", "submit_plan",
         ] {
             if is_parallel_safe(name, "{}") {
                 assert!(
@@ -592,10 +615,20 @@ mod tests {
 
     #[test]
     fn mutating_tools_are_never_parallel_safe() {
-        for name in ["write_file", "edit_file", "multi_edit", "apply_patch", "bash", "agent"] {
+        for name in [
+            "write_file",
+            "edit_file",
+            "multi_edit",
+            "apply_patch",
+            "bash",
+            "agent",
+            "extract_frames",
+        ] {
             assert!(!is_parallel_safe(name, "{}"), "{name} must run sequentially");
             assert!(!is_read_only_call(name, "{}"), "{name} must need approval");
         }
+        assert!(is_read_only_call("look", r#"{"path":"x.png"}"#));
+        assert!(is_parallel_safe("look", r#"{"path":"x.png"}"#));
     }
 
     #[test]
@@ -713,6 +746,7 @@ fn is_parallel_safe(name: &str, args: &str) -> bool {
             | "glob"
             | "web_fetch"
             | "web_search"
+            | "look"
             | "git_status"
             | "git_diff"
             | "skill"
@@ -720,6 +754,46 @@ fn is_parallel_safe(name: &str, args: &str) -> bool {
             | "plur"
             | "ruflo"
     )
+}
+
+/// Attach any media queued by `look` / `extract_frames` as a multimodal user item.
+fn flush_pending_media(items: &mut Vec<Value>, tx: &mpsc::UnboundedSender<AgentEvent>) {
+    let pending = media::take_pending_media();
+    if pending.is_empty() {
+        return;
+    }
+    let n = pending.len();
+    let label = pending
+        .iter()
+        .map(|m| {
+            format!(
+                "{} ({})",
+                PathBuf::from(&m.path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&m.path),
+                m.kind.api_type()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    items.push(multimodal_user_item(
+        &format!(
+            "[tool media attached for vision — {n} file(s): {label}]\n\
+             Inspect the attached image(s)/video carefully. For UI/design work: extract \
+             palette, type scale, spacing, radius, shadows, motion cues; then implement."
+        ),
+        &pending,
+    ));
+    let _ = tx.send(AgentEvent::Status(format!("vision · {n} attachment(s) ready")));
+}
+
+fn multimodal_user_item(text: &str, media: &[MediaAttach]) -> Value {
+    let parts: Vec<(&str, &str, &str)> = media
+        .iter()
+        .map(|m| (m.kind.api_type(), m.kind.url_field(), m.data_url.as_str()))
+        .collect();
+    user_multimodal_item(text, &parts)
 }
 
 fn should_auto_compact(usage: &UsageTracker, cfg: &Config) -> bool {

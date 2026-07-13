@@ -1,8 +1,8 @@
 [package]
 name = "meta-cli"
-version = "0.5.16"
+version = "0.6.0"
 edition = "2021"
-description = "Fully loaded unofficial Meta Model API coding agent — streaming Meta-blue TUI (timers, peek cards, drag-select), native tools + sandbox, Graphify/PLUR/Ruflo/Executor + 800+ skills, subagents, API retries, atomic sessions, meta doctor"
+description = "Fully loaded unofficial Meta Model API coding agent — vision (look/extract_frames), streaming TUI, tools + sandbox, Graphify/PLUR/Ruflo/Executor + 800+ skills, subagents, atomic sessions, meta doctor"
 license = "MIT"
 authors = ["meta-cli contributors"]
 repository = "https://github.com/nuroctane/meta-cli"
