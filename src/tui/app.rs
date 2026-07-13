@@ -277,6 +277,9 @@ pub struct CtxMenu {
     /// Where the menu was anchored when it opened (col,row). Fixed for the
     /// menu's lifetime so wheeling through options doesn't drift the box.
     pub anchor: (u16, u16),
+    /// Coalesce trackpad/OS wheel floods so one notch moves **one** row
+    /// (Fork → Revert → Copy) instead of jumping over Revert.
+    pub last_step_at: Instant,
 }
 
 /// Prompt context-menu actions, in display order. Single source of truth for
@@ -1192,6 +1195,9 @@ impl App {
             },
             // Anchor to the cursor once; the box stays put while you wheel.
             anchor: (self.mouse_col, self.mouse_row),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
         });
     }
 
@@ -1209,6 +1215,24 @@ impl App {
         }
     }
 
+    /// Wheel / trackpad: one menu row per notch (45ms coalesce), same as the
+    /// sessions picker — without this, OS multi-fire events jump Fork→Copy
+    /// and land past Revert.
+    fn ctx_wheel_step(&mut self, dir: i32) {
+        let Some(menu) = &mut self.ctx_menu else { return };
+        let now = Instant::now();
+        if now.duration_since(menu.last_step_at) < Duration::from_millis(45) {
+            return;
+        }
+        menu.last_step_at = now;
+        let n = CTX_ACTIONS.len() as isize;
+        if n == 0 {
+            return;
+        }
+        let cur = menu.selected as isize;
+        menu.selected = (cur + dir.signum() as isize).clamp(0, n - 1) as usize;
+    }
+
     fn on_ctx_menu_key(&mut self, code: KeyCode) {
         match code {
             KeyCode::Esc => self.close_ctx_menu(),
@@ -1223,8 +1247,8 @@ impl App {
         let Some(menu) = &self.ctx_menu else { return };
         let hit = menu.hit.clone();
         match m.kind {
-            MouseEventKind::ScrollUp => self.ctx_move(-1),
-            MouseEventKind::ScrollDown => self.ctx_move(1),
+            MouseEventKind::ScrollUp => self.ctx_wheel_step(-1),
+            MouseEventKind::ScrollDown => self.ctx_wheel_step(1),
             // Hovering the menu moves the highlight (feels like a real menu).
             MouseEventKind::Moved => {
                 for (i, r) in &hit.actions {
@@ -2199,14 +2223,15 @@ impl App {
             );
             return;
         }
-        // Prefer this workspace when we have any local history.
-        let any_here = rows.iter().any(|r| r.here);
+        // Default to **all** sessions. A "here only" default hid expensive chats
+        // opened from another cwd (e.g. C:\ vs a project folder) and looked like
+        // data loss. Toggle with Tab / click the scope chip.
         self.picker = Some(SessionPicker {
             rows,
             idx: 0,
             scroll: 0,
             vis_page: 6,
-            this_cwd_only: any_here,
+            this_cwd_only: false,
             hit: PickerHit::default(),
             last_step_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
@@ -3912,6 +3937,8 @@ mod tests {
         assert_eq!(CTX_ACTIONS[0].1, "Fork");
         assert_eq!(CTX_ACTIONS[1].1, "Revert");
         assert_eq!(CTX_ACTIONS[2].1, "Copy");
+        // Three rows: wheel must be able to land on each (0/1/2), not skip 1.
+        assert_eq!(CTX_ACTIONS.len(), 3);
     }
 
     /// Calls the same `decide_arrow_action` the App does — no mirrored logic,

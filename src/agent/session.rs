@@ -83,8 +83,16 @@ impl Session {
 
     pub fn save(&self) -> Result<()> {
         ensure_dirs()?;
+        // Never destroy a previous session body without a sidecar backup.
+        // Revert / compact / mid-turn saves all go through here — if something
+        // goes wrong, `*.json.bak` is the previous full snapshot.
+        let path = self.path();
+        if path.is_file() {
+            let bak = path.with_extension("json.bak");
+            let _ = fs::copy(&path, &bak);
+        }
         let text = serde_json::to_string_pretty(self)?;
-        atomic_write(&self.path(), text.as_bytes())
+        atomic_write(&path, text.as_bytes())
             .map_err(|e| MuseError::Other(format!("session atomic save failed: {e}")))?;
         // Pointer for --continue and ADEs
         let latest = muse_home().join("latest_session.json");
@@ -131,15 +139,26 @@ impl Session {
             }
         }
         let path = sessions_dir().join(format!("{id}.json"));
-        if !path.exists() {
-            // Last resort: pull a single file from legacy ~/.muse/sessions
-            let legacy = crate::config::legacy_muse_home()
-                .join("sessions")
-                .join(format!("{id}.json"));
-            if legacy.is_file() {
+        let legacy = crate::config::legacy_muse_home()
+            .join("sessions")
+            .join(format!("{id}.json"));
+        // Prefer the **richer** of ~/.meta vs legacy ~/.muse (more tokens wins).
+        // Never silently drop a high-cost chat in favour of a thin twin.
+        if path.is_file() && legacy.is_file() {
+            let prefer_legacy = match (
+                fs::metadata(&path).ok().map(|m| m.len()),
+                fs::metadata(&legacy).ok().map(|m| m.len()),
+            ) {
+                (Some(a), Some(b)) => b > a,
+                _ => false,
+            };
+            if prefer_legacy {
                 let _ = fs::create_dir_all(sessions_dir());
                 let _ = fs::copy(&legacy, &path);
             }
+        } else if !path.exists() && legacy.is_file() {
+            let _ = fs::create_dir_all(sessions_dir());
+            let _ = fs::copy(&legacy, &path);
         }
         if !path.exists() {
             return Err(MuseError::Other(format!("session not found: {id}")));
@@ -302,12 +321,16 @@ pub fn list_sessions() -> Result<Vec<Session>> {
 
 /// Fast listing for `/sessions` UI and `meta sessions` — skips `input_items`.
 /// Scans both `~/.meta/sessions` and legacy `~/.muse/sessions`.
+///
+/// When the same id exists in both homes (migration / dual write), **keeps the
+/// richer copy** (more tokens, then newer `updated_at`) — never drops a paid
+/// conversation in favor of a thin/legacy twin.
 pub fn list_session_summaries() -> Result<Vec<SessionSummary>> {
     ensure_dirs()?;
     // Opportunistically heal missing files from legacy home.
     let _ = crate::config::ensure_dirs();
-    let mut out = Vec::new();
-    let mut seen = HashSet::new();
+    let mut by_id: std::collections::HashMap<String, SessionSummary> =
+        std::collections::HashMap::new();
     for dir in session_dirs() {
         if !dir.is_dir() {
             continue;
@@ -320,12 +343,24 @@ pub fn list_session_summaries() -> Result<Vec<SessionSummary>> {
             if !is_session_file(&path) {
                 continue;
             }
-            match summarize_session_file(&path) {
-                Ok(s) if seen.insert(s.id.clone()) => out.push(s),
-                _ => {}
+            let Ok(s) = summarize_session_file(&path) else {
+                continue;
+            };
+            match by_id.get(&s.id) {
+                Some(prev)
+                    if prev.total_tokens > s.total_tokens
+                        || (prev.total_tokens == s.total_tokens
+                            && prev.updated_at >= s.updated_at) =>
+                {
+                    // Keep previous (richer / same-or-newer).
+                }
+                _ => {
+                    by_id.insert(s.id.clone(), s);
+                }
             }
         }
     }
+    let mut out: Vec<SessionSummary> = by_id.into_values().collect();
     out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(out)
 }
@@ -399,8 +434,8 @@ pub fn print_sessions(limit: usize) -> Result<()> {
         return Ok(());
     }
     println!(
-        "{:<10}  {:<20}  {:>8}  {:>10}  {}",
-        "ID", "UPDATED", "MSGS", "TOKENS", "CWD"
+        "{:<10}  {:<20}  {:>8}  {:>10}  {:>9}  {}",
+        "ID", "UPDATED", "MSGS", "TOKENS", "COST", "CWD"
     );
     let iter: Box<dyn Iterator<Item = SessionSummary>> = if limit == 0 {
         Box::new(sessions.into_iter())
@@ -409,12 +444,18 @@ pub fn print_sessions(limit: usize) -> Result<()> {
     };
     for s in iter {
         let id_short = if s.id.len() >= 8 { &s.id[..8] } else { &s.id };
+        let cost = if s.estimated_cost_usd > 0.0 {
+            format!("${:.2}", s.estimated_cost_usd)
+        } else {
+            "—".into()
+        };
         println!(
-            "{:<10}  {:<20}  {:>8}  {:>10}  {}",
+            "{:<10}  {:<20}  {:>8}  {:>10}  {:>9}  {}",
             id_short,
             s.updated_at.format("%Y-%m-%d %H:%M"),
             s.messages,
             s.total_tokens,
+            cost,
             s.cwd
         );
     }

@@ -27,17 +27,50 @@ use usage::{print_usage_summary, UsageTracker};
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_target(false)
-        .init();
+    init_tracing();
 
     if let Err(e) = real_main().await {
         theme::print_err(&e.to_string());
         std::process::exit(1);
+    }
+}
+
+/// Log to `~/.meta/meta.log` (never stderr) so ratatui's alternate screen is not
+/// painted over by `syntect` / `tui-markdown` WARN noise — that was showing up
+/// as garbled text in the input box on a fresh session.
+fn init_tracing() {
+    use std::fs::OpenOptions;
+    use std::sync::Mutex;
+
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        // Default: warn for us, hush syntax-highlighter misses (empty fences).
+        tracing_subscriber::EnvFilter::new("warn,syntect=error,tui_markdown=error")
+    });
+
+    let log_path = config::muse_home().join("meta.log");
+    let _ = std::fs::create_dir_all(config::muse_home());
+    match OpenOptions::new().create(true).append(true).open(&log_path) {
+        Ok(file) => {
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(filter)
+                .with_writer(Mutex::new(file))
+                .with_ansi(false)
+                .with_target(false)
+                .try_init();
+        }
+        Err(_) => {
+            // Last resort: still suppress noisy crates if we must use stderr.
+            let _ = tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                        tracing_subscriber::EnvFilter::new(
+                            "error,syntect=error,tui_markdown=error",
+                        )
+                    }),
+                )
+                .with_target(false)
+                .try_init();
+        }
     }
 }
 
