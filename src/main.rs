@@ -230,9 +230,23 @@ async fn real_main() -> Result<()> {
             .await?;
         }
         None => {
-            ade::set_terminal_title(&format!(
-                "meta · {}",
-                &session.id[..8.min(session.id.len())]
+            // Tab title: 🔵 meta · <abbreviated first prompt>
+            // Prefer CLI seed prompt, else first user message (resume), else idle.
+            let seed = cli
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    session
+                        .messages
+                        .iter()
+                        .find(|m| m.role == "user")
+                        .map(|m| m.content.clone())
+                });
+            ade::set_terminal_title(&ade::session_window_title(
+                seed.as_deref().unwrap_or("ready"),
             ));
             tui::run_tui(
                 client,
@@ -267,6 +281,7 @@ async fn run_headless(
     permission_mode: SharedMode,
     verbose: bool,
 ) -> Result<()> {
+    ade::set_terminal_title(&ade::session_window_title(prompt));
     let runner = Arc::new(AgentRunner {
         client,
         config: cfg,

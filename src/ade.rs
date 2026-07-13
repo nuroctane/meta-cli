@@ -7,11 +7,48 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 
-/// Set terminal title so Orca/agent detection can see "meta".
+/// Set terminal title (OSC 0/2). Keep the word `meta` in the title so Orca/ADEs
+/// can still recognize the agent process.
 pub fn set_terminal_title(title: &str) {
-    // OSC 0 / 2 title
     print!("\x1b]0;{title}\x07");
     let _ = std::io::stdout().flush();
+}
+
+/// Preferred session tab title: blue-dot emoji · meta · abbreviated first prompt.
+///
+/// Example: `🔵 meta · fix the login hang…`
+pub fn session_window_title(prompt: &str) -> String {
+    let abbr = abbreviate_for_title(prompt, 48);
+    if abbr.is_empty() || abbr == "ready" {
+        "🔵 meta".into()
+    } else {
+        format!("🔵 meta · {abbr}")
+    }
+}
+
+/// Collapse whitespace and truncate for a compact window/tab label.
+pub fn abbreviate_for_title(prompt: &str, max_chars: usize) -> String {
+    let collapsed: String = prompt
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let collapsed = collapsed.trim();
+    if collapsed.is_empty() {
+        return String::new();
+    }
+    if collapsed.chars().count() <= max_chars {
+        return collapsed.to_string();
+    }
+    let take = max_chars.saturating_sub(1).max(8);
+    let mut s: String = collapsed.chars().take(take).collect();
+    // Prefer breaking on a word boundary when close to the end.
+    if let Some(i) = s.rfind(' ') {
+        if i > take / 2 {
+            s.truncate(i);
+        }
+    }
+    s.push('…');
+    s
 }
 
 /// Write ADE discovery file at ~/.muse/ade.json

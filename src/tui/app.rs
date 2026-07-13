@@ -433,6 +433,8 @@ pub struct App {
     rx: mpsc::UnboundedReceiver<AgentEvent>,
     cancel: Option<CancellationToken>,
     should_quit: bool,
+    /// Window title locked to the session's first user prompt.
+    title_from_prompt: bool,
 }
 
 struct TermGuard;
@@ -497,6 +499,24 @@ pub async fn run_tui(
     let session_id = session.id.clone();
     let mode_label = permission_mode.get().label().to_string();
 
+    // Window title = 🔵 meta · <first prompt>. Prefer CLI seed, else resume history.
+    let seed_prompt = initial_prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            session
+                .messages
+                .iter()
+                .find(|m| m.role == "user")
+                .map(|m| m.content.clone())
+        });
+    let title_from_prompt = seed_prompt.is_some();
+    crate::ade::set_terminal_title(&crate::ade::session_window_title(
+        seed_prompt.as_deref().unwrap_or("ready"),
+    ));
+
     let mut app = App {
         client,
         cfg,
@@ -551,6 +571,7 @@ pub async fn run_tui(
         rx,
         cancel: None,
         should_quit: false,
+        title_from_prompt,
     };
 
     app.replay_session_tail(8);
@@ -1341,6 +1362,11 @@ impl App {
             return;
         };
         self.cells.push(Cell::User(prompt.to_string()));
+        // First user prompt of the session owns the window/tab title.
+        if !self.title_from_prompt {
+            crate::ade::set_terminal_title(&crate::ade::session_window_title(prompt));
+            self.title_from_prompt = true;
+        }
         // Sending always snaps you back to the live end of the conversation.
         self.scroll_to_bottom();
         self.busy = true;
@@ -2160,6 +2186,8 @@ impl App {
         self.u_session = TokenUsage::default();
         self.u_last = TokenUsage::default();
         self.cells.retain(|c| matches!(c, Cell::Banner));
+        self.title_from_prompt = false;
+        crate::ade::set_terminal_title(&crate::ade::session_window_title("ready"));
         self.push_info(format!(
             "new session {}",
             &self.session_id[..8.min(self.session_id.len())]
