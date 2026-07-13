@@ -549,6 +549,8 @@ pub struct App {
     pub scrollbar_drag: bool,
     /// True while drag-selecting transcript text (not scrollbar).
     pub selecting: bool,
+    /// Left button is held — some hosts emit `Moved` instead of `Drag` while held.
+    pub mouse_left_down: bool,
     /// Down position before we know if this is a click or a drag-select.
     pub select_anchor: Option<TextPos>,
     /// Active text selection in the transcript (plain drag — no Shift needed).
@@ -713,6 +715,7 @@ pub async fn run_tui(
         jump_chip: ratatui::layout::Rect::default(),
         scrollbar_drag: false,
         selecting: false,
+        mouse_left_down: false,
         select_anchor: None,
         selection: None,
         plain_lines: Vec::new(),
@@ -783,71 +786,46 @@ pub async fn run_tui(
         }
     }
 
-    // Animation cadence: the whole UI has ambient motion (shimmering borders,
-    // separators, banner), so we always repaint on a frame timer — faster while
-    // a turn is running, gentler when idle to stay light on the CPU.
-    const FRAME_BUSY_MS: u128 = 33; // ~30fps under load
-    const FRAME_IDLE_MS: u128 = 90; // ~11fps ambient shimmer
+    // Input-first event loop: always process mouse/keys BEFORE paint so
+    // scrollbar-drag and text-select never lag behind the ambient repaint
+    // (especially while a turn is streaming at ~30fps).
+    const FRAME_BUSY_MS: u64 = 33; // ~30fps under load
+    const FRAME_IDLE_MS: u64 = 90; // ~11fps ambient shimmer
     let mut dirty = true;
     let mut last_draw = Instant::now();
-    // Animated window title while inference runs (throttled OSC writes).
     let mut last_title = Instant::now();
     let mut title_animating = false;
+    // Re-assert mouse modes occasionally — OSC title spam / hosts can drop them.
+    let mut last_mouse_rearm = Instant::now();
     loop {
-        // Drain agent events first so the frame is fresh.
+        // 1) Agent events (streaming text/tools).
         while let Ok(ev) = app.rx.try_recv() {
             app.on_agent_event(ev);
             dirty = true;
         }
 
-        // Ambient repaint tick — keeps borders/separators/banner alive.
-        let frame_ms = if app.busy || app.picker.is_some() {
+        let frame_ms = if app.busy
+            || app.picker.is_some()
+            || app.approval.is_some()
+            || app.login.is_some()
+            || app.scrollbar_drag
+            || app.selecting
+            || app.mouse_left_down
+        {
             FRAME_BUSY_MS
         } else {
             FRAME_IDLE_MS
         };
-        if last_draw.elapsed().as_millis() >= frame_ms {
-            dirty = true;
-        }
-        // Brief expand/collapse settle highlight (ease-out, < 200ms).
-        if let Some((_, t)) = app.expand_flash {
-            if t.elapsed().as_millis() >= theme::SETTLE_MS + 20 {
-                app.expand_flash = None;
-            }
-        }
 
-        // Animated window-title orb while a turn runs; revert to the static
-        // marker the moment it finishes.
-        if app.busy {
-            if last_title.elapsed().as_millis() >= 110 {
-                last_title = Instant::now();
-                crate::ade::set_terminal_title(&crate::ade::running_window_title(
-                    app.spinner_epoch.elapsed(),
-                    &app.window_base,
-                ));
-            }
-            title_animating = true;
-        } else if title_animating {
-            title_animating = false;
-            crate::ade::set_terminal_title(&crate::ade::session_window_title(&app.window_base));
-        }
-
-        if dirty {
-            terminal.draw(|f| super::ui::draw(f, &mut app))?;
-            last_draw = Instant::now();
-            dirty = false;
-        }
-
-        if app.should_quit {
-            break;
-        }
-
-        // Drain ALL pending input this tick, then redraw once. The ambient
-        // repaint must never starve the event queue: reading one event per
-        // frame lets a flood of mouse-motion events back up so the Up/Drag that
-        // completes a scrollbar-drag or click-peek arrives frames late (or feels
-        // dead). Block up to one frame for the first event, then drain the rest.
-        if event::poll(Duration::from_millis(frame_ms as u64))? {
+        // 2) Input FIRST — drain the whole queue every tick.
+        //    Wait up to one frame for the first event when idle; never draw
+        //    before handling a pending Down/Drag/Up (that was the post-submit lag).
+        let wait = if dirty {
+            Duration::ZERO
+        } else {
+            Duration::from_millis(frame_ms)
+        };
+        if event::poll(wait)? {
             loop {
                 match event::read()? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -873,11 +851,51 @@ pub async fn run_tui(
                 if app.should_quit {
                     break;
                 }
-                // Stop once the queue is empty (non-blocking peek).
                 if !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
+        }
+
+        if app.should_quit {
+            break;
+        }
+
+        // 3) Ambient / animation dirty flags.
+        if last_draw.elapsed().as_millis() as u64 >= frame_ms {
+            dirty = true;
+        }
+        if let Some((_, t)) = app.expand_flash {
+            if t.elapsed().as_millis() >= theme::SETTLE_MS + 20 {
+                app.expand_flash = None;
+            } else {
+                dirty = true;
+            }
+        }
+        if app.busy {
+            if last_title.elapsed().as_millis() >= 110 {
+                last_title = Instant::now();
+                crate::ade::set_terminal_title(&crate::ade::running_window_title(
+                    app.spinner_epoch.elapsed(),
+                    &app.window_base,
+                ));
+            }
+            title_animating = true;
+        } else if title_animating {
+            title_animating = false;
+            crate::ade::set_terminal_title(&crate::ade::session_window_title(&app.window_base));
+        }
+        // Mouse capture can be clobbered by title OSC / host quirks mid-session.
+        if last_mouse_rearm.elapsed().as_secs() >= 2 {
+            enable_mouse();
+            last_mouse_rearm = Instant::now();
+        }
+
+        // 4) Paint once after input has been applied.
+        if dirty {
+            terminal.draw(|f| super::ui::draw(f, &mut app))?;
+            last_draw = Instant::now();
+            dirty = false;
         }
     }
 
@@ -928,7 +946,11 @@ impl App {
     }
 
     fn max_scroll(&self) -> u16 {
-        self.view_total.saturating_sub(self.view_h)
+        // Prefer live wrapped-line count so scrollbar math stays correct while
+        // a turn is streaming (view_total is only refreshed at draw time).
+        let total = (self.plain_lines.len() as u16).max(self.view_total);
+        let h = self.view_h.max(1);
+        total.saturating_sub(h)
     }
 
     pub fn scroll_up(&mut self, n: u16) {
@@ -1192,35 +1214,67 @@ impl App {
     /// - drag on transcript → select text (auto-copy on release)
     /// - drag on right scrollbar → scrub history
     /// - click card → peek; click ▸ → expand; click input → caret
+    ///
+    /// Works while a turn is streaming. Approval/login modals no longer kill
+    /// an in-progress scrollbar drag or wheel scroll.
     fn on_mouse(&mut self, m: event::MouseEvent) {
         if self.picker.is_some() {
+            // Don't clear left-down state for the main transcript — picker is modal.
             self.scrollbar_drag = false;
             self.selecting = false;
             self.select_anchor = None;
+            self.mouse_left_down = false;
             self.on_picker_mouse(m);
             return;
         }
-        if self.approval.is_some() {
-            self.scrollbar_drag = false;
-            self.selecting = false;
-            self.select_anchor = None;
+        // Login is fully modal (masked key entry) — no transcript interaction.
+        if self.login.is_some() {
             return;
         }
+
         self.mouse_col = m.column;
         self.mouse_row = m.row;
+
+        // Approval is a modal *overlay* but must not brick scroll/select forever.
+        // Allow wheel + continue an in-progress scrollbar drag; new clicks on
+        // the transcript are ignored until the modal is dismissed.
+        let approval_open = self.approval.is_some();
+
         match m.kind {
             MouseEventKind::ScrollUp => {
-                self.scroll_up(5);
-                self.update_hover_from_mouse();
+                // Always works — including during streaming and under approval.
+                self.scroll_up(3);
+                if !approval_open {
+                    self.update_hover_from_mouse();
+                }
             }
             MouseEventKind::ScrollDown => {
-                self.scroll_down(5);
-                self.update_hover_from_mouse();
+                self.scroll_down(3);
+                if !approval_open {
+                    self.update_hover_from_mouse();
+                }
             }
             MouseEventKind::Moved => {
-                self.update_hover_from_mouse();
+                // Some terminals report button-held motion as Moved, not Drag.
+                if self.mouse_left_down {
+                    self.apply_mouse_drag(m.column, m.row);
+                } else if !approval_open {
+                    self.update_hover_from_mouse();
+                }
             }
             MouseEventKind::Down(MouseButton::Left) => {
+                self.mouse_left_down = true;
+                if approval_open {
+                    // Only allow grabbing the scrollbar to read context.
+                    if self.hit_scrollbar(m.column, m.row) {
+                        self.scrollbar_drag = true;
+                        self.selecting = false;
+                        self.select_anchor = None;
+                        self.selection = None;
+                        self.scroll_from_scrollbar_y(m.row);
+                    }
+                    return;
+                }
                 // "↓ N · End" chip — one click jumps to latest.
                 if self.hit_jump_chip(m.column, m.row) {
                     self.scroll_to_bottom();
@@ -1259,6 +1313,9 @@ impl App {
                 self.update_hover_from_mouse();
             }
             MouseEventKind::Down(MouseButton::Right) => {
+                if approval_open {
+                    return;
+                }
                 self.scrollbar_drag = false;
                 self.selecting = false;
                 self.select_anchor = None;
@@ -1268,28 +1325,17 @@ impl App {
                 }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                if self.scrollbar_drag {
-                    self.scroll_from_scrollbar_y(m.row);
-                } else if let Some(anchor) = self.select_anchor {
-                    if let Some(pos) = self.pos_at(m.column, m.row) {
-                        // Threshold: more than 1 cell → real drag-select.
-                        let moved = pos.line != anchor.line
-                            || pos.col.abs_diff(anchor.col) > 1;
-                        if moved {
-                            self.selecting = true;
-                            self.selection = Some(TextRange {
-                                start: anchor,
-                                end: pos,
-                            });
-                            // Selecting hides free-hover peek noise.
-                            self.hover_cell = None;
-                        }
-                    }
-                }
+                self.mouse_left_down = true;
+                self.apply_mouse_drag(m.column, m.row);
             }
             MouseEventKind::Up(MouseButton::Left) => {
+                self.mouse_left_down = false;
                 if self.scrollbar_drag {
                     self.scrollbar_drag = false;
+                } else if approval_open {
+                    // Don't run transcript click handlers under the modal.
+                    self.selecting = false;
+                    self.select_anchor = None;
                 } else if self.selecting {
                     // A drag that actually covered text → finalize + auto-copy.
                     // A drag that covered nothing (tiny jitter during a click) →
@@ -1316,9 +1362,41 @@ impl App {
                 }
                 self.selecting = false;
             }
-            _ => {
-                self.update_hover_from_mouse();
+            MouseEventKind::Up(_) => {
+                self.mouse_left_down = false;
             }
+            _ => {
+                if !approval_open {
+                    self.update_hover_from_mouse();
+                }
+            }
+        }
+    }
+
+    /// Shared path for `Drag` and button-held `Moved` (scrollbar + text select).
+    fn apply_mouse_drag(&mut self, col: u16, row: u16) {
+        if self.scrollbar_drag {
+            self.scroll_from_scrollbar_y(row);
+            return;
+        }
+        if self.approval.is_some() {
+            return;
+        }
+        let Some(anchor) = self.select_anchor else {
+            return;
+        };
+        let Some(pos) = self.pos_at(col, row) else {
+            return;
+        };
+        // Threshold: more than 1 cell → real drag-select.
+        let moved = pos.line != anchor.line || pos.col.abs_diff(anchor.col) > 1;
+        if moved {
+            self.selecting = true;
+            self.selection = Some(TextRange {
+                start: anchor,
+                end: pos,
+            });
+            self.hover_cell = None;
         }
     }
 
@@ -1823,6 +1901,13 @@ impl App {
         }
         // Sending always snaps you back to the live end of the conversation.
         self.scroll_to_bottom();
+        // Clear any stale drag state from the previous idle frame.
+        self.scrollbar_drag = false;
+        self.selecting = false;
+        self.select_anchor = None;
+        self.mouse_left_down = false;
+        // Re-assert mouse capture — hosts sometimes drop modes after heavy I/O.
+        enable_mouse();
         self.busy = true;
         self.cancelling = false;
         self.turn_kind = TurnMode::Chat;
@@ -2107,6 +2192,8 @@ impl App {
                 self.cancelling = false;
                 self.cancel = None;
                 self.status = "idle".into();
+                // Turn done — restore mouse modes in case title OSC / host dropped them.
+                enable_mouse();
                 match (&self.turn_kind, result, interrupted) {
                     (_, _, true) => {
                         // Already pushed "cancelled" on Esc; keep a quiet final line.
