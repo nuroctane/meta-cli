@@ -55,14 +55,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 }
 
 // ── sessions picker (`/sessions` · `/resume` · Ctrl+R) ────────────────────
-// Prompt-first, quiet chrome. Selected row is a solid Meta-blue bar; everything
-// else is subdued so scanning feels like a modern command palette.
-fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
+// Prompt-first modal: double border, scope chip, ✕ close, scrollable list.
+fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(p) = &app.picker else { return };
     let rows = p.visible();
+    let total = rows.len();
 
-    let w = 78.min(area.width.saturating_sub(4)).max(48);
-    let h = 18.min(area.height.saturating_sub(2)).max(10);
+    let w = 80.min(area.width.saturating_sub(4)).max(52);
+    let h = 20.min(area.height.saturating_sub(2)).max(12);
     let rect = Rect {
         x: (area.width.saturating_sub(w)) / 2,
         y: (area.height.saturating_sub(h)) / 2,
@@ -71,35 +71,74 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
     };
     f.render_widget(Clear, rect);
 
-    let scope = if p.this_cwd_only { "here" } else { "all" };
+    let scope_label = if p.this_cwd_only { "here" } else { "all" };
+    let title_left = format!("  sessions  ·  {total}  ");
+    // Title right: scope chip + close control (hit-tested below).
+    let title_right = format!("  [{scope_label}]   ✕  ");
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Double)
         .border_style(Style::default().fg(theme::META_BLUE))
         .style(Style::default().bg(theme::SURFACE_2))
         .title(Span::styled(
-            format!("  sessions  ·  {}  ·  {scope}  ", rows.len()),
+            title_left,
             Style::default()
                 .fg(theme::META_BLUE)
                 .add_modifier(Modifier::BOLD),
         ))
+        .title(
+            Line::from(Span::styled(
+                title_right.clone(),
+                Style::default().fg(theme::MUTED),
+            ))
+            .right_aligned(),
+        )
         .title_bottom(Span::styled(
-            "  ↑↓ move   ↵ open   tab scope   esc  ",
+            "  ↑↓ / wheel  move   ↵ open   tab/space scope   esc / ✕ close  ",
             Style::default().fg(theme::FAINT),
         ));
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    if rows.is_empty() {
+    // Close button ≈ last 4 cols of top border title area.
+    let close_w = 3u16;
+    let close = Rect {
+        x: rect.x + rect.width.saturating_sub(close_w + 2),
+        y: rect.y,
+        width: close_w + 1,
+        height: 1,
+    };
+    // Scope chip sits just left of close on the title row.
+    let scope_w = (scope_label.len() as u16) + 4; // "[here]" / "[all]"
+    let scope = Rect {
+        x: close.x.saturating_sub(scope_w + 2),
+        y: rect.y,
+        width: scope_w,
+        height: 1,
+    };
+
+    let mut hit = super::app::PickerHit {
+        frame: rect,
+        close,
+        body: inner,
+        scope,
+        rows: Vec::new(),
+    };
+
+    if total == 0 {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  nothing here  ·  ".to_string(), theme::style_faint()),
-                Span::styled("tab".to_string(), theme::style_tool()),
+                Span::styled("tab / space".to_string(), theme::style_tool()),
                 Span::styled("  show all workspaces".to_string(), theme::style_faint()),
             ]))
             .style(Style::default().bg(theme::SURFACE_2)),
             inner,
         );
+        if let Some(p) = &mut app.picker {
+            p.hit = hit;
+        }
         return;
     }
 
@@ -107,15 +146,19 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
     let body_h = inner.height as usize;
     let per_row = 2usize;
     let vis_rows = (body_h / per_row).max(1);
-    let sel = p.idx.min(rows.len() - 1);
+    let sel = p.idx.min(total - 1);
     let start = sel.saturating_sub(vis_rows.saturating_sub(1));
     let col_w = (inner.width as usize).saturating_sub(4).max(20);
 
+    // Subtle top rule under title (separator feel inside double border).
     let mut lines: Vec<Line> = Vec::new();
+    let mut drawn = 0usize;
     for (i, r) in rows.iter().enumerate().skip(start).take(vis_rows) {
         let selected = i == sel;
         let bg = if selected {
             theme::META_BLUE
+        } else if drawn % 2 == 1 {
+            theme::SURFACE // zebra for readability
         } else {
             theme::SURFACE_2
         };
@@ -127,7 +170,19 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
         };
         let marker = if selected { "❯ " } else { "  " };
 
-        // Line 1 — first user prompt (what you actually remember).
+        let row_y = inner.y + (drawn as u16 * 2);
+        if row_y + 1 < inner.y + inner.height {
+            hit.rows.push((
+                i,
+                Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 2,
+                },
+            ));
+        }
+
         lines.push(Line::from(vec![
             Span::styled(
                 marker.to_string(),
@@ -153,7 +208,6 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
 
-        // Line 2 — when · size · cost · place (id last, small).
         let short = &r.id[..8.min(r.id.len())];
         let place = if p.this_cwd_only {
             String::new()
@@ -180,12 +234,22 @@ fn draw_session_picker(f: &mut Frame, app: &App, area: Rect) {
             truncate(&meta, col_w + 2),
             Style::default().fg(meta_fg).bg(bg),
         )));
+        drawn += 1;
+    }
+
+    // Scroll cue when more items above/below.
+    if start > 0 || start + vis_rows < total {
+        // soft indicator in footer already; optional mid-list not needed
     }
 
     f.render_widget(
         Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
         inner,
     );
+
+    if let Some(p) = &mut app.picker {
+        p.hit = hit;
+    }
 }
 
 // ── transcript ─────────────────────────────────────────────────────────────

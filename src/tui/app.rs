@@ -339,6 +339,22 @@ pub struct SessionPicker {
     pub idx: usize,
     /// Only show sessions from this workspace.
     pub this_cwd_only: bool,
+    /// Hit-test geometry filled by the last draw (screen coords).
+    pub hit: PickerHit,
+}
+
+/// Click targets for the sessions modal (updated each frame while open).
+#[derive(Debug, Clone, Default)]
+pub struct PickerHit {
+    pub frame: ratatui::layout::Rect,
+    /// Top-right close control (✕).
+    pub close: ratatui::layout::Rect,
+    /// List body (rows).
+    pub body: ratatui::layout::Rect,
+    /// Scope chip ("here" / "all") — click to toggle.
+    pub scope: ratatui::layout::Rect,
+    /// Visible row index → screen rect (for click-to-select).
+    pub rows: Vec<(usize, ratatui::layout::Rect)>,
 }
 
 impl SessionPicker {
@@ -347,6 +363,18 @@ impl SessionPicker {
             .iter()
             .filter(|r| !self.this_cwd_only || r.here)
             .collect()
+    }
+
+    pub fn move_by(&mut self, delta: i32) {
+        let count = self.visible().len();
+        if count == 0 {
+            return;
+        }
+        if delta < 0 {
+            self.idx = self.idx.saturating_sub((-delta) as usize);
+        } else {
+            self.idx = (self.idx + delta as usize).min(count - 1);
+        }
     }
 }
 
@@ -975,7 +1003,14 @@ impl App {
     /// - drag on right scrollbar → scrub history
     /// - click card → peek; click ▸ → expand; click input → caret
     fn on_mouse(&mut self, m: event::MouseEvent) {
-        if self.approval.is_some() || self.picker.is_some() {
+        if self.picker.is_some() {
+            self.scrollbar_drag = false;
+            self.selecting = false;
+            self.select_anchor = None;
+            self.on_picker_mouse(m);
+            return;
+        }
+        if self.approval.is_some() {
             self.scrollbar_drag = false;
             self.selecting = false;
             self.select_anchor = None;
@@ -1329,42 +1364,93 @@ impl App {
             rows,
             idx: 0,
             this_cwd_only: any_here,
+            hit: PickerHit::default(),
         });
+    }
+
+    fn close_picker(&mut self) {
+        self.picker = None;
+    }
+
+    fn picker_confirm(&mut self) {
+        let id = self
+            .picker
+            .as_ref()
+            .and_then(|p| p.visible().get(p.idx).map(|r| r.id.clone()));
+        self.picker = None;
+        if let Some(id) = id {
+            self.cmd_resume(&id);
+        }
+    }
+
+    fn picker_toggle_scope(&mut self) {
+        if let Some(p) = &mut self.picker {
+            p.this_cwd_only = !p.this_cwd_only;
+            p.idx = 0;
+        }
     }
 
     fn on_picker_key(&mut self, code: KeyCode) {
         let Some(p) = &mut self.picker else { return };
         let count = p.visible().len();
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.picker = None;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                p.idx = p.idx.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if count > 0 && p.idx + 1 < count {
-                    p.idx += 1;
-                }
-            }
-            KeyCode::PageUp => p.idx = p.idx.saturating_sub(5),
-            KeyCode::PageDown => {
-                if count > 0 {
-                    p.idx = (p.idx + 5).min(count - 1);
-                }
-            }
+            KeyCode::Esc | KeyCode::Char('q') => self.close_picker(),
+            KeyCode::Up | KeyCode::Char('k') => p.move_by(-1),
+            KeyCode::Down | KeyCode::Char('j') => p.move_by(1),
+            KeyCode::PageUp => p.move_by(-5),
+            KeyCode::PageDown => p.move_by(5),
             KeyCode::Home => p.idx = 0,
             KeyCode::End => p.idx = count.saturating_sub(1),
-            // Toggle "this workspace only" / all workspaces.
-            KeyCode::Tab | KeyCode::Char('a') => {
-                p.this_cwd_only = !p.this_cwd_only;
-                p.idx = 0;
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('a') | KeyCode::Char(' ') => {
+                self.picker_toggle_scope();
             }
-            KeyCode::Enter => {
-                let id = p.visible().get(p.idx).map(|r| r.id.clone());
-                self.picker = None;
-                if let Some(id) = id {
-                    self.cmd_resume(&id);
+            KeyCode::Enter => self.picker_confirm(),
+            _ => {}
+        }
+    }
+
+    /// Mouse while the sessions modal is open: wheel, rows, scope chip, close.
+    fn on_picker_mouse(&mut self, m: event::MouseEvent) {
+        self.mouse_col = m.column;
+        self.mouse_row = m.row;
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(p) = &mut self.picker {
+                    p.move_by(-1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(p) = &mut self.picker {
+                    p.move_by(1);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(p) = &self.picker else { return };
+                let hit = p.hit.clone();
+                let col = m.column;
+                let row = m.row;
+                if rect_contains(hit.close, col, row) {
+                    self.close_picker();
+                    return;
+                }
+                if rect_contains(hit.scope, col, row) {
+                    self.picker_toggle_scope();
+                    return;
+                }
+                for (i, r) in &hit.rows {
+                    if rect_contains(*r, col, row) {
+                        let same = self.picker.as_ref().map(|p| p.idx == *i).unwrap_or(false);
+                        if let Some(p) = &mut self.picker {
+                            p.idx = *i;
+                        }
+                        if same {
+                            self.picker_confirm();
+                        }
+                        return;
+                    }
+                }
+                if !rect_contains(hit.frame, col, row) {
+                    self.close_picker();
                 }
             }
             _ => {}
@@ -2189,33 +2275,54 @@ impl App {
     }
 
     fn cmd_help(&mut self) {
-        let mut s = String::from("commands\n");
-        for (name, desc) in COMMANDS {
-            s.push_str(&format!("  {name:<10} {desc}\n"));
-        }
         let m = self.permission_mode.get();
+        let mut s = String::new();
         s.push_str(&format!(
-            "\npermission mode now: {} — {}\n\
-             model: {}  ·  /model <id> to switch\n\
-             keys\n  \
-             ↑/↓ · wheel · drag scrollbar   scroll the chat\n  \
-             drag on chat text              select (highlights + auto-copies)\n  \
-             drag right scrollbar · wheel   scroll the transcript (always on)\n  \
-             click ↓ End chip               jump to latest immediately\n  \
-             click card · ▸ chevron         pin peek · expand in place\n  \
-             e / p (empty input)            expand · pin-peek latest\n  \
-             esc                            close peek (then cancel / clear)\n  \
-             Ctrl+C                         copy selection (transcript or input)\n  \
-             Ctrl+A / Ctrl+V / Ctrl+X       select-all · paste · cut (input)\n  \
-             Ctrl+P/Ctrl+N  prompt history    (also Alt+↑/↓)\n  \
-             Enter          send              (\\+Enter or Ctrl+J for a newline)\n  \
-             Shift+Tab      cycle modes  ·  Ctrl+R resume a session\n  \
-             Esc            cancel turn   ·  Ctrl+C (no selection) twice quit  ·  Ctrl+L clear\n  \
-             approvals (manual): y once · a always · n deny",
+            "help  ·  mode {} — {}\n  model  {}\n\n",
             m.badge(),
             m.description(),
             self.cfg.model,
         ));
+
+        s.push_str("keyboard\n");
+        // Two-column: shortcut (left, fixed) · action
+        let keys: &[(&str, &str)] = &[
+            ("↑ ↓  ·  wheel", "scroll transcript"),
+            ("drag scrollbar", "scrub history"),
+            ("drag text", "select + auto-copy"),
+            ("click ↓ End", "jump to latest"),
+            ("click card  ·  ▸", "peek  ·  expand"),
+            ("e  ·  p  (empty)", "expand  ·  pin-peek latest"),
+            ("Ctrl+A", "select all (input, or transcript if empty)"),
+            ("Ctrl+C", "copy selection  ·  else cancel / double-tap quit"),
+            ("Ctrl+V  ·  Ctrl+X", "paste  ·  cut"),
+            ("Ctrl+P / N", "prompt history  (also Alt+↑/↓)"),
+            ("Enter", "send  ·  \\+Enter or Ctrl+J = newline"),
+            ("Shift+Tab", "cycle permission mode"),
+            ("Ctrl+R", "sessions browser  (/sessions · /resume)"),
+            ("Esc", "close peek  →  cancel turn  →  clear input"),
+            ("Ctrl+L", "clear transcript view"),
+            ("y  ·  a  ·  n", "approve once  ·  always  ·  deny"),
+        ];
+        for (k, v) in keys {
+            s.push_str(&format!("  {k:<22}  {v}\n"));
+        }
+
+        s.push_str("\nsessions browser  (Ctrl+R)\n");
+        for (k, v) in [
+            ("↑ ↓  ·  wheel", "move selection"),
+            ("Enter", "open session"),
+            ("Tab  ·  Space", "toggle this workspace / all"),
+            ("click row", "select  ·  click again to open"),
+            ("click ✕  ·  Esc", "close"),
+        ] {
+            s.push_str(&format!("  {k:<22}  {v}\n"));
+        }
+
+        s.push_str("\ncommands\n");
+        for (name, desc) in COMMANDS {
+            s.push_str(&format!("  {name:<12}  {desc}\n"));
+        }
         self.push_info(s);
     }
 
@@ -2453,6 +2560,15 @@ impl App {
     fn push_error(&mut self, s: String) {
         self.cells.push(Cell::Error(s));
     }
+}
+
+fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
+    r.width > 0
+        && r.height > 0
+        && col >= r.x
+        && col < r.x.saturating_add(r.width)
+        && row >= r.y
+        && row < r.y.saturating_add(r.height)
 }
 
 // ── system clipboard (Ctrl+C / Ctrl+V / Ctrl+X) ───────────────────────────
