@@ -79,6 +79,11 @@ fn push_pending(item: MediaAttach) -> Result<()> {
     Ok(())
 }
 
+/// MIME + kind for media that can be **attached** to the Responses API.
+///
+/// Per the Meta Model API docs, `input_image` supports png/jpeg/gif/webp/ico
+/// and `input_video` supports **mp4 only**. Other video containers are not
+/// attachable directly — run `extract_frames` on them to get JPEG stills.
 fn mime_for(path: &Path) -> Result<(&'static str, MediaKind)> {
     let ext = path
         .extension()
@@ -90,15 +95,34 @@ fn mime_for(path: &Path) -> Result<(&'static str, MediaKind)> {
         "jpg" | "jpeg" => Ok(("image/jpeg", MediaKind::Image)),
         "gif" => Ok(("image/gif", MediaKind::Image)),
         "webp" => Ok(("image/webp", MediaKind::Image)),
-        "bmp" => Ok(("image/bmp", MediaKind::Image)),
+        "ico" => Ok(("image/x-icon", MediaKind::Image)),
         "mp4" | "m4v" => Ok(("video/mp4", MediaKind::Video)),
-        "webm" => Ok(("video/webm", MediaKind::Video)),
-        "mov" => Ok(("video/quicktime", MediaKind::Video)),
-        "mkv" => Ok(("video/x-matroska", MediaKind::Video)),
+        // ffmpeg can read these, but the API can't attach them directly.
+        "webm" | "mov" | "mkv" | "avi" | "wmv" | "flv" | "mpeg" | "mpg" => {
+            Err(MuseError::Tool(format!(
+                "'.{ext}' video can't be attached directly (Meta input_video supports mp4 only) — \
+                 run extract_frames on it, then look at the JPEG stills"
+            )))
+        }
         _ => Err(MuseError::Tool(format!(
-            "unsupported media extension '.{ext}' — use png/jpg/webp/gif or mp4/webm/mov"
+            "unsupported media extension '.{ext}' — images png/jpg/webp/gif/ico, or mp4 video"
         ))),
     }
+}
+
+/// True for any video container ffmpeg can decode — the input set for
+/// `extract_frames` (broader than what the API can attach directly).
+fn is_extractable_video(path: &Path) -> bool {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "mp4" | "m4v" | "webm" | "mov" | "mkv" | "avi" | "wmv" | "flv" | "mpeg" | "mpg" | "ts"
+            | "3gp"
+    )
 }
 
 /// Load a workspace media file into a data URL (and pending queue if push=true).
@@ -251,11 +275,11 @@ impl Tool for Look {
     }
 
     fn description(&self) -> &str {
-        "Give the model vision over workspace media. path = image (png/jpg/webp/gif) \
-         or short video (mp4/webm/mov, max ~20MB). For longer video, extract_frames first \
-         then look at the stills. Images are attached as Responses input_image; short \
-         videos as input_video. Returns a short confirmation — the pixels are sent on \
-         the next model turn (not as text)."
+        "Give the model vision over workspace media. path = image (png/jpg/webp/gif/ico) \
+         or a short mp4 video (max ~20MB). Other video containers (webm/mov/mkv/…) can't be \
+         attached directly — run extract_frames on them and look at the JPEG stills. Images \
+         attach as Responses input_image, mp4 as input_video. Returns a short confirmation — \
+         the pixels are sent on the next model turn (not as text)."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -371,10 +395,9 @@ impl Tool for ExtractFrames {
         if !full.is_file() {
             return Err(MuseError::Tool(format!("video not found: {}", full.display())));
         }
-        let (_, kind) = mime_for(&full)?;
-        if kind != MediaKind::Video {
+        if !is_extractable_video(&full) {
             return Err(MuseError::Tool(
-                "extract_frames expects a video file (mp4/webm/mov/mkv)".into(),
+                "extract_frames expects a video file (mp4/webm/mov/mkv/avi/…)".into(),
             ));
         }
         let ffmpeg = find_ffmpeg().ok_or_else(|| {
@@ -507,6 +530,28 @@ mod tests {
             MediaKind::Video
         );
         assert!(mime_for(Path::new("x.txt")).is_err());
+    }
+
+    #[test]
+    fn attach_matches_api_support() {
+        // Images the API accepts.
+        for ok in ["a.png", "b.jpg", "c.jpeg", "d.gif", "e.webp", "f.ico"] {
+            assert_eq!(mime_for(Path::new(ok)).unwrap().1, MediaKind::Image, "{ok}");
+        }
+        // Only mp4 attaches as input_video.
+        assert_eq!(mime_for(Path::new("v.mp4")).unwrap().1, MediaKind::Video);
+        // Unsupported directly: bmp image + non-mp4 video → error (steer to extract_frames).
+        for bad in ["x.bmp", "clip.webm", "clip.mov", "clip.mkv", "clip.avi"] {
+            assert!(mime_for(Path::new(bad)).is_err(), "{bad} should not attach");
+        }
+    }
+
+    #[test]
+    fn extractable_video_is_broad() {
+        for v in ["clip.mp4", "clip.webm", "clip.mov", "clip.mkv", "clip.avi", "clip.mpg"] {
+            assert!(is_extractable_video(Path::new(v)), "{v}");
+        }
+        assert!(!is_extractable_video(Path::new("photo.png")));
     }
 
     #[test]

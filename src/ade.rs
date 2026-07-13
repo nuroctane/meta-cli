@@ -18,11 +18,23 @@ pub fn set_terminal_title(title: &str) {
 ///
 /// Example: `🔵 meta · fix the login hang…`
 pub fn session_window_title(prompt: &str) -> String {
+    title_with_marker(crate::theme::TITLE_IDLE, prompt)
+}
+
+/// Animated window title while inference is running — the marker orb rotates
+/// through moon phases so the tab visibly "works". Drive with the TUI's spinner
+/// clock and throttle updates (~110ms) so we don't spam OSC every frame.
+pub fn running_window_title(elapsed: std::time::Duration, prompt: &str) -> String {
+    let marker = crate::theme::frame_at(crate::theme::TITLE_FRAMES, elapsed, 110);
+    title_with_marker(marker, prompt)
+}
+
+fn title_with_marker(marker: &str, prompt: &str) -> String {
     let abbr = abbreviate_for_title(prompt, 48);
     if abbr.is_empty() || abbr == "ready" {
-        "🔵 meta".into()
+        format!("{marker} meta")
     } else {
-        format!("🔵 meta · {abbr}")
+        format!("{marker} meta · {abbr}")
     }
 }
 

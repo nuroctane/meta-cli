@@ -41,6 +41,13 @@ pub const CODE_FG: Color = Color::Rgb(148, 199, 255);
 pub const SUCCESS: Color = Color::Rgb(52, 199, 123);
 pub const WARN: Color = Color::Rgb(255, 186, 73);
 pub const ERROR: Color = Color::Rgb(255, 99, 99);
+/// Diff bands (Claude-Code style): added / removed line fg + subtle bg.
+pub const DIFF_ADD_FG: Color = Color::Rgb(126, 231, 166);
+pub const DIFF_ADD_BG: Color = Color::Rgb(18, 42, 30);
+pub const DIFF_DEL_FG: Color = Color::Rgb(255, 138, 148);
+pub const DIFF_DEL_BG: Color = Color::Rgb(46, 24, 28);
+/// Diff hunk header / meta line.
+pub const DIFF_META: Color = Color::Rgb(120, 190, 255);
 /// User message accent (crisp white).
 pub const USER: Color = Color::Rgb(255, 255, 255);
 
@@ -68,15 +75,93 @@ pub const BLUE_500: Color = Color::Rgb(0, 100, 224);
 #[allow(dead_code)]
 pub const BLUE_600: Color = Color::Rgb(0, 82, 190);
 
+/// Finer blue steps so borders/separators can shade rather than jump.
+pub const BLUE_050: Color = Color::Rgb(210, 232, 255);
+pub const BLUE_150: Color = Color::Rgb(144, 201, 255);
+pub const BLUE_250: Color = Color::Rgb(104, 182, 255);
+
 /// Accents, ordered around the wheel from the blue spine.
 pub const INDIGO: Color = Color::Rgb(139, 152, 255); // structure: skills, todos
+pub const PERIWINKLE: Color = Color::Rgb(158, 168, 255); // soft indigo tint
 pub const VIOLET: Color = Color::Rgb(178, 148, 255); // thought & authored change
+pub const LAVENDER: Color = Color::Rgb(202, 180, 255); // violet tint
+pub const MAGENTA: Color = Color::Rgb(226, 130, 240); // rare highlight
 pub const PINK: Color = Color::Rgb(240, 133, 197); // delegation (subagents)
+#[allow(dead_code)]
+pub const ROSE: Color = Color::Rgb(255, 143, 168); // warm alert tint (library)
+#[allow(dead_code)]
+pub const CORAL: Color = Color::Rgb(255, 138, 120); // warm accent (library)
 pub const AMBER: Color = Color::Rgb(255, 186, 73); // execution (shell) == WARN
+#[allow(dead_code)]
+pub const GOLD: Color = Color::Rgb(255, 208, 110); // amber tint (library)
 pub const ORANGE: Color = Color::Rgb(255, 150, 89); // durable state (memory)
+#[allow(dead_code)]
+pub const LIME: Color = Color::Rgb(160, 224, 122); // fresh success tint (library)
+pub const MINT: Color = Color::Rgb(120, 226, 178); // teal/green bridge
+pub const SEAFOAM: Color = Color::Rgb(96, 224, 210); // teal tint
 pub const TEAL: Color = Color::Rgb(64, 214, 196); // the network
 pub const CYAN: Color = Color::Rgb(80, 196, 255); // version control
 // Green lives in SUCCESS — status, not a family hue.
+
+// ── Color math + animated gradients ─────────────────────────────────────────
+/// Decompose a color to RGB (non-RGB variants fall back to the canvas).
+fn rgb(c: Color) -> (f64, f64, f64) {
+    match c {
+        Color::Rgb(r, g, b) => (r as f64, g as f64, b as f64),
+        _ => (11.0, 14.0, 18.0),
+    }
+}
+
+/// Linear interpolate between two colors. `t` in 0..=1.
+pub fn lerp(a: Color, b: Color, t: f64) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let (ar, ag, ab) = rgb(a);
+    let (br, bg, bb) = rgb(b);
+    Color::Rgb(
+        (ar + (br - ar) * t).round() as u8,
+        (ag + (bg - ag) * t).round() as u8,
+        (ab + (bb - ab) * t).round() as u8,
+    )
+}
+
+/// Blend a color toward the canvas background by `t` (0 = full, 1 = invisible).
+pub fn dim(c: Color, t: f64) -> Color {
+    lerp(c, BG, t)
+}
+
+/// On-brand shimmer ring: sky → cyan → teal → mint → azure → periwinkle →
+/// indigo → violet → lavender → magenta → back. Related hues only, so animated
+/// borders/rules feel alive rather than garish.
+pub const AURORA: &[Color] = &[
+    BLUE_250, CYAN, SEAFOAM, TEAL, MINT, BLUE_400, PERIWINKLE, INDIGO, VIOLET, LAVENDER, MAGENTA,
+    BLUE_150,
+];
+
+/// Sample the aurora ring at `phase` (any f64; wraps) with smooth interpolation.
+pub fn aurora_at(phase: f64) -> Color {
+    let n = AURORA.len();
+    let x = phase.rem_euclid(1.0) * n as f64;
+    let i = (x.floor() as usize) % n;
+    let j = (i + 1) % n;
+    lerp(AURORA[i], AURORA[j], x.fract())
+}
+
+/// Aurora colour that travels over time and across a horizontal position — the
+/// basis for shimmering borders and separators.
+/// `elapsed` drives motion; `pos`/`span` give a per-cell phase offset.
+pub fn aurora_cell(elapsed: Duration, pos: usize, span: usize, period_ms: u128) -> Color {
+    let t = if period_ms == 0 {
+        0.0
+    } else {
+        (elapsed.as_millis() % period_ms) as f64 / period_ms as f64
+    };
+    let spatial = if span == 0 {
+        0.0
+    } else {
+        pos as f64 / span as f64
+    };
+    aurora_at(t + spatial)
+}
 
 /// Colour a tool by *family*, so a glance tells you what kind of thing ran:
 /// read (sky) · write (violet) · shell (amber) · net (teal) · git (cyan) ·
@@ -172,8 +257,30 @@ impl Tone {
 
 /// Braille spinner — smooth, dense, Meta-blue tinted in UI.
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+/// Orbiting-dot spinner for secondary busy accents (statusline, chips).
+#[allow(dead_code)]
+pub const SPINNER_ORBIT: &[&str] = &["◜", "◝", "◞", "◟"];
+/// Growing/shrinking dot — soft "breathing" accent.
+#[allow(dead_code)]
+pub const SPINNER_DOTS: &[&str] = &["∙", "•", "●", "◉", "●", "•"];
+/// Sparkle cycle for celebratory / vision accents.
+pub const SPARKLE: &[&str] = &["✶", "✸", "✹", "✷", "✵", "✧"];
 /// Soft pulse dots for quieter states (thinking complete, idle accent).
 pub const PULSE: &[&str] = &["·", "•", "●", "•"];
+/// Window-title animation while inference runs — a rotating orb reads clearly
+/// as "working" in a tab bar, and keeps the blue-orb identity in motion.
+pub const TITLE_FRAMES: &[&str] = &["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
+/// Idle title marker (static blue orb).
+pub const TITLE_IDLE: &str = "🔵";
+
+/// Pick a frame from any set by elapsed time at `ms` per frame.
+pub fn frame_at(set: &[&'static str], elapsed: Duration, ms: u128) -> &'static str {
+    if set.is_empty() {
+        return "";
+    }
+    let i = (elapsed.as_millis() / ms.max(1)) as usize % set.len();
+    set[i]
+}
 /// Expand chevrons (collapsed → expanded).
 pub const CHEVRON_COLLAPSED: &str = "▸";
 pub const CHEVRON_EXPANDED: &str = "▾";
@@ -301,6 +408,7 @@ pub fn activity_bar(elapsed: Duration, width: usize) -> String {
 }
 
 // ── ratatui styles ─────────────────────────────────────────────────────────
+#[allow(dead_code)]
 pub fn style_title() -> Style {
     Style::default()
         .fg(META_BLUE)

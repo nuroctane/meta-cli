@@ -8,6 +8,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
+use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -271,8 +272,9 @@ fn draw_modal_frame(
 ) {
     let buf = f.buffer_mut();
     let border = Style::default().fg(hue).bg(theme::SURFACE_2);
+    // Traveling accent head cycles the aurora ring so every modal edge shimmers.
     let accent = Style::default()
-        .fg(theme::META_BLUE_SKY)
+        .fg(theme::aurora_at(phase as f64 / 40.0))
         .bg(theme::SURFACE_2)
         .add_modifier(Modifier::BOLD);
     let dim = Style::default().fg(theme::BORDER).bg(theme::SURFACE_2);
@@ -436,6 +438,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let inner_w = area.width.saturating_sub(2).max(10);
     // Spinner frame bucket so animated cells re-wrap only when the glyph changes.
     let spin_i = (app.spinner_epoch.elapsed().as_millis() / theme::SPINNER_MS) as u64;
+    let elapsed = app.spinner_epoch.elapsed();
 
     // Per-cell wrap cache: finished rows are stable; live thinking/tools/stream
     // only recompute when content or spinner frame changes.
@@ -466,6 +469,16 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
         if let Cell::User(text) = cell {
+            // Animated separator before every turn except the very first — a
+            // quiet shimmering rule so you can see where each exchange begins.
+            if !prompts.is_empty() {
+                wrapped.push(turn_separator(inner_w as usize, elapsed));
+                owner.push(Some(prompts.len()));
+                is_prompt_head.push(false);
+                hit_headers.push(None);
+                line_cells.push(None);
+                plain_lines.push(String::new());
+            }
             prompts.push(text.clone());
             current = Some(prompts.len() - 1);
         }
@@ -478,7 +491,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 .unwrap_or(true);
         if need {
             let mut cell_out: Vec<Line<'static>> = Vec::new();
-            cell_lines(app, cell, cell_idx, &mut cell_out);
+            cell_lines(app, cell, cell_idx, inner_w as usize, &mut cell_out);
             let w = wrap::wrap_lines(&cell_out, inner_w);
             if let Some(slot) = app.wrap_cache_parts.get_mut(cell_idx) {
                 *slot = w;
@@ -817,7 +830,7 @@ fn draw_scrollbar(
     f.render_widget(Paragraph::new(lines), track);
 }
 
-fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'static>>) {
+fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut Vec<Line<'static>>) {
     let tick = app.spinner_epoch.elapsed();
     let flash = app
         .expand_flash
@@ -994,6 +1007,14 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             out.push(Line::default());
             let hue = theme::tool_color(name);
             let running = ok.is_none();
+            // Edit tools render a green/red diff (from the tool args) right in
+            // the transcript card — visible collapsed, full when expanded.
+            let diff: Option<Vec<String>> = if is_edit_tool(name) {
+                Some(approval_preview(name, args))
+            } else {
+                None
+            };
+            let counts = diff.as_ref().map(|d| diff_counts(d));
             let dur_label = if running {
                 theme::fmt_elapsed_live(started.elapsed())
             } else {
@@ -1048,17 +1069,39 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
                 },
                 theme::style_duration_chip(running),
             ));
+            // +adds / -dels chips for edit tools (green / red, like a PR).
+            if let Some((add, del)) = counts {
+                head_spans.push(Span::raw("  ".to_string()));
+                head_spans.push(Span::styled(
+                    format!(" +{add} "),
+                    Style::default()
+                        .fg(theme::BG)
+                        .bg(theme::SUCCESS)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                head_spans.push(Span::styled(
+                    format!(" -{del} "),
+                    Style::default()
+                        .fg(theme::BG)
+                        .bg(theme::ERROR)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             if !*expanded {
-                let extra = match result {
-                    Some(r) => {
-                        let n = r.lines().filter(|l| !l.trim().is_empty()).count();
-                        if n > 0 {
-                            format!("  ·  {n} lines · hover peek · click ▸")
-                        } else {
-                            "  ·  hover peek · click ▸".into()
+                let extra = if diff.is_some() {
+                    "  ·  click ▸ for full diff".to_string()
+                } else {
+                    match result {
+                        Some(r) => {
+                            let n = r.lines().filter(|l| !l.trim().is_empty()).count();
+                            if n > 0 {
+                                format!("  ·  {n} lines · hover peek · click ▸")
+                            } else {
+                                "  ·  hover peek · click ▸".into()
+                            }
                         }
+                        None => "  ·  hover peek · click ▸".into(),
                     }
-                    None => "  ·  hover peek · click ▸".into(),
                 };
                 head_spans.push(Span::styled(extra, Style::default().fg(theme::FAINT)));
             } else {
@@ -1069,8 +1112,37 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, out: &mut Vec<Line<'stati
             }
             out.push(Line::from(head_spans));
 
-            // Completely collapsed by default — no preview rows.
-            if *expanded {
+            // Body. Edit tools → green/red diff bands (shown collapsed AND
+            // expanded so the change is always visible). Other tools → result
+            // text only when expanded.
+            if let Some(diff) = &diff {
+                let show = if *expanded { diff.len() } else { 8.min(diff.len()) };
+                for l in diff.iter().take(show) {
+                    out.push(diff_line(l, 2, width));
+                }
+                if diff.len() > show {
+                    out.push(Line::from(vec![
+                        Span::raw("  ".to_string()),
+                        Span::styled(
+                            format!("… +{} more diff lines · click ▸", diff.len() - show),
+                            theme::style_faint(),
+                        ),
+                    ]));
+                }
+                // Surface a failure under the diff (e.g. hunk mismatch).
+                if *ok == Some(false) {
+                    if let Some(r) = result {
+                        let first = r.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                        out.push(Line::from(vec![
+                            Span::raw("  ".to_string()),
+                            Span::styled(
+                                truncate(first, width.saturating_sub(4)),
+                                theme::style_error(),
+                            ),
+                        ]));
+                    }
+                }
+            } else if *expanded {
                 match result {
                     None => out.push(Line::from(vec![
                         Span::raw("  ".to_string()),
@@ -1325,6 +1397,30 @@ fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
     let mut lines: Vec<Line> = Vec::new();
     let max_lines = inner.height as usize;
     let max_cols = (inner.width as usize).saturating_sub(1).max(8);
+
+    // Edit tools: render the green/red diff in the peek too (parity with the card).
+    if let Cell::Tool { name, args, .. } = cell {
+        if is_edit_tool(name) {
+            let diff = approval_preview(name, args);
+            let w = inner.width as usize;
+            let cap = max_lines.saturating_sub(1).max(1);
+            for l in diff.iter().take(cap) {
+                lines.push(diff_line(l, 0, w));
+            }
+            if diff.len() > cap {
+                lines.push(Line::from(Span::styled(
+                    format!("… +{} more · e expands in place", diff.len() - cap),
+                    theme::style_faint(),
+                )));
+            }
+            f.render_widget(
+                Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+                inner,
+            );
+            return;
+        }
+    }
+
     for (i, raw) in body.lines().enumerate() {
         if i >= max_lines.saturating_sub(1) {
             lines.push(Line::from(Span::styled(
@@ -1386,6 +1482,65 @@ fn draw_hover_peek(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
+/// Per-character aurora shimmer for a run of text — a colour wave travels
+/// through it over time. `row_offset` phases successive rows into a diagonal.
+fn shimmer_spans(text: &str, elapsed: Duration, row_offset: usize, period_ms: u128) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    let span = chars.len().max(1);
+    chars
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| {
+            let col = i + row_offset;
+            Span::styled(
+                c.to_string(),
+                Style::default().fg(theme::aurora_cell(elapsed, col, span, period_ms)),
+            )
+        })
+        .collect()
+}
+
+/// A full-width horizontal rule whose colour shimmers along the aurora ring.
+/// `glyph` is repeated; the whole strip drifts over time.
+fn aurora_rule(width: usize, elapsed: Duration, glyph: char, period_ms: u128) -> Line<'static> {
+    if width == 0 {
+        return Line::default();
+    }
+    let spans: Vec<Span<'static>> = (0..width)
+        .map(|i| {
+            Span::styled(
+                glyph.to_string(),
+                Style::default().fg(theme::aurora_cell(elapsed, i, width, period_ms)),
+            )
+        })
+        .collect();
+    Line::from(spans)
+}
+
+/// A soft, mostly-dim separator between transcript turns with a travelling
+/// bright node — quiet but alive.
+fn turn_separator(width: usize, elapsed: Duration) -> Line<'static> {
+    if width < 6 {
+        return Line::default();
+    }
+    let inner = width.saturating_sub(4);
+    // Position of the bright node sweeping left→right, ease-out restart.
+    let cycle = 2600u128;
+    let t = theme::ease_out((elapsed.as_millis() % cycle) as f64 / cycle as f64);
+    let head = (t * inner as f64) as usize;
+    let mut spans = vec![Span::raw("  ".to_string())];
+    for i in 0..inner {
+        let d = i.abs_diff(head);
+        let (ch, col) = match d {
+            0 => ('◆', theme::aurora_cell(elapsed, i, inner, 1600)),
+            1 => ('◇', theme::dim(theme::aurora_cell(elapsed, i, inner, 1600), 0.35)),
+            _ => ('·', theme::BORDER),
+        };
+        spans.push(Span::styled(ch.to_string(), Style::default().fg(col)));
+    }
+    Line::from(spans)
+}
+
 fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     let logo = [
         r#"███╗   ███╗██╗   ██╗███████╗███████╗"#,
@@ -1395,19 +1550,28 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
         r#"██║ ╚═╝ ██║╚██████╔╝███████║███████╗"#,
         r#"╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝"#,
     ];
+    let elapsed = app.spinner_epoch.elapsed();
     out.push(Line::default());
     for (i, row) in logo.iter().enumerate() {
-        let (r, g, b) = theme::GRADIENT[i.min(theme::GRADIENT.len() - 1)];
-        out.push(Line::from(Span::styled(
-            format!("  {row}"),
-            Style::default().fg(Color::Rgb(r, g, b)),
-        )));
+        // Diagonal aurora wave sweeping the logotype.
+        let mut spans = vec![Span::raw("  ".to_string())];
+        spans.extend(shimmer_spans(row, elapsed, i * 3, 2400));
+        out.push(Line::from(spans));
     }
+    // Shimmering underline beneath the logotype.
+    out.push(aurora_rule(40, elapsed, '─', 2200));
     // Model-agnostic title row + feature-loaded subtitle (not model-tied).
     let model_label = crate::config::model_display_name(&app.cfg.model);
-    out.push(Line::from(vec![
+    let sparkle = theme::frame_at(theme::SPARKLE, elapsed, 200);
+    let mut title_row = vec![
         Span::raw("  ".to_string()),
-        Span::styled(model_label, theme::style_title()),
+        Span::styled(
+            format!("{sparkle} "),
+            Style::default().fg(theme::aurora_cell(elapsed, 0, 1, 1500)),
+        ),
+    ];
+    title_row.extend(shimmer_spans(&model_label, elapsed, 0, 2000));
+    title_row.extend(vec![
         Span::styled("  ·  ".to_string(), theme::style_faint()),
         Span::styled("Meta Model API".to_string(), theme::style_status()),
         Span::styled("  ·  ".to_string(), theme::style_faint()),
@@ -1415,7 +1579,8 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
             format!("v{}", env!("CARGO_PKG_VERSION")),
             theme::style_faint(),
         ),
-    ]));
+    ]);
+    out.push(Line::from(title_row));
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled(
@@ -1483,11 +1648,12 @@ fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
             theme::style_faint(),
         ));
     } else {
+        // Spinner cycles through the aurora ring as it turns.
         let spin = theme::spinner_frame(tick);
         spans.push(Span::styled(
             spin.to_string(),
             Style::default()
-                .fg(theme::META_BLUE)
+                .fg(theme::aurora_cell(tick, 0, 1, 900))
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
@@ -1495,14 +1661,19 @@ fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::META_BLUE_SKY),
         ));
         spans.push(Span::styled(live, theme::style_faint()));
-        // Decorative ease-out activity strip (perceived motion, not real %).
-        let bar_w = 12usize.min(area.width.saturating_sub(48) as usize);
+        // Decorative ease-out activity strip, per-cell aurora colour.
+        let bar_w = 16usize.min(area.width.saturating_sub(48) as usize);
         if bar_w >= 6 {
-            spans.push(Span::styled("  ".to_string(), theme::style_faint()));
-            spans.push(Span::styled(
-                theme::activity_bar(elapsed, bar_w),
-                Style::default().fg(theme::BLUE_500),
-            ));
+            spans.push(Span::raw("  ".to_string()));
+            let glyphs: Vec<char> = theme::activity_bar(elapsed, bar_w).chars().collect();
+            for (i, ch) in glyphs.iter().enumerate() {
+                let c = if *ch == '·' {
+                    theme::dim(theme::aurora_cell(elapsed, i, bar_w, 1400), 0.4)
+                } else {
+                    theme::aurora_cell(elapsed, i, bar_w, 1400)
+                };
+                spans.push(Span::styled(ch.to_string(), Style::default().fg(c)));
+            }
         }
         spans.push(Span::styled(
             "  ·  esc cancel".to_string(),
@@ -1523,13 +1694,12 @@ fn draw_busy_line(f: &mut Frame, app: &App, area: Rect) {
 
 // ── input ──────────────────────────────────────────────────────────────────
 fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
-    let focused = !app.busy && app.approval.is_none();
-    let border_color = if app.approval.is_some() {
-        theme::BORDER
-    } else if app.busy {
-        theme::BORDER
-    } else if focused {
-        theme::META_BLUE
+    let tick = app.spinner_epoch.elapsed();
+    // Border is calm-but-alive when ready for input (slow whole-border aurora
+    // shimmer), and quietly dim while a turn runs or a modal owns focus.
+    let active_border = !app.busy && app.approval.is_none();
+    let border_color = if active_border {
+        theme::aurora_cell(tick, 0, 1, 3200)
     } else {
         theme::BORDER
     };
@@ -1545,7 +1715,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         Span::styled(
             " meta ",
             Style::default()
-                .fg(theme::META_BLUE)
+                .fg(theme::aurora_cell(tick, 3, 6, 3200))
                 .add_modifier(Modifier::BOLD),
         )
     };
@@ -1558,6 +1728,23 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         .title(title);
     let inner = block.inner(area);
     f.render_widget(block, area);
+
+    // A single bright node scans along the top edge when ready — subtle life.
+    if active_border && area.width > 4 {
+        let inner_w = area.width.saturating_sub(2) as usize;
+        let cycle = 2000u128;
+        let t = theme::ease_out((tick.as_millis() % cycle) as f64 / cycle as f64);
+        let hx = ((t * inner_w as f64) as usize).min(inner_w.saturating_sub(1)) as u16;
+        let buf = f.buffer_mut();
+        buf[(area.x + 1 + hx, area.y)]
+            .set_char('━')
+            .set_style(
+                Style::default()
+                    .fg(theme::BLUE_050)
+                    .bg(theme::SURFACE)
+                    .add_modifier(Modifier::BOLD),
+            );
+    }
 
     let text = app.input.text();
     let focused = app.approval.is_none() && app.picker.is_none();
@@ -1731,7 +1918,14 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
 
     // Each metric gets its own hue from the standard ramp so the statusline is
     // scannable at a glance instead of one grey run-on.
-    let sep = || Span::styled("  ·  ".to_string(), Style::default().fg(theme::BLUE_500));
+    // Separators slowly cycle the aurora ring so the whole strip feels alive.
+    let statick = app.spinner_epoch.elapsed();
+    let sep = || {
+        Span::styled(
+            "  ·  ".to_string(),
+            Style::default().fg(theme::dim(theme::aurora_cell(statick, 0, 1, 4000), 0.25)),
+        )
+    };
     let left = vec![
         Span::raw(" ".to_string()),
         state_dot,
@@ -2062,13 +2256,116 @@ fn mini_unified_diff(old: &str, new: &str, max_lines: usize) -> Vec<String> {
     out
 }
 
+/// Tools whose transcript card renders a green/red diff.
+fn is_edit_tool(name: &str) -> bool {
+    matches!(name, "write_file" | "edit_file" | "multi_edit" | "apply_patch")
+}
+
+/// Classify a unified-diff line.
+enum DiffKind {
+    Add,
+    Del,
+    Meta,
+    Context,
+}
+
+fn diff_kind(l: &str) -> DiffKind {
+    if l.starts_with('+') && !l.starts_with("+++") {
+        DiffKind::Add
+    } else if l.starts_with('-') && !l.starts_with("---") {
+        DiffKind::Del
+    } else if l.starts_with("@@")
+        || l.starts_with("path ")
+        || l.starts_with("cmd ")
+        || l.starts_with("── ")
+    {
+        DiffKind::Meta
+    } else {
+        DiffKind::Context
+    }
+}
+
+/// Count added / removed lines in a diff preview.
+fn diff_counts(lines: &[String]) -> (usize, usize) {
+    let mut add = 0;
+    let mut del = 0;
+    for l in lines {
+        match diff_kind(l) {
+            DiffKind::Add => add += 1,
+            DiffKind::Del => del += 1,
+            _ => {}
+        }
+    }
+    (add, del)
+}
+
+/// Render one diff line as a full-width Claude-Code style band: a coloured
+/// gutter bar, `+`/`-`/space sign, tinted text, and a subtle background so
+/// added/removed rows read as blocks. `indent` is the left margin (spaces).
+fn diff_line(l: &str, indent: usize, width: usize) -> Line<'static> {
+    let pad = " ".repeat(indent);
+    match diff_kind(l) {
+        DiffKind::Add => {
+            let body = l.strip_prefix('+').unwrap_or(l);
+            let text = pad_to(&format!("{body}"), width.saturating_sub(indent + 2));
+            Line::from(vec![
+                Span::raw(pad),
+                Span::styled("▎".to_string(), Style::default().fg(theme::SUCCESS)),
+                Span::styled(
+                    format!("+{text}"),
+                    Style::default().fg(theme::DIFF_ADD_FG).bg(theme::DIFF_ADD_BG),
+                ),
+            ])
+        }
+        DiffKind::Del => {
+            let body = l.strip_prefix('-').unwrap_or(l);
+            let text = pad_to(&format!("{body}"), width.saturating_sub(indent + 2));
+            Line::from(vec![
+                Span::raw(pad),
+                Span::styled("▎".to_string(), Style::default().fg(theme::ERROR)),
+                Span::styled(
+                    format!("-{text}"),
+                    Style::default().fg(theme::DIFF_DEL_FG).bg(theme::DIFF_DEL_BG),
+                ),
+            ])
+        }
+        DiffKind::Meta => Line::from(vec![
+            Span::raw(pad),
+            Span::styled(
+                truncate(l, width.saturating_sub(indent)),
+                Style::default().fg(theme::DIFF_META).add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        DiffKind::Context => Line::from(vec![
+            Span::raw(pad),
+            Span::styled("  ".to_string(), Style::default()),
+            Span::styled(truncate(l, width.saturating_sub(indent + 2)), theme::style_faint()),
+        ]),
+    }
+}
+
+/// Right-pad a string to `w` display columns so diff band backgrounds fill the row.
+fn pad_to(s: &str, w: usize) -> String {
+    let cur = s.width();
+    if cur >= w {
+        // Truncate to width for a clean band edge.
+        truncate(s, w)
+    } else {
+        format!("{s}{}", " ".repeat(w - cur))
+    }
+}
+
 /// Stable-ish fingerprint so wrap cache can skip finished cells.
 fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut h = DefaultHasher::new();
     match cell {
-        Cell::Banner => 1u8.hash(&mut h),
+        Cell::Banner => {
+            1u8.hash(&mut h);
+            // Banner gradient shimmers — re-wrap each spinner frame.
+            spin_i.hash(&mut h);
+        }
         Cell::User(t) => {
             2u8.hash(&mut h);
             t.hash(&mut h);
@@ -2211,6 +2508,45 @@ fn capitalize(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_kinds_and_counts() {
+        let diff = vec![
+            "path src/x.rs".to_string(),
+            "@@ -3 +4 @@".to_string(),
+            "-old line".to_string(),
+            "+new line".to_string(),
+            "+another".to_string(),
+            " context".to_string(),
+        ];
+        assert_eq!(diff_counts(&diff), (2, 1));
+        assert!(matches!(diff_kind("+add"), DiffKind::Add));
+        assert!(matches!(diff_kind("-del"), DiffKind::Del));
+        // Unified-diff file markers are NOT add/del rows.
+        assert!(matches!(diff_kind("+++ b/x"), DiffKind::Meta | DiffKind::Context));
+        assert!(matches!(diff_kind("--- a/x"), DiffKind::Meta | DiffKind::Context));
+        assert!(matches!(diff_kind("@@ -1 +1 @@"), DiffKind::Meta));
+    }
+
+    #[test]
+    fn edit_tools_are_diffed() {
+        for t in ["write_file", "edit_file", "multi_edit", "apply_patch"] {
+            assert!(is_edit_tool(t), "{t} should render a diff");
+        }
+        for t in ["bash", "read_file", "grep", "web_fetch"] {
+            assert!(!is_edit_tool(t));
+        }
+    }
+
+    #[test]
+    fn diff_band_fills_to_width() {
+        // Added/removed bands must be exactly `width` cols so the bg fills the row.
+        let add = diff_line("+hello", 2, 40);
+        let del = diff_line("-bye", 2, 40);
+        let wsum = |l: &Line| -> usize { l.spans.iter().map(|s| s.content.width()).sum() };
+        assert_eq!(wsum(&add), 40);
+        assert_eq!(wsum(&del), 40);
+    }
 
     // Transcript shape: [banner, PROMPT_A, work…, PROMPT_B, work…]
     //   idx: 0 banner | 1,2 prompt A head | 3,4,5 A's work | 6,7 prompt B head | 8,9 B's work

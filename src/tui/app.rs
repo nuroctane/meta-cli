@@ -54,6 +54,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
     ("/init", "generate a META.md project guide"),
     ("/config", "show config + data paths"),
+    ("/bug", "how to report an issue"),
     ("/exit", "quit"),
 ];
 
@@ -592,6 +593,8 @@ pub struct App {
     should_quit: bool,
     /// Window title locked to the session's first user prompt.
     title_from_prompt: bool,
+    /// Base text for the (animated) window title — the current prompt or "ready".
+    window_base: String,
 }
 
 struct TermGuard;
@@ -723,6 +726,7 @@ pub async fn run_tui(
         cancel: None,
         should_quit: false,
         title_from_prompt,
+        window_base: seed_prompt.clone().unwrap_or_else(|| "ready".into()),
     };
 
     app.replay_session_tail(8);
@@ -743,10 +747,16 @@ pub async fn run_tui(
         }
     }
 
-    // Redraw only when something actually changed (or while an animation is
-    // running). Repainting every tick makes the whole UI shimmer and pins a CPU
-    // core for nothing.
+    // Animation cadence: the whole UI has ambient motion (shimmering borders,
+    // separators, banner), so we always repaint on a frame timer — faster while
+    // a turn is running, gentler when idle to stay light on the CPU.
+    const FRAME_BUSY_MS: u128 = 33; // ~30fps under load
+    const FRAME_IDLE_MS: u128 = 90; // ~11fps ambient shimmer
     let mut dirty = true;
+    let mut last_draw = Instant::now();
+    // Animated window title while inference runs (throttled OSC writes).
+    let mut last_title = Instant::now();
+    let mut title_animating = false;
     loop {
         // Drain agent events first so the frame is fresh.
         while let Ok(ev) = app.rx.try_recv() {
@@ -754,25 +764,41 @@ pub async fn run_tui(
             dirty = true;
         }
 
-        // Spinners / streaming caret only animate while a turn is in flight.
-        if app.busy {
-            dirty = true;
-        }
-        // Sessions modal: soft border/separator rotation while open.
-        if app.picker.is_some() {
+        // Ambient repaint tick — keeps borders/separators/banner alive.
+        let frame_ms = if app.busy || app.picker.is_some() {
+            FRAME_BUSY_MS
+        } else {
+            FRAME_IDLE_MS
+        };
+        if last_draw.elapsed().as_millis() >= frame_ms {
             dirty = true;
         }
         // Brief expand/collapse settle highlight (ease-out, < 200ms).
         if let Some((_, t)) = app.expand_flash {
-            if t.elapsed().as_millis() < theme::SETTLE_MS + 20 {
-                dirty = true;
-            } else {
+            if t.elapsed().as_millis() >= theme::SETTLE_MS + 20 {
                 app.expand_flash = None;
             }
         }
 
+        // Animated window-title orb while a turn runs; revert to the static
+        // marker the moment it finishes.
+        if app.busy {
+            if last_title.elapsed().as_millis() >= 110 {
+                last_title = Instant::now();
+                crate::ade::set_terminal_title(&crate::ade::running_window_title(
+                    app.spinner_epoch.elapsed(),
+                    &app.window_base,
+                ));
+            }
+            title_animating = true;
+        } else if title_animating {
+            title_animating = false;
+            crate::ade::set_terminal_title(&crate::ade::session_window_title(&app.window_base));
+        }
+
         if dirty {
             terminal.draw(|f| super::ui::draw(f, &mut app))?;
+            last_draw = Instant::now();
             dirty = false;
         }
 
@@ -780,8 +806,8 @@ pub async fn run_tui(
             break;
         }
 
-        // ~30fps ceiling while animating; idle just parks on the poll.
-        if event::poll(Duration::from_millis(32))? {
+        // Poll ceiling matches the frame cadence so ambient motion stays smooth.
+        if event::poll(Duration::from_millis(frame_ms as u64))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     app.on_key(key);
@@ -1607,6 +1633,21 @@ impl App {
         if text.is_empty() {
             return;
         }
+        // Claude-Code-style quick memory: a line starting with `#` (but not a
+        // `##` markdown heading) is saved to ~/.meta/memory.md without a turn.
+        if let Some(rest) = text.strip_prefix('#') {
+            if !rest.starts_with('#') {
+                let note = rest.trim();
+                if note.is_empty() {
+                    self.push_error("nothing to remember — type your note after #".into());
+                } else if let Err(e) = crate::agent::memory::append_memory(note) {
+                    self.push_error(format!("could not save memory: {e}"));
+                } else {
+                    self.push_note(Tone::Memory, format!("remembered · {note}"));
+                }
+                return;
+            }
+        }
         if text.starts_with('/') {
             self.run_command(&text);
             return;
@@ -1625,9 +1666,10 @@ impl App {
             return;
         };
         self.cells.push(Cell::User(prompt.to_string()));
-        // First user prompt of the session owns the window/tab title.
+        // First user prompt of the session owns the window/tab title text; the
+        // loop animates its marker orb while the turn runs.
         if !self.title_from_prompt {
-            crate::ade::set_terminal_title(&crate::ade::session_window_title(prompt));
+            self.window_base = prompt.to_string();
             self.title_from_prompt = true;
         }
         // Sending always snaps you back to the live end of the conversation.
@@ -2165,6 +2207,12 @@ impl App {
             "/ecosystem" => {
                 self.push_note(Tone::Skill, crate::ecosystem::quick_status());
             }
+            "/bug" => self.push_note(
+                Tone::Neutral,
+                "report an issue (unofficial community project)\n  \
+                 https://github.com/nuroctane/meta-cli/issues\n  \
+                 include: meta --version, OS, and steps to reproduce".into(),
+            ),
             other => self.push_error(format!("unknown command: {other} — try /help")),
         }
     }
@@ -2447,6 +2495,7 @@ impl App {
         for (name, desc) in COMMANDS {
             s.push_str(&format!("  {name:<12}  {desc}\n"));
         }
+        s.push_str("\n  #<note>       quick-save to memory (no turn)\n");
         self.push_info(s);
     }
 
