@@ -657,8 +657,10 @@ pub struct App {
     /// Peek cell the scroll offset belongs to — reset when the target changes.
     pub peek_scroll_cell: Option<usize>,
     /// Terminal graphics picker (protocol + font size) for inline image peeks.
+    #[cfg(feature = "image-peek")]
     pub img_picker: Option<ratatui_image::picker::Picker>,
     /// Decoded image protocols keyed by path — encoding is expensive, cache it.
+    #[cfg(feature = "image-peek")]
     pub img_cache: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
     /// True while drag-selecting transcript text (not scrollbar).
     pub selecting: bool,
@@ -816,6 +818,7 @@ pub async fn run_tui(
     // Query the terminal's graphics protocol + font size for inline image
     // peeks (sixel / kitty / iTerm2, halfblocks fallback). 1s timeout inside;
     // any failure degrades to a sane halfblocks picker, never an error.
+    #[cfg(feature = "image-peek")]
     let img_picker = Some(
         ratatui_image::picker::Picker::from_query_stdio()
             .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((9, 18))),
@@ -873,7 +876,9 @@ pub async fn run_tui(
         peek_scroll: 0,
         peek_rows: 0,
         peek_scroll_cell: None,
+        #[cfg(feature = "image-peek")]
         img_picker,
+        #[cfg(feature = "image-peek")]
         img_cache: HashMap::new(),
         selecting: false,
         mouse_left_down: false,
@@ -2013,6 +2018,7 @@ impl App {
 
     /// Decoded terminal-graphics protocol for an image path, lazily built and
     /// cached (encoding is expensive; re-doing it per frame would melt the UI).
+    #[cfg(feature = "image-peek")]
     pub fn image_protocol(
         &mut self,
         path: &str,

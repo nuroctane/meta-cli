@@ -1526,6 +1526,8 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
         hue: Color,
         diff: Option<Vec<String>>,
         thinking: bool,
+        // Only read by the image-peek render path; harmless string otherwise.
+        #[cfg_attr(not(feature = "image-peek"), allow(dead_code))]
         image: Option<String>,
     }
     let p = {
@@ -1653,6 +1655,8 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
 
     // Vision peek: render the actual image via the terminal's graphics
     // protocol (sixel / kitty / iTerm2, halfblocks fallback) — ratatui-image.
+    // Gated behind `image-peek`; without it, peeks fall through to text/diff.
+    #[cfg(feature = "image-peek")]
     if let Some(path) = &p.image {
         if let Some(proto) = app.image_protocol(path) {
             f.render_stateful_widget(
