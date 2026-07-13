@@ -59,6 +59,50 @@ fi
 command -v cargo >/dev/null || { echo "cargo not found after rustup; open a new shell and re-run"; exit 1; }
 ok "cargo $(cargo --version)"
 
+# ── prerequisites (auto-install latest when missing; best-effort) ──────────
+# node 20+ (plur · ruflo · executor · browser) · bun (omp backend) ·
+# uv (graphify) · ripgrep (fast search) · ffmpeg (extract_frames).
+step "Checking prerequisites (node · bun · uv · rg · ffmpeg)…"
+PKG=""
+if command -v brew >/dev/null 2>&1; then PKG="brew"
+elif command -v apt-get >/dev/null 2>&1; then PKG="apt"
+elif command -v dnf >/dev/null 2>&1; then PKG="dnf"
+elif command -v pacman >/dev/null 2>&1; then PKG="pacman"
+fi
+pkg_install() { # pkg_install <package-name…>
+  case "${PKG}" in
+    brew)   brew install "$@" ;;
+    apt)    sudo apt-get install -y "$@" 2>/dev/null || apt-get install -y "$@" 2>/dev/null ;;
+    dnf)    sudo dnf install -y "$@" 2>/dev/null ;;
+    pacman) sudo pacman -S --noconfirm "$@" 2>/dev/null ;;
+    *)      return 1 ;;
+  esac
+}
+ensure_prereq() { # ensure_prereq <cmd> <pkg-name> <note> [fallback-cmd…]
+  local cmd="$1" pkg="$2" note="$3"; shift 3
+  if command -v "${cmd}" >/dev/null 2>&1; then
+    ok "${cmd} already installed"
+    return 0
+  fi
+  step "Installing ${cmd} — ${note}…"
+  if pkg_install "${pkg}"; then
+    ok "${cmd} installed"
+  elif [[ $# -gt 0 ]] && "$@"; then
+    ok "${cmd} installed (official installer)"
+  else
+    warn "${cmd} could not be auto-installed — needed for: ${note}"
+  fi
+}
+bun_official() { curl -fsSL https://bun.sh/install | bash; export PATH="${HOME}/.bun/bin:${PATH}"; }
+uv_official()  { curl -LsSf https://astral.sh/uv/install.sh | sh; export PATH="${HOME}/.local/bin:${PATH}"; }
+node_pkg="node"; [[ "${PKG}" == "apt" || "${PKG}" == "dnf" ]] && node_pkg="nodejs"
+ensure_prereq node   "${node_pkg}" "plur · ruflo · executor · browser"
+ensure_prereq bun    "oven-sh/bun/bun" "omp coding-agent backend" bun_official
+ensure_prereq uv     "uv"          "graphify" uv_official
+ensure_prereq rg     "ripgrep"     "fast grep / glob"
+ensure_prereq ffmpeg "ffmpeg"      "extract_frames / design-from-video"
+export PATH="${HOME}/.bun/bin:${HOME}/.local/bin:${PATH}"
+
 step "Building release (first time can take a few minutes)…"
 ( cd "${REPO_DIR}" && cargo build --release )
 BUILT="${REPO_DIR}/target/release/meta"
@@ -100,16 +144,10 @@ done
 
 ok "Installed ${DEST_DIR}/meta ($("${DEST_DIR}/meta" --version))"
 
-# ── Ecosystem: Graphify · PLUR · Ruflo ────────────────────────────────────
-step "Provisioning agent ecosystem (graphify · plur · ruflo)…"
-if ! command -v node >/dev/null 2>&1; then
-  warn "Node.js not on PATH — plur/ruflo need Node 20+. Install then: meta ecosystem ensure"
-fi
-if ! command -v uv >/dev/null 2>&1; then
-  step "Installing uv (for graphify)…"
-  curl -LsSf https://astral.sh/uv/install.sh | sh || warn "uv install skipped"
-  export PATH="${HOME}/.local/bin:${PATH}"
-fi
+# ── Ecosystem: Graphify · PLUR · Ruflo · omp · browser ────────────────────
+step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)…"
+# Prereqs (node/bun/uv) were auto-installed above; ensure is best-effort and
+# re-runs on every session open for anything still missing.
 "${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure deferred to first meta open"
 ok "Ecosystem ready (or will finish on first open)"
 

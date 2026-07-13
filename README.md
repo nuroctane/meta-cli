@@ -13,15 +13,15 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
-**v0.7.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
+**v0.8.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
 
 | Surface | What ships |
 |---------|------------|
 | **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff |
 | **Agent** | Manual / plan / auto · tool loop · subagents · todos · auto-compact · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
-| **Tools** | read · edit · bash · web · git · knowledge stack · agent |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · AKM · **800+ skills** — background provision |
+| **Tools** | read · edit · bash · web · **browser** (real Chrome) · git · knowledge stack · agent |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** — background provision |
 | **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · API retries · install SHA-256 · `meta doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
@@ -61,6 +61,7 @@ muse          # legacy alias (same binary)
 | shell | `bash` (hardened denylist + timeout) |
 | **vision** | **`look`** · **`extract_frames`** |
 | web | `web_search` `web_fetch` (text only; SSRF / private-IP blocks) |
+| browser | `browser` — the user's **real Chrome** via agent-browser-cli: tabs · snapshot (@e refs) · click/fill/keys · JS · screenshots (pair with `look`) |
 | git | `git_status` `git_diff` |
 | knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |
 | delegate | `agent` `omp` — omp.sh coding-agent backend (LSP renames, DAP debugging, AST rewrites) |
@@ -131,12 +132,13 @@ curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh 
 That command will:
 
 1. Install Rust if needed  
-2. Clone or update this repo  
-3. `cargo build --release`  
-4. Install **`meta`** (+ `muse` alias) to `~/.local/bin` and **verify SHA-256**  
-5. `meta ecosystem ensure` when Node/uv are available  
-6. Orca hook when possible  
-7. Save auth if `META_API_KEY` / `MODEL_API_KEY` is set (**machine-local only**)  
+2. **Auto-install missing prerequisites** at latest versions — Node.js LTS, Bun, uv, ripgrep, ffmpeg (winget / brew / apt / official installers; skipped when present)  
+3. Clone or update this repo  
+4. `cargo build --release`  
+5. Install **`meta`** (+ `muse` alias) to `~/.local/bin` and **verify SHA-256**  
+6. `meta ecosystem ensure` — Graphify · PLUR · Ruflo · Executor · omp · browser  
+7. Orca hook when possible  
+8. Save auth if `META_API_KEY` / `MODEL_API_KEY` is set (**machine-local only**)  
 
 ```powershell
 meta auth login    # → ~/.meta/auth.json only
@@ -158,7 +160,7 @@ cd meta-cli
 # ./install.sh         # macOS / Linux
 ```
 
-### Prerequisites (optional but recommended)
+### Prerequisites (auto-installed by the installer when missing)
 
 | Need | For |
 |------|-----|
@@ -319,6 +321,12 @@ subcell math.
 The `omp` tool delegates to **[Oh My Pi](https://omp.sh)**
 ([can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)) — headless backend
 runs only, provisioned automatically when Bun is available.
+
+The `browser` tool drives the user's real Chrome through
+**[agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli)**
+(browser bridge lineage from
+[GenericAgent](https://github.com/lsdefine/GenericAgent)) — login state stays
+in the browser, cookies are never exposed to the model.
 
 Also built on: [tokio](https://tokio.rs), [reqwest](https://github.com/seanmonstar/reqwest),
 [serde](https://serde.rs), and [clap](https://github.com/clap-rs/clap).

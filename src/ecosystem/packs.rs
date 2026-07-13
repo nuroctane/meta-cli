@@ -200,6 +200,53 @@ pub fn ensure_omp() -> ComponentStatus {
     c
 }
 
+/// agent-browser-cli — real-Chrome perception & control bridge for the
+/// `browser` tool (github.com/sleepinginsummer/agent-browser-cli).
+/// npm-installed; its Chrome MV3 extension must be loaded once by the user.
+/// `install-skill` drops its SOP into ~/.agents/skills, which Meta discovers.
+pub fn ensure_browser_cli(node_ok: bool) -> ComponentStatus {
+    let mut c = ComponentStatus {
+        name: "browser".into(),
+        ..Default::default()
+    };
+    if !node_ok {
+        c.detail = "needs Node.js 20+".into();
+        return c;
+    }
+
+    if find_bin("agent-browser-cli").is_none() {
+        let npm = find_bin("npm").unwrap_or_else(|| "npm".into());
+        match run_capture(
+            &npm,
+            &["install", "-g", "@sleepinsummer/agent-browser-cli"],
+            None,
+            300_000,
+        ) {
+            Ok(_) => {}
+            Err(e) => {
+                c.detail = format!(
+                    "npm install failed: {}",
+                    e.chars().take(200).collect::<String>()
+                );
+            }
+        }
+    }
+
+    if let Some(bin) = find_bin("agent-browser-cli") {
+        c.available = true;
+        c.path = Some(bin.clone());
+        c.version = super::cmd_version_pub(&bin, &["--version"]);
+        // Drop the usage SOP into ~/.agents/skills (best-effort).
+        let _ = run_quiet(&bin, &["install-skill"], None, 60_000);
+        c.detail =
+            "real-Chrome bridge ready (`browser` tool) — load the tmwd_cdp_bridge extension once"
+                .into();
+    } else if c.detail.is_empty() {
+        c.detail = "not found after npm install — try: npm i -g @sleepinsummer/agent-browser-cli".into();
+    }
+    c
+}
+
 /// Install curated skill packs into ~/.agents/skills (Meta discovers this).
 pub fn install_skill_packs(skills_cli: &ComponentStatus) -> (Vec<String>, Vec<String>) {
     let mut ok = Vec::new();

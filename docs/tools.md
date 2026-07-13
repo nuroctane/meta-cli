@@ -126,6 +126,18 @@ Search vector memory.
 
 Dispatch to external APIs.
 
+### `browser`
+
+Perceive and control the user's **real Chrome session** (login state preserved)
+via [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli).
+Perception is free: `tabs`, `scan`, `snapshot` (page → `@e` element refs),
+`tabtree`, `console`, `network`, `status`. Control needs approval in manual
+mode and is blocked in plan mode: `open`, `click`, `fill`, `send_keys`, `exec`,
+`close`. `screenshot` is plan-safe perception — pair it with `look` for vision.
+Cookie reading is deliberately not exposed. Setup: the CLI is auto-provisioned;
+load the `tmwd_cdp_bridge` Chrome extension once (chrome://extensions →
+developer mode → load unpacked).
+
 ### `omp`
 
 Delegate a focused coding task to the [Oh My Pi](https://omp.sh) agent backend

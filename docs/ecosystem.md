@@ -11,6 +11,7 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 | **Ruflo** | Vector memory + swarm / hive-mind patterns |
 | **Executor** | MCP / OpenAPI gateway catalog |
 | **omp** | [Oh My Pi](https://omp.sh) coding-agent backend — headless `omp -p` runs via the `omp` tool (needs Bun) |
+| **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real-Chrome bridge — perception + control via the `browser` tool (needs the Chrome extension loaded once) |
 | **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
 | **AKM** | Agent knowledge package manager (requires Node.js) |
 

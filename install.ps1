@@ -108,6 +108,40 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 }
 Write-Ok "cargo $((cargo --version))"
 
+# ── prerequisites (auto-install latest when missing; best-effort) ─────────
+# node 20+ (plur · ruflo · executor · browser) · bun (omp backend) ·
+# uv (graphify) · ripgrep (fast search) · ffmpeg (extract_frames).
+Write-Step "Checking prerequisites (node · bun · uv · rg · ffmpeg)…"
+$wingetCmd = Get-Command winget -ErrorAction SilentlyContinue
+function Install-Prereq([string]$cmd, [string]$wingetId, [scriptblock]$fallback, [string]$note) {
+    if (Get-Command $cmd -ErrorAction SilentlyContinue) {
+        Write-Ok "$cmd already installed"
+        return
+    }
+    Write-Step "Installing $cmd — $note…"
+    $done = $false
+    if ($wingetCmd -and $wingetId) {
+        winget install --id $wingetId -e --silent --accept-package-agreements --accept-source-agreements 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) { $done = $true }
+    }
+    if (-not $done -and $fallback) {
+        try { & $fallback; $done = $true } catch { }
+    }
+    if ($done) {
+        Write-Ok "$cmd installed (open a new terminal if it's not on PATH yet)"
+    } else {
+        Write-Warn "$cmd could not be auto-installed — needed for: $note"
+    }
+}
+Install-Prereq "node"   "OpenJS.NodeJS.LTS"      $null                                     "plur · ruflo · executor · browser"
+Install-Prereq "bun"    "Oven-sh.Bun"            { irm https://bun.sh/install.ps1 | iex }  "omp coding-agent backend"
+Install-Prereq "uv"     "astral-sh.uv"           { irm https://astral.sh/uv/install.ps1 | iex } "graphify"
+Install-Prereq "rg"     "BurntSushi.ripgrep.MSVC" $null                                    "fast grep / glob"
+Install-Prereq "ffmpeg" "Gyan.FFmpeg"            $null                                     "extract_frames / design-from-video"
+# Make fresh installs visible to this session (winget links, node, bun, uv).
+$env:Path = "$env:USERPROFILE\.local\bin;$env:USERPROFILE\.bun\bin;" +
+            "$env:LOCALAPPDATA\Microsoft\WinGet\Links;$env:ProgramFiles\nodejs;" + $env:Path
+
 # ── build ─────────────────────────────────────────────────────────────────
 Push-Location $RepoDir
 try {
@@ -179,20 +213,10 @@ Write-Ok "Installed $dest ($ver)"
 # ── Ecosystem: Graphify · PLUR · Ruflo (works on first open) ─────────────
 # Node is required for plur/ruflo; uv for graphify. Best-effort — meta also
 # re-ensures on every session start if anything is missing.
-Write-Step "Provisioning agent ecosystem (graphify · plur · ruflo)…"
+Write-Step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)…"
 try {
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        Write-Warn "Node.js not on PATH — plur/ruflo need Node 20+. Install from https://nodejs.org then re-run: meta ecosystem ensure"
-    }
-    if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
-        Write-Step "Installing uv (for graphify)…"
-        try {
-            irm https://astral.sh/uv/install.ps1 | iex
-            $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
-        } catch {
-            Write-Warn "uv install skipped — graphify may need: winget install astral-sh.uv"
-        }
-    }
+    # Prereqs (node/bun/uv) were auto-installed above; ensure is best-effort
+    # and re-runs on every session open for anything still missing.
     & $dest ecosystem ensure --force 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     Write-Ok "Ecosystem provisioned (or scheduled for first open)"
 } catch {

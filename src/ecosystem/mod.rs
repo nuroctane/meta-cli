@@ -21,7 +21,7 @@ pub use skills::install_bundled_skills;
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
 /// Bump when spawn/install logic changes so markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 4;
+const ECOSYSTEM_SCHEMA: u32 = 5;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -49,6 +49,8 @@ pub struct EcosystemStatus {
     pub executor: ComponentStatus,
     #[serde(default)]
     pub omp: ComponentStatus,
+    #[serde(default)]
+    pub browser: ComponentStatus,
     pub skills_installed: Vec<String>,
     #[serde(default)]
     pub packs_installed: Vec<String>,
@@ -67,12 +69,13 @@ impl EcosystemStatus {
             }
         };
         format!(
-            "ecosystem · {}  {}  {}  {}  {}  {}  · packs {}",
+            "ecosystem · {}  {}  {}  {}  {}  {}  {}  · packs {}",
             bit(self.graphify.available, "graphify"),
             bit(self.plur.available, "plur"),
             bit(self.ruflo.available, "ruflo"),
             bit(self.executor.available, "executor"),
             bit(self.omp.available, "omp"),
+            bit(self.browser.available, "browser"),
             bit(self.skills_cli.available, "skills"),
             if self.packs_installed.is_empty() {
                 "…".into()
@@ -92,6 +95,7 @@ impl EcosystemStatus {
             &self.akm,
             &self.executor,
             &self.omp,
+            &self.browser,
         ];
         for c in comps {
             if c.name.is_empty() {
@@ -131,7 +135,7 @@ impl EcosystemStatus {
         }
         s.push_str(
             "\n  slash: /ecosystem /plur /ruflo /graphify /skills\n\
-             tools:  graphify plur ruflo executor omp skill\n\
+             tools:  graphify plur ruflo executor omp browser skill\n\
              packs:  design · clone-website · cybersecurity · opencode catalog · DCP patterns\n",
         );
         s
@@ -182,6 +186,7 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
     status.akm = packs::ensure_akm(status.node_ok);
     status.executor = packs::ensure_executor(status.node_ok);
     status.omp = packs::ensure_omp();
+    status.browser = packs::ensure_browser_cli(status.node_ok);
 
     // Third-party skill packs (network; markers skip re-download).
     let (packs_ok, pack_notes) = packs::install_skill_packs(&status.skills_cli);

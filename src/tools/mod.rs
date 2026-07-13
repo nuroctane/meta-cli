@@ -1,5 +1,7 @@
 mod apply_patch;
 mod bash;
+pub mod browser;
+pub use browser::is_read_only_action as browser_is_read_only;
 mod edit_file;
 mod git_diff;
 mod git_status;
@@ -81,6 +83,7 @@ impl ToolHost {
             Box::new(glob::GlobTool),
             Box::new(web_fetch::WebFetch),
             Box::new(web_search::WebSearch),
+            Box::new(browser::BrowserTool),
             Box::new(media::Look),
             Box::new(media::ExtractFrames),
             Box::new(git_status::GitStatus),
@@ -149,6 +152,7 @@ impl ToolHost {
             "glob" => glob::GlobTool.execute(&args, ctx),
             "web_fetch" => web_fetch::WebFetch.execute(&args, ctx),
             "web_search" => web_search::WebSearch.execute(&args, ctx),
+            "browser" => browser::BrowserTool.execute(&args, ctx),
             "look" => media::Look.execute(&args, ctx),
             "extract_frames" => media::ExtractFrames.execute(&args, ctx),
             "git_status" => git_status::GitStatus.execute(&args, ctx),

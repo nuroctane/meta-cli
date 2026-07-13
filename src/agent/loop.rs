@@ -501,6 +501,11 @@ impl AgentRunner {
                 if name == "extract_frames" {
                     return true;
                 }
+                // Browser screenshots are perception that writes an image —
+                // same class as extract_frames; page mutations stay blocked.
+                if name == "browser" && crate::tools::browser::is_plan_safe_action(args) {
+                    return true;
+                }
                 // Shell: free for analysis/scratch; refused only for repo/VCS
                 // mutations or dependency installs.
                 if name == "bash" {
@@ -766,6 +771,26 @@ mod tests {
         );
         assert!(!is_parallel_safe("omp", r#"{"action":"status"}"#));
     }
+
+    #[test]
+    fn browser_perception_is_free_control_is_gated() {
+        for free in ["tabs", "scan", "snapshot", "tabtree", "status", "console", "network"] {
+            let a = format!(r#"{{"action":"{free}"}}"#);
+            assert!(is_read_only_call("browser", &a), "{free} should be free");
+        }
+        for gated in ["open", "click", "fill", "send_keys", "exec", "close", "screenshot"] {
+            let a = format!(r#"{{"action":"{gated}"}}"#);
+            assert!(!is_read_only_call("browser", &a), "{gated} must need approval");
+        }
+        // Screenshot is plan-safe perception (writes an image, like extract_frames).
+        assert!(crate::tools::browser::is_plan_safe_action(
+            r#"{"action":"screenshot"}"#
+        ));
+        assert!(!crate::tools::browser::is_plan_safe_action(
+            r#"{"action":"exec","js":"x"}"#
+        ));
+        assert!(!is_parallel_safe("browser", r#"{"action":"tabs"}"#));
+    }
 }
 
 pub(crate) const INTERRUPT_OUTPUT: &str = "[interrupted by user]";
@@ -818,6 +843,10 @@ fn is_read_only_call(name: &str, args: &str) -> bool {
     // omp `run` hands the workspace to a full coding agent — write-class.
     if name == "omp" {
         return crate::tools::omp_is_read_only(args);
+    }
+    // browser perception (tabs/scan/snapshot/…) is free; page control is not.
+    if name == "browser" {
+        return crate::tools::browser_is_read_only(args);
     }
     if name == "agent" {
         return false;
