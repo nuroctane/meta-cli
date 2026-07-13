@@ -1,0 +1,108 @@
+# Vision
+
+Native multimodal support — send images and short video to the model.
+
+## Overview
+
+Meta CLI supports the Meta Model API Responses API multimodal input via `input_image` / `input_video`. The model can **see** workspace images and short video clips directly.
+
+---
+
+## Tools
+
+### `look`
+
+Attach workspace **image(s)** or a **short video** so the model sees them on the next turn.
+
+| Input type | Formats | Notes |
+|------------|---------|-------|
+| Images | png, jpg, webp, gif | Direct attachment |
+| Video | mp4, webm, mov | ~20 MB cap; use `extract_frames` for longer clips |
+
+**Usage in TUI:** The agent calls `look` automatically, or you can reference media paths in your prompt.
+
+### `extract_frames`
+
+Extract sparse **keyframes** from video via **ffmpeg**.
+
+| Setting | Default |
+|---------|---------|
+| Frame rate | ~1 fps |
+| Max frames | ~8 |
+| Output | `.meta/frames/<name>/` |
+
+After extraction, `look` is auto-queued with the extracted frames.
+
+---
+
+## Auto-attach
+
+Media paths in your user prompt are **automatically attached** when the file exists in the workspace:
+
+```text
+"steal UI design tokens from demo.mp4 and scaffold a matching component"
+```
+
+If `demo.mp4` exists in your project, it is automatically sent to the model.
+
+---
+
+## Design from video
+
+A typical workflow for extracting design tokens from a reference clip:
+
+1. **Short video (< 20 MB):** Reference it directly in your prompt
+   ```text
+   "match the animation in ref.mp4"
+   ```
+
+2. **Longer video:** Extract frames first, then reference them
+   ```text
+   "extract keyframes from walkthrough.mp4 and implement the sidebar"
+   ```
+
+3. **Manual control:** The agent will use `extract_frames` → inspect stills → implement using **design-eng** skills
+
+!!! tip "Best practices"
+    - Prefer sparse frames over frame-by-frame
+    - Longer / huge videos: extract frames first; don't `look` a giant file
+    - `extract_frames` requires ffmpeg on PATH (check with `meta doctor`)
+    - `look` still works on short videos and images without ffmpeg
+
+---
+
+## Requirements
+
+| Tool | Requires |
+|------|----------|
+| `look` | Nothing extra for images; ffmpeg optional for short video |
+| `extract_frames` | **ffmpeg** on PATH |
+
+Check vision readiness:
+
+```bash
+meta doctor
+# should show: vision  look · extract_frames (input_image / input_video)
+```
+
+Install ffmpeg:
+
+=== "Windows"
+
+    ```powershell
+    winget install ffmpeg
+    # or
+    choco install ffmpeg
+    ```
+
+=== "macOS"
+
+    ```bash
+    brew install ffmpeg
+    ```
+
+=== "Linux"
+
+    ```bash
+    sudo apt install ffmpeg
+    ```

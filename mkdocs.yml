@@ -1,0 +1,61 @@
+site_name: Meta CLI Documentation
+site_description: Fully loaded terminal coding agent for Meta Model API
+site_url: https://nuroctane.github.io/meta-cli/
+repo_url: https://github.com/nuroctane/meta-cli
+repo_name: nuroctane/meta-cli
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: violet
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: indigo
+      accent: violet
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - attr_list
+  - md_in_html
+  - tables
+  - def_list
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Setup: setup.md
+  - Quickstart: quickstart.md
+  - Authentication: authentication.md
+  - Configuration: configuration.md
+  - Commands: commands.md
+  - TUI: tui.md
+  - Tools: tools.md
+  - Vision: vision.md
+  - Ecosystem: ecosystem.md
+  - Security: security.md
+  - Troubleshooting: troubleshooting.md

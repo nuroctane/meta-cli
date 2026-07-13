@@ -32,3 +32,6 @@ Thumbs.db
 
 .ref-frames/
 
+# MkDocs build output
+site/
+
