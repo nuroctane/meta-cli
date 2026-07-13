@@ -1186,12 +1186,12 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                         Some(r) => {
                             let n = r.lines().filter(|l| !l.trim().is_empty()).count();
                             if n > 0 {
-                                format!("  ·  {n} lines · hover peek · click ▸")
+                                format!("  ·  {n} lines · click to peek · ▸ expands")
                             } else {
-                                "  ·  hover peek · click ▸".into()
+                                "  ·  click to peek · ▸ expands".into()
                             }
                         }
-                        None => "  ·  hover peek · click ▸".into(),
+                        None => "  ·  click to peek · ▸ expands".into(),
                     }
                 };
                 head_spans.push(Span::styled(extra, Style::default().fg(theme::FAINT)));

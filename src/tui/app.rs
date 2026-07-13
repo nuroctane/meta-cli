@@ -628,11 +628,17 @@ impl Drop for TermGuard {
 }
 
 /// Capture mouse for drag-select, scrollbar, wheel, click-peek (always on).
+///
+/// Mode 1002 (button-event tracking) reports motion only while a button is held
+/// — exactly what drag-select and scrollbar-drag need — plus 1000 (clicks) and
+/// 1006 (SGR coords). We deliberately do NOT enable 1003 (any-motion): it floods
+/// a motion event for every cell the pointer crosses, which — combined with the
+/// ambient repaint — backs up the event queue and makes drags/clicks lag. The
+/// cost is free (no-click) hover-peek; click-to-peek stays the primary path.
 fn enable_mouse() {
     let _ = stdout().execute(EnableMouseCapture);
-    // buttons + drag + hover + SGR coords
     let mut out = stdout();
-    let _ = write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h");
+    let _ = write!(out, "\x1b[?1000h\x1b[?1002h\x1b[?1006h");
     let _ = out.flush();
 }
 
@@ -836,28 +842,41 @@ pub async fn run_tui(
             break;
         }
 
-        // Poll ceiling matches the frame cadence so ambient motion stays smooth.
+        // Drain ALL pending input this tick, then redraw once. The ambient
+        // repaint must never starve the event queue: reading one event per
+        // frame lets a flood of mouse-motion events back up so the Up/Drag that
+        // completes a scrollbar-drag or click-peek arrives frames late (or feels
+        // dead). Block up to one frame for the first event, then drain the rest.
         if event::poll(Duration::from_millis(frame_ms as u64))? {
-            match event::read()? {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
-                    app.on_key(key);
-                    dirty = true;
-                }
-                Event::Mouse(m) => {
-                    app.on_mouse(m);
-                    dirty = true;
-                }
-                Event::Paste(s) => {
-                    if let Some(m) = &mut app.login {
-                        m.buf.push_str(s.trim());
-                        dirty = true;
-                    } else if app.approval.is_none() && app.picker.is_none() {
-                        app.input.insert_str(&s);
+            loop {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        app.on_key(key);
                         dirty = true;
                     }
+                    Event::Mouse(m) => {
+                        app.on_mouse(m);
+                        dirty = true;
+                    }
+                    Event::Paste(s) => {
+                        if let Some(m) = &mut app.login {
+                            m.buf.push_str(s.trim());
+                            dirty = true;
+                        } else if app.approval.is_none() && app.picker.is_none() {
+                            app.input.insert_str(&s);
+                            dirty = true;
+                        }
+                    }
+                    Event::Resize(_, _) => dirty = true,
+                    _ => {}
                 }
-                Event::Resize(_, _) => dirty = true,
-                _ => {}
+                if app.should_quit {
+                    break;
+                }
+                // Stop once the queue is empty (non-blocking peek).
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
     }
@@ -1272,10 +1291,17 @@ impl App {
                 if self.scrollbar_drag {
                     self.scrollbar_drag = false;
                 } else if self.selecting {
-                    // Finalize selection + auto-copy so it feels like normal UIs.
-                    if let Some(t) = self.selected_transcript_text() {
-                        if !t.trim().is_empty() {
-                            clipboard_set(&t);
+                    // A drag that actually covered text → finalize + auto-copy.
+                    // A drag that covered nothing (tiny jitter during a click) →
+                    // treat as a click so peek/expand still fire.
+                    let selected = self
+                        .selected_transcript_text()
+                        .filter(|t| !t.trim().is_empty());
+                    match selected {
+                        Some(t) => clipboard_set(&t),
+                        None => {
+                            self.selection = None;
+                            self.click_transcript(m.column, m.row);
                         }
                     }
                     self.selecting = false;
