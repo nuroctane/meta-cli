@@ -13,6 +13,160 @@ meta          # primary — Meta-blue interactive TUI
 muse          # legacy alias (same binary)
 ```
 
+---
+
+## Install — dead simple
+
+One line. That’s it. The installer builds `meta`, drops it on your PATH, pulls in every runtime dependency it can, and wires the full agent stack so you’re ready to go.
+
+### Windows (PowerShell) — recommended
+
+```powershell
+irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+```
+
+### macOS / Linux
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+```
+
+### After install (30 seconds)
+
+```text
+meta auth login      # paste key from https://dev.meta.ai/  →  ~/.meta/auth.json only
+meta                 # open the TUI
+meta doctor          # health check
+```
+
+Or skip the CLI login: run `meta` and use **`/login`** in the TUI (masked entry). No key? login opens automatically.
+
+### Other ways to install
+
+<table>
+<tr>
+<td width="33%"><strong>① One-liner (above)</strong><br/>Easiest. Builds from source + full stack.</td>
+<td width="33%"><strong>② Prebuilt EXE (Windows)</strong><br/>Grab from <a href="https://github.com/nuroctane/meta-cli/releases/latest">Releases</a>.</td>
+<td width="33%"><strong>③ From a clone</strong><br/>You already have the repo.</td>
+</tr>
+</table>
+
+**② Prebuilt Windows binary**
+
+1. Open **[Releases → latest](https://github.com/nuroctane/meta-cli/releases/latest)**
+2. Download `meta-windows-x86_64.exe` (+ optional `.sha256`)
+3. Put it on your PATH as `meta.exe` (and copy as `muse.exe` if you want the alias):
+
+```powershell
+# Example: user-local bin (same place the one-liner uses)
+$bin = "$env:USERPROFILE\.local\bin"
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item -Force .\meta-windows-x86_64.exe "$bin\meta.exe"
+Copy-Item -Force "$bin\meta.exe" "$bin\muse.exe"
+# Ensure PATH once:
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$bin*") {
+  [Environment]::SetEnvironmentVariable("Path", "$bin;$userPath", "User")
+}
+# Then open a NEW terminal:
+meta --version
+meta ecosystem ensure   # full stack (Graphify · PLUR · Ruflo · omp · browser · skills)
+meta browser setup      # stage Chromium extension for your default browser
+meta auth login
+```
+
+**③ Already cloned**
+
+```powershell
+cd meta-cli
+.\install.ps1          # Windows
+# ./install.sh         # macOS / Linux
+```
+
+**④ Manual cargo build** (power users)
+
+```bash
+git clone https://github.com/nuroctane/meta-cli.git
+cd meta-cli
+cargo build --release
+# install binary yourself to ~/.local/bin/meta (+ muse), then:
+meta ecosystem ensure
+meta browser setup
+meta auth login
+```
+
+---
+
+### What the one-liner actually installs on your PC
+
+Everything below is **local to your machine**. Nothing secrets-related is written into the git repo.
+
+#### A. Tooling the installer may install (if missing)
+
+| Piece | Where it usually lands | Why Meta needs it |
+|-------|------------------------|-------------------|
+| **Rust / cargo** (rustup stable) | `~/.cargo/` | Builds the CLI |
+| **Git** | system (must already exist on Windows) | Clones / updates this repo |
+| **Node.js 20+ LTS** | system / winget / package manager | PLUR · Ruflo · Executor · skills · browser CLI · AKM |
+| **Bun** | `~/.bun/` | **omp** (Oh My Pi) backend |
+| **uv** | `~/.local/bin` | **Graphify** |
+| **ripgrep (`rg`)** | system | Fast `grep` / `glob` (native fallback if absent) |
+| **ffmpeg** | system | `extract_frames` / design-from-video |
+
+#### B. Meta CLI itself
+
+| Piece | Path |
+|-------|------|
+| **`meta` binary** | `~/.local/bin/meta` (Windows: `meta.exe`) |
+| **`muse` alias** | same dir — identical binary, legacy name |
+| **SHA-256 record** | `~/.local/bin/meta.sha256` |
+| **Source checkout** (one-liner) | `~/laboratory/meta-cli` (override with `RepoDir` / `META_CLI_DIR`) |
+| **User PATH** | `~/.local/bin` appended (Windows User PATH · shell rc on Unix) |
+
+#### C. Agent data home — `~/.meta/` (created on first use / auth)
+
+| Path | Purpose |
+|------|---------|
+| `auth.json` | API key after login (**only place keys live**) |
+| `config.toml` | Model, effort, budgets, compact, poor mode, … |
+| `permissions.toml` | Optional allow/deny/ask rules |
+| `hooks.toml` | Optional pre/post tool hooks |
+| `meta.log` | Tracing (not painted into the TUI) |
+| `status.json` · `usage.jsonl` · `ade.json` | Live usage + ADE / Orca panels |
+| `memory.md` · `history.jsonl` | Cross-session notes + prompt history |
+| `sessions/` | Chat sessions (`*.json`, `*.json.bak`, `*.precompact.bak`) |
+| `tool-results/` | Spilled oversized tool outputs |
+| `browser-extension/` | Staged `tmwd_cdp_bridge` for the browser tool |
+| `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory store |
+
+#### D. Ecosystem packs (via `meta ecosystem ensure`)
+
+Installed as **external CLIs / skill trees** when Node/uv/Bun are available — not baked into the binary:
+
+| Component | What you get |
+|-----------|----------------|
+| **Graphify** | Code knowledge graph CLI (`uv` / Python) |
+| **PLUR** | Shared engram memory |
+| **Ruflo** | Vector memory / swarm helpers under `~/.meta/ruflo/` |
+| **Executor** | MCP / OpenAPI gateway tooling |
+| **omp** | Oh My Pi headless coding backend (needs Bun) |
+| **agent-browser-cli** | Real-browser bridge (npm) |
+| **Skills + AKM** | Progressive skill packs under `~/.meta/skills` / agents skills dirs |
+| **Browser setup** | Stages extension; opens `chrome://extensions` once for Load unpacked |
+
+#### E. Optional host integration
+
+| Piece | Notes |
+|-------|--------|
+| **Orca hook** | Best-effort `meta install-hook` if Orca is present |
+| **Auth from env** | If `META_API_KEY` / `MODEL_API_KEY` is set, saved to `~/.meta/auth.json` only |
+
+**That’s the full stack** — binary + PATH + runtimes + knowledge/browser packs + local data home. First `cargo build` can take a few minutes; after that, `meta` opens instantly and ecosystem repair runs in the **background**.
+
+Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** · Setup detail: [docs/setup.md](./docs/setup.md)
+
+---
+
 **v0.10.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
 
 | Surface | What ships |
@@ -119,62 +273,6 @@ Or: `extract_frames` → model inspects stills → implement with **design-eng**
 - Install scripts verify **SHA-256** of the binary  
 - Gap-fill migrate from legacy `~/.muse/` (never overwrites existing `.meta` files)  
 - Logs to **`~/.meta/meta.log`** (never paints stderr over the TUI)
-
----
-
-## Install (one shot)
-
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
-```
-
-### macOS / Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
-```
-
-That command will:
-
-1. Install Rust if needed  
-2. **Auto-install missing prerequisites** at latest versions — Node.js LTS, Bun, uv, ripgrep, ffmpeg (winget / brew / apt / official installers; skipped when present)  
-3. Clone or update this repo  
-4. `cargo build --release`  
-5. Install **`meta`** (+ `muse` alias) to `~/.local/bin` and **verify SHA-256**  
-6. `meta ecosystem ensure` — Graphify · PLUR · Ruflo · Executor · omp · browser  
-7. Orca hook when possible  
-8. Save auth if `META_API_KEY` / `MODEL_API_KEY` is set (**machine-local only**)  
-
-```powershell
-meta auth login    # → ~/.meta/auth.json only
-meta               # open the TUI
-meta doctor        # health check (incl. ffmpeg / vision)
-```
-
-Or sign in **from inside the TUI**: run `meta` and use `/login` (secure masked key
-entry — never echoed to the transcript or history) and `/logout` (clears the stored
-key). Launching with no key opens the login prompt automatically.
-
-Key: [dev.meta.ai](https://dev.meta.ai/) → API keys.
-
-### Already cloned
-
-```powershell
-cd meta-cli
-.\install.ps1          # Windows
-# ./install.sh         # macOS / Linux
-```
-
-### Prerequisites (auto-installed by the installer when missing)
-
-| Need | For |
-|------|-----|
-| **Node.js 20+** | PLUR, Ruflo, Executor, skills CLI, AKM |
-| **uv** (or Python 3.10+) | Graphify |
-| **ripgrep** | Fast `grep` / `glob` (falls back if missing) |
-| **ffmpeg** | `extract_frames` / design-from-video (optional; `look` still works on short videos & images) |
 
 ---
 

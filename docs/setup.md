@@ -1,30 +1,31 @@
 # Setup
 
-System requirements, platform-specific installation, updates, and uninstallation for Meta CLI.
+System requirements, **every install path**, what lands on your PC, updates, and uninstallation.
+
+!!! tip "It's one line"
+    **Windows:** `irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex`  
+    **macOS / Linux:** `curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash`  
+    Then: `meta auth login` → `meta`. Full detail below.
+
+---
 
 ## System requirements
-
-Meta CLI runs on the following platforms:
 
 | Requirement | Details |
 |-------------|---------|
 | **Operating system** | Windows 10+ · macOS 13+ · Ubuntu 20.04+ · Debian 10+ · Alpine 3.19+ |
 | **Hardware** | 4 GB+ RAM, x64 or ARM64 processor |
-| **Network** | Internet connection required (Meta Model API) |
+| **Network** | Internet (Meta Model API + first install downloads) |
 | **Shell** | PowerShell, CMD, Bash, or Zsh |
-
-### Additional dependencies
-
-| Dependency | Required | Purpose |
-|------------|----------|---------|
-| **Node.js 20+** | No (recommended) | PLUR, Ruflo, Executor, skills CLI, AKM |
-| **uv** or Python 3.10+ | No (recommended) | Graphify |
-| **ripgrep** | No | Fast `grep` / `glob` (falls back if missing) |
-| **ffmpeg** | No | `extract_frames` / design-from-video |
+| **Git** | Required for the one-liner / clone paths |
 
 ---
 
-## Install Meta CLI
+## Install methods
+
+### 1. One-liner (recommended)
+
+Does **everything**: Rust if needed, prereqs, build, PATH, ecosystem packs, browser stage, optional Orca hook + auth.
 
 === "Windows (PowerShell)"
 
@@ -38,125 +39,182 @@ Meta CLI runs on the following platforms:
     curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
     ```
 
-The install script will:
+### 2. Prebuilt Windows EXE (no local compile)
 
-1. Install Rust if needed
-2. Clone or update the repo
-3. `cargo build --release`
-4. Install **`meta`** (+ `muse` alias) to `~/.local/bin` and verify SHA-256
-5. Run `meta ecosystem ensure` when Node/uv are available
-6. Set up Orca hook when possible
-7. Save auth if `META_API_KEY` / `MODEL_API_KEY` is set (machine-local only)
+1. Open [**Releases → latest**](https://github.com/nuroctane/meta-cli/releases/latest)
+2. Download `meta-windows-x86_64.exe` (and `.sha256` if you want to verify)
+3. Install to the same location the one-liner uses:
 
-!!! tip "Already cloned?"
-    ```bash
-    cd meta-cli
-    .\install.ps1          # Windows
-    # ./install.sh         # macOS / Linux
-    ```
+```powershell
+$bin = "$env:USERPROFILE\.local\bin"
+New-Item -ItemType Directory -Force -Path $bin | Out-Null
+Copy-Item -Force .\meta-windows-x86_64.exe "$bin\meta.exe"
+Copy-Item -Force "$bin\meta.exe" "$bin\muse.exe"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$bin*") {
+  [Environment]::SetEnvironmentVariable("Path", "$bin;$userPath", "User")
+}
+# NEW terminal, then finish the stack:
+meta --version
+meta ecosystem ensure
+meta browser setup
+meta auth login
+```
 
-### Verify your installation
+!!! note "EXE vs one-liner"
+    The prebuilt EXE is just the **binary**. You still want `meta ecosystem ensure` + `meta browser setup` for Graphify / PLUR / Ruflo / omp / browser / skills — the one-liner runs those for you.
 
-After installing, confirm Meta CLI is working:
+### 3. From a local clone
+
+```bash
+cd meta-cli
+./install.ps1    # Windows PowerShell: .\install.ps1
+# ./install.sh   # macOS / Linux
+```
+
+Same steps as the remote one-liner, using the checkout you already have.
+
+### 4. Manual `cargo` build
+
+```bash
+git clone https://github.com/nuroctane/meta-cli.git && cd meta-cli
+cargo build --release
+# Copy target/release/meta[.exe] → ~/.local/bin/meta (+ muse alias)
+meta ecosystem ensure
+meta browser setup
+meta auth login
+```
+
+### Verify
 
 ```bash
 meta --version
-```
-
-Run a full health check:
-
-```bash
 meta doctor
 ```
 
 ---
 
+## What gets installed (A → Z)
+
+Everything is **on your machine only**. Secrets never go into the git checkout.
+
+### A–G · Runtimes & build tools (one-liner installs if missing)
+
+| Piece | Typical location | Used for |
+|-------|------------------|----------|
+| **Rust / cargo** (rustup) | `~/.cargo/` | Compiling Meta CLI |
+| **Git** | system | Clone / update source |
+| **Node.js 20+** | system / winget / brew / apt | PLUR, Ruflo, Executor, skills, browser CLI, AKM |
+| **Bun** | `~/.bun/` | **omp** (Oh My Pi) |
+| **uv** | `~/.local/bin` | **Graphify** |
+| **ripgrep** | system | Fast `grep` / `glob` |
+| **ffmpeg** | system | `extract_frames` / design-from-video |
+
+### Meta CLI binary
+
+| Piece | Path |
+|-------|------|
+| **`meta`** | `~/.local/bin/meta` · Windows `meta.exe` |
+| **`muse`** | Same binary, legacy alias |
+| **Integrity** | `~/.local/bin/meta.sha256` |
+| **Source tree** (one-liner) | `~/laboratory/meta-cli` (Windows: `%USERPROFILE%\laboratory\meta-cli`) |
+| **PATH** | `~/.local/bin` added to User PATH (Windows) or a shell rc (Unix) |
+
+### Data home — `~/.meta/`
+
+Created on first auth / first run:
+
+| Path | Purpose |
+|------|---------|
+| `auth.json` | API key |
+| `config.toml` | Model, effort, budgets, compact, `poor_mode`, `ecosystem_auto_ensure`, … |
+| `permissions.toml` | Optional allow/deny/ask rules |
+| `hooks.toml` | Optional pre/post tool hooks |
+| `meta.log` | Tracing (not drawn into the TUI) |
+| `status.json` / `usage.jsonl` / `ade.json` | Live usage + host panels |
+| `memory.md` / `history.jsonl` | Notes + prompt history |
+| `sessions/` | Sessions + `.json.bak` / `.precompact.bak` |
+| `tool-results/` | Spilled large tool outputs |
+| `browser-extension/` | Staged Chromium extension for `browser` |
+| `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory |
+
+### Ecosystem (after `ecosystem ensure`)
+
+External CLIs / packs (not inside the `meta` binary):
+
+| Component | Role |
+|-----------|------|
+| Graphify | Code knowledge graph |
+| PLUR | Shared engram memory |
+| Ruflo | Vector memory / swarm helpers |
+| Executor | MCP / OpenAPI catalog |
+| omp | Headless coding-agent backend |
+| agent-browser-cli | Real-browser bridge |
+| Skills + AKM | Progressive skill packs |
+| Browser setup | Stages extension; one manual “Load unpacked” in Chromium |
+
+### Optional
+
+| Piece | Notes |
+|-------|--------|
+| Orca hook | `meta install-hook` when Orca is present |
+| Env-based auth | `META_API_KEY` / `MODEL_API_KEY` → saved under `~/.meta/auth.json` only |
+
+---
+
 ## Authenticate
 
-Meta CLI requires a [Meta Model API key](https://dev.meta.ai/). Get one from [dev.meta.ai](https://dev.meta.ai/) → API keys.
-
-Log in from the command line:
+Get a key from [dev.meta.ai](https://dev.meta.ai/) → API keys.
 
 ```bash
 meta auth login
 ```
 
-Or sign in from inside the TUI — run `meta` and use `/login` (secure masked key entry — never echoed to transcript or history) and `/logout` (clears the stored key). Launching with no key opens the login prompt automatically.
+Or inside the TUI: `/login` (masked) · `/logout`. No key on launch → login modal opens automatically.
 
-See [Authentication](authentication.md) for all options.
+See [Authentication](authentication.md).
 
 ---
 
-## Update Meta CLI
+## Update
 
-### Auto-updates (native install)
-
-Native installations update automatically in the background. Updates take effect the next time you start Meta CLI.
-
-### Manual update
+Re-run the install one-liner, or:
 
 ```bash
-meta update
+# from a clone
+git pull && ./install.ps1   # or install.sh
 ```
 
-Or re-run the install script:
+Prebuilt users: download a newer `meta-windows-x86_64.exe` from Releases and replace `~/.local/bin/meta.exe`.
+
+```bash
+meta doctor   # confirm version + sha256
+```
+
+---
+
+## Uninstall
+
+### Binary
 
 === "Windows"
 
     ```powershell
-    irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+    Remove-Item -Force "$env:USERPROFILE\.local\bin\meta.exe","$env:USERPROFILE\.local\bin\muse.exe","$env:USERPROFILE\.local\bin\meta.sha256" -ErrorAction SilentlyContinue
     ```
 
 === "macOS / Linux"
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+    rm -f ~/.local/bin/meta ~/.local/bin/muse ~/.local/bin/meta.sha256
     ```
 
-### Disable auto-updates
-
-Add to `~/.meta/config.toml`:
-
-```toml
-auto_updates = false
-```
-
-Or set the environment variable:
-
-```bash
-export DISABLE_AUTOUPDATER=1
-```
-
----
-
-## Uninstall Meta CLI
-
-### Binary and data
+### Config, sessions, usage (destructive)
 
 === "Windows"
 
     ```powershell
-    Remove-Item -Path "$env:USERPROFILE\.local\bin\meta.exe" -Force
-    Remove-Item -Path "$env:USERPROFILE\.local\bin\muse.exe" -Force
-    Remove-Item -Path "$env:USERPROFILE\.local\share\meta" -Recurse -Force
-    ```
-
-=== "macOS / Linux"
-
-    ```bash
-    rm -f ~/.local/bin/meta
-    rm -f ~/.local/bin/muse
-    rm -rf ~/.local/share/meta
-    ```
-
-### Configuration files
-
-!!! warning "This will delete all your settings, sessions, and usage history."
-
-=== "Windows"
-
-    ```powershell
-    Remove-Item -Path "$env:USERPROFILE\.meta" -Recurse -Force
+    Remove-Item -Recurse -Force "$env:USERPROFILE\.meta"
     ```
 
 === "macOS / Linux"
@@ -165,18 +223,12 @@ export DISABLE_AUTOUPDATER=1
     rm -rf ~/.meta
     ```
 
-### Legacy files
+### Legacy home
 
-Older installs used `~/.muse/`. To remove:
+Older builds used `~/.muse/` — remove the same way if you no longer need it.
 
-=== "Windows"
+### Build cache / source (optional)
 
-    ```powershell
-    Remove-Item -Path "$env:USERPROFILE\.muse" -Recurse -Force
-    ```
-
-=== "macOS / Linux"
-
-    ```bash
-    rm -rf ~/.muse
-    ```
+- Source checkout: `~/laboratory/meta-cli` (or your clone path)
+- Rust target artifacts: inside that repo’s `target/`
+- rustup / node / bun / uv / ffmpeg: uninstall with your OS package manager if you installed them only for Meta and don’t need them elsewhere

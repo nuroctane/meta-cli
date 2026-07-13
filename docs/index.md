@@ -14,6 +14,24 @@ muse          # legacy alias (same binary)
 
 ---
 
+## Install — one line
+
+=== "Windows (PowerShell)"
+
+    ```powershell
+    irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+    ```
+
+=== "macOS / Linux"
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+    ```
+
+Then: `meta auth login` → `meta`. Prebuilt Windows EXE, clone, and cargo paths — plus **everything the installer puts on your PC** — are documented in **[Setup](setup.md)**.
+
+---
+
 ## What you get
 
 | Surface | Details |
