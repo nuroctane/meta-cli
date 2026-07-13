@@ -155,6 +155,12 @@ impl ToolHost {
             .clone()
     }
 
+    /// Execute a tool by name. Deliberately a direct `match` (not a
+    /// `Vec<Box<dyn Tool>>` lookup): `ToolHost` is a throwaway built per call
+    /// from two `Arc` clones, so a stored registry would re-allocate every
+    /// boxed tool on each dispatch — a hot-path regression. The trade-off is
+    /// that the arm roster here must mirror [`Self::boxed_tools`]; the
+    /// `roster_stays_in_sync` test locks that invariant.
     pub fn dispatch(&self, name: &str, arguments: &str, ctx: &ToolContext) -> Result<String> {
         if name == "agent" {
             return Err(MuseError::Tool(
@@ -263,4 +269,54 @@ pub(crate) fn arg_u64(args: &Value, key: &str) -> Option<u64> {
             .or_else(|| v.as_i64().map(|i| i as u64))
             .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every tool the model can see (a schema in `tool_defs`) must have a
+    /// `dispatch` arm, and vice-versa. Because the two rosters live in separate
+    /// functions (see the note on `dispatch`), this test is the guardrail: it
+    /// locks the exact set so adding/removing a tool in only one place fails CI.
+    #[test]
+    fn roster_stays_in_sync() {
+        let mut got: Vec<String> = ToolHost::default()
+            .tool_defs()
+            .iter()
+            .map(|d| d.name.clone())
+            .collect();
+        got.sort();
+
+        let mut want = vec![
+            "read_file", "list_dir", "write_file", "edit_file", "multi_edit", "apply_patch",
+            "bash", "grep", "glob", "web_fetch", "web_search", "browser", "look",
+            "extract_frames", "git_status", "git_diff", "graphify", "plur", "ruflo", "executor",
+            "omp", "skill", "memory", "todo_write", "submit_plan", "agent",
+        ];
+        want.sort();
+
+        assert_eq!(
+            got,
+            want,
+            "tool roster drift: update BOTH boxed_tools() and the dispatch match \
+             (and this list) when adding/removing a tool"
+        );
+    }
+
+    /// The unknown-tool fallthrough must actually reject unregistered names
+    /// (so a schema/dispatch mismatch surfaces as a clear error, not a panic).
+    #[test]
+    fn unknown_tool_is_rejected() {
+        let host = ToolHost::default();
+        let ctx = ToolContext {
+            cwd: std::env::temp_dir(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+        };
+        let err = host
+            .dispatch("definitely_not_a_real_tool", "{}", &ctx)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown tool"), "got: {err}");
+    }
 }
