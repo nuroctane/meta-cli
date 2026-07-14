@@ -97,9 +97,85 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 // ── secure login modal (`/login`) ───────────────────────────────────────────
 fn draw_login(f: &mut Frame, app: &App, area: Rect) {
     let Some(m) = &app.login else { return };
-    let w = 60u16.min(area.width.saturating_sub(4)).max(40);
-    // header + blank + field + blank + hint (+ error) = 6-7 rows inside frame.
-    let want: u16 = if m.error.is_some() { 11 } else { 10 };
+    match m.stage {
+        super::app::LoginStage::Provider => draw_login_picker(f, app, m, area),
+        super::app::LoginStage::Key => draw_login_key(f, app, m, area),
+    }
+}
+
+/// Stage 1 — scrollable, filterable provider list.
+fn draw_login_picker(f: &mut Frame, app: &App, m: &super::app::LoginModal, area: Rect) {
+    let w = 74u16.min(area.width.saturating_sub(4)).max(48);
+    let h = 24u16.min(area.height.saturating_sub(2)).max(10);
+    let rect = Rect {
+        x: (area.width.saturating_sub(w)) / 2,
+        y: (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
+    let phase = modal_phase(app);
+    let picks = m.filtered();
+    let title = format!(" 🔑 choose a provider  ·  {} ", picks.len());
+    draw_modal_frame(
+        f,
+        rect,
+        phase,
+        theme::INDIGO,
+        &title,
+        None,
+        "  type to filter  ·  ↑↓ move  ·  ↵ pick  ·  esc cancel  ",
+    );
+    let inner = modal_inner(rect);
+
+    // Filter line.
+    let mut caret = m.filter.clone();
+    if theme::blink_on(app.spinner_epoch.elapsed()) {
+        caret.push('▉');
+    }
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("  search  ".to_string(), theme::style_faint()),
+            Span::styled(caret, Style::default().fg(theme::BLUE_100).add_modifier(Modifier::BOLD)),
+        ]),
+        Line::default(),
+    ];
+
+    // Visible window around the selection.
+    let body_rows = (inner.height as usize).saturating_sub(3).max(1);
+    let sel = m.sel.min(picks.len().saturating_sub(1));
+    let start = sel.saturating_sub(body_rows.saturating_sub(1));
+    let col = (inner.width as usize).saturating_sub(4);
+    for (i, p) in picks.iter().enumerate().skip(start).take(body_rows) {
+        let selected = i == sel;
+        let marker = if selected { "❯ " } else { "  " };
+        let name_style = if selected {
+            Style::default().fg(theme::BG).bg(theme::META_BLUE).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FG)
+        };
+        let note_style = if selected {
+            Style::default().fg(theme::BLUE_100).bg(theme::META_BLUE)
+        } else {
+            theme::style_faint()
+        };
+        let text = format!("{marker}{:<22}{}", p.name, p.note);
+        lines.push(Line::from(Span::styled(truncate(&text, col), if selected { name_style } else { note_style })));
+    }
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+        inner,
+    );
+}
+
+/// Stage 2 — masked key entry for the chosen provider.
+fn draw_login_key(f: &mut Frame, app: &App, m: &super::app::LoginModal, area: Rect) {
+    let provider = crate::providers::by_id(&m.provider_id)
+        .copied()
+        .unwrap_or(*crate::providers::default_provider());
+    let w = 64u16.min(area.width.saturating_sub(4)).max(44);
+    let want: u16 = if m.error.is_some() { 12 } else { 11 };
     let h = want.min(area.height.saturating_sub(2));
     let rect = Rect {
         x: (area.width.saturating_sub(w)) / 2,
@@ -108,59 +184,50 @@ fn draw_login(f: &mut Frame, app: &App, area: Rect) {
         height: h,
     };
     f.render_widget(Clear, rect);
-    f.render_widget(
-        Block::default().style(Style::default().bg(theme::SURFACE_2)),
-        rect,
-    );
+    f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
-    let title = if m.replacing {
-        " 🔑 replace API key "
-    } else {
-        " 🔑 sign in "
-    };
     draw_modal_frame(
         f,
         rect,
         phase,
         theme::INDIGO,
-        title,
+        &format!(" 🔑 {} ", provider.name),
         None,
-        "  enter save  ·  ctrl+v paste  ·  ctrl+u clear  ·  esc cancel  ",
+        "  ↵ save  ·  ctrl+v paste  ·  ctrl+u clear  ·  esc back  ",
     );
     let inner = modal_inner(rect);
 
-    // Masked field: dots for length, a blinking block caret at the end.
     let field_w = (inner.width as usize).saturating_sub(4).max(8);
     let dots = m.buf.chars().count().min(field_w.saturating_sub(1));
     let mut field = "•".repeat(dots);
     if theme::blink_on(app.spinner_epoch.elapsed()) {
         field.push('▉');
     }
+    let key_hint = if provider.key_optional {
+        format!("{} API key  (optional for local)", provider.name)
+    } else {
+        format!("{} API key  ·  env {}", provider.name, provider.env_key)
+    };
     let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            "  Meta Model API key".to_string(),
-            theme::style_faint(),
-        )),
+        Line::from(Span::styled(format!("  {key_hint}"), theme::style_faint())),
         Line::default(),
         Line::from(vec![
             Span::raw("  ".to_string()),
             Span::styled(
                 format!("{field:<field_w$}"),
-                Style::default()
-                    .fg(theme::BLUE_100)
-                    .bg(theme::SURFACE)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme::BLUE_100).bg(theme::SURFACE).add_modifier(Modifier::BOLD),
             ),
         ]),
         Line::default(),
         Line::from(vec![
             Span::raw("  ".to_string()),
+            Span::styled(format!("{} chars", m.buf.chars().count()), theme::style_faint()),
+            Span::styled("   ·   stored only in ~/.meta/auth.json".to_string(), theme::style_faint()),
+        ]),
+        Line::from(vec![
+            Span::raw("  ".to_string()),
             Span::styled(
-                format!("{} chars", m.buf.chars().count()),
-                theme::style_faint(),
-            ),
-            Span::styled(
-                "   ·   stored only in ~/.meta/auth.json".to_string(),
+                format!("model {}  ·  {}", provider.default_model, provider.base_url),
                 theme::style_faint(),
             ),
         ]),

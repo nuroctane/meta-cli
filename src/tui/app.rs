@@ -405,13 +405,43 @@ pub struct ApprovalState {
 
 /// Secure in-TUI API-key entry (`/login`). The key is captured masked and
 /// never enters the transcript or the persisted input history.
+/// Two-stage sign-in: pick a provider, then enter its key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginStage {
+    Provider,
+    Key,
+}
+
 pub struct LoginModal {
+    pub stage: LoginStage,
+    /// Provider-search filter typed in the picker stage.
+    pub filter: String,
+    /// Selected row index into the filtered provider list.
+    pub sel: usize,
+    /// Scroll offset of the provider list.
+    pub scroll: usize,
+    /// Provider id chosen once we reach the key stage.
+    pub provider_id: String,
     /// The key characters typed/pasted so far (rendered as dots).
     pub buf: String,
-    /// True when replacing an existing key (shows a slightly different hint).
-    pub replacing: bool,
     /// Transient error to show under the field (e.g. "key too short").
     pub error: Option<String>,
+}
+
+impl LoginModal {
+    /// Providers matching the current filter (name / id / note, case-insensitive).
+    pub fn filtered(&self) -> Vec<&'static crate::providers::Provider> {
+        let f = self.filter.trim().to_lowercase();
+        crate::providers::PROVIDERS
+            .iter()
+            .filter(|p| {
+                f.is_empty()
+                    || p.name.to_lowercase().contains(&f)
+                    || p.id.to_lowercase().contains(&f)
+                    || p.note.to_lowercase().contains(&f)
+            })
+            .collect()
+    }
 }
 
 /// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
@@ -2738,78 +2768,155 @@ impl App {
 
     // ── secure login ───────────────────────────────────────────────────
     fn open_login(&mut self) {
-        let replacing = crate::auth::resolve_api_key().is_ok();
+        // /login clears the prior key/auth up front — a clean slate to pick a
+        // provider and enter a fresh key.
+        let _ = crate::auth::logout();
+        self.authed = false;
         self.login = Some(LoginModal {
+            stage: LoginStage::Provider,
+            filter: String::new(),
+            sel: 0,
+            scroll: 0,
+            provider_id: self.cfg.provider.clone(),
             buf: String::new(),
-            replacing,
             error: None,
         });
     }
 
     fn on_login_key(&mut self, key: event::KeyEvent) {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let stage = self.login.as_ref().map(|m| m.stage);
+        match stage {
+            Some(LoginStage::Provider) => self.on_login_picker_key(key, ctrl),
+            Some(LoginStage::Key) => self.on_login_key_entry(key, ctrl),
+            None => {}
+        }
+    }
+
+    fn on_login_picker_key(&mut self, key: event::KeyEvent, ctrl: bool) {
+        let Some(m) = &mut self.login else { return };
         match key.code {
-            KeyCode::Esc => {
-                self.login = None;
+            KeyCode::Esc => self.login = None,
+            KeyCode::Up => {
+                m.sel = m.sel.saturating_sub(1);
             }
-            KeyCode::Enter => self.submit_login(),
+            KeyCode::Down => {
+                let n = m.filtered().len();
+                if n > 0 {
+                    m.sel = (m.sel + 1).min(n - 1);
+                }
+            }
+            KeyCode::Enter => {
+                let picks = m.filtered();
+                if let Some(p) = picks.get(m.sel) {
+                    m.provider_id = p.id.to_string();
+                    m.stage = LoginStage::Key;
+                    m.error = None;
+                }
+            }
             KeyCode::Backspace => {
-                if let Some(m) = &mut self.login {
-                    m.buf.pop();
-                }
-            }
-            // Paste a key with Ctrl+V (keys are usually pasted, not typed).
-            KeyCode::Char('v') if ctrl => {
-                if let (Some(t), Some(m)) = (clipboard_get(), self.login.as_mut()) {
-                    m.buf.push_str(t.trim());
-                }
+                m.filter.pop();
+                m.sel = 0;
+                m.scroll = 0;
             }
             KeyCode::Char('u') if ctrl => {
-                if let Some(m) = &mut self.login {
-                    m.buf.clear();
-                }
+                m.filter.clear();
+                m.sel = 0;
+                m.scroll = 0;
             }
             KeyCode::Char(c) if !ctrl && !c.is_control() => {
-                if let Some(m) = &mut self.login {
-                    m.buf.push(c);
-                }
+                m.filter.push(c);
+                m.sel = 0;
+                m.scroll = 0;
             }
             _ => {}
         }
     }
 
+    fn on_login_key_entry(&mut self, key: event::KeyEvent, ctrl: bool) {
+        let Some(m) = &mut self.login else { return };
+        match key.code {
+            // Esc backs up to the provider picker (not straight out).
+            KeyCode::Esc => {
+                m.stage = LoginStage::Provider;
+                m.buf.clear();
+                m.error = None;
+            }
+            KeyCode::Enter => self.submit_login(),
+            KeyCode::Backspace => {
+                m.buf.pop();
+            }
+            KeyCode::Char('v') if ctrl => {
+                if let Some(t) = clipboard_get() {
+                    m.buf.push_str(t.trim());
+                }
+            }
+            KeyCode::Char('u') if ctrl => m.buf.clear(),
+            KeyCode::Char(c) if !ctrl && !c.is_control() => m.buf.push(c),
+            _ => {}
+        }
+    }
+
     fn submit_login(&mut self) {
-        let key = match &self.login {
-            Some(m) => m.buf.trim().to_string(),
+        let (provider_id, key) = match &self.login {
+            Some(m) => (m.provider_id.clone(), m.buf.trim().to_string()),
             None => return,
         };
-        match crate::auth::save_api_key(&key) {
-            Ok(()) => {
-                // Hot-swap the client so the new key takes effect next turn.
-                match crate::api::MetaClient::new(&self.cfg.base_url, &key) {
-                    Ok(client) => {
-                        self.client = client;
-                        self.authed = true;
-                        self.login = None;
-                        self.push_note(
-                            Tone::Mode,
-                            format!(
-                                "signed in · key {} · saved to {}",
-                                crate::auth::key_fingerprint(&key),
-                                crate::config::auth_path().display()
-                            ),
-                        );
-                    }
-                    Err(e) => {
-                        if let Some(m) = &mut self.login {
-                            m.error = Some(format!("client error: {e}"));
-                        }
-                    }
+        let provider = crate::providers::by_id(&provider_id)
+            .copied()
+            .unwrap_or(*crate::providers::default_provider());
+
+        if key.is_empty() && !provider.key_optional {
+            if let Some(m) = &mut self.login {
+                m.error = Some(format!("{} needs an API key", provider.name));
+            }
+            return;
+        }
+
+        // Persist the key (single active key — /login already cleared the old one).
+        if !key.is_empty() {
+            if let Err(e) = crate::auth::save_api_key(&key) {
+                if let Some(m) = &mut self.login {
+                    m.error = Some(e.to_string());
                 }
+                return;
+            }
+        }
+
+        // Point config at the chosen provider: endpoint + default model + style.
+        self.cfg.provider = provider.id.to_string();
+        self.cfg.base_url = provider.base_url.to_string();
+        self.cfg.model = provider.default_model.to_string();
+        let _ = crate::config::save_config(&self.cfg);
+        if let Some(s) = &mut self.session {
+            s.model = self.cfg.model.clone();
+        }
+        if let Some(u) = &mut self.usage {
+            u.set_model(self.cfg.model.clone());
+        }
+
+        let chat = provider.style == crate::providers::ApiStyle::ChatCompletions;
+        match crate::api::MetaClient::new(&self.cfg.base_url, &key).map(|c| c.with_chat_completions(chat)) {
+            Ok(client) => {
+                self.client = client;
+                self.authed = true;
+                self.login = None;
+                let keynote = if key.is_empty() {
+                    "no key (local)".to_string()
+                } else {
+                    format!("key {}", crate::auth::key_fingerprint(&key))
+                };
+                self.push_note(
+                    Tone::Mode,
+                    format!(
+                        "signed in · {} · {keynote}\n  model {}  ·  {}",
+                        provider.name, self.cfg.model, provider.base_url,
+                    ),
+                );
             }
             Err(e) => {
                 if let Some(m) = &mut self.login {
-                    m.error = Some(e.to_string());
+                    m.error = Some(format!("client error: {e}"));
                 }
             }
         }

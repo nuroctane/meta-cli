@@ -8,6 +8,10 @@ pub struct MetaClient {
     http: Client,
     base_url: String,
     api_key: String,
+    /// When true, speak OpenAI Chat Completions (`/chat/completions`) instead of
+    /// the Meta/OpenAI Responses API. Set for aggregators and most third-party
+    /// providers (see `crate::providers`).
+    chat: bool,
 }
 
 /// Incremental events surfaced while a response streams in.
@@ -32,7 +36,14 @@ impl MetaClient {
             http,
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
+            chat: false,
         })
+    }
+
+    /// Switch this client to the OpenAI Chat Completions shape.
+    pub fn with_chat_completions(mut self, on: bool) -> Self {
+        self.chat = on;
+        self
     }
 
     fn is_retryable_status(status: u16) -> bool {
@@ -40,6 +51,9 @@ impl MetaClient {
     }
 
     pub async fn create_response(&self, req: &ResponseRequest) -> Result<ApiResponse> {
+        if self.chat {
+            return self.create_chat(req).await;
+        }
         let url = format!("{}/responses", self.base_url);
         let mut attempt = 0u32;
         loop {
@@ -103,6 +117,9 @@ impl MetaClient {
         mut on_event: impl FnMut(StreamEvent),
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<ApiResponse> {
+        if self.chat {
+            return self.create_chat_stream(req, on_event, cancel).await;
+        }
         let url = format!("{}/responses", self.base_url);
         let mut attempt = 0u32;
         let mut last_err: Option<MuseError> = None;
@@ -223,6 +240,129 @@ impl MetaClient {
             // retry with backoff before next attempt
             tokio::time::sleep(std::time::Duration::from_millis(600 * attempt as u64)).await;
         }
+    }
+
+    // ── OpenAI Chat Completions adapter ───────────────────────────────────
+    async fn create_chat(&self, req: &ResponseRequest) -> Result<ApiResponse> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = super::chat::build_body(req, false);
+        let mut attempt = 0u32;
+        loop {
+            attempt += 1;
+            let res = self
+                .http
+                .post(&url)
+                .bearer_auth(&self.api_key)
+                .header("Content-Type", "application/json")
+                .json(&body)
+                .send()
+                .await;
+            let res = match res {
+                Ok(r) => r,
+                Err(e) if attempt < 4 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64)).await;
+                    let _ = e;
+                    continue;
+                }
+                Err(e) => return Err(MuseError::Other(format!("request failed: {e}"))),
+            };
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            if !status.is_success() {
+                if Self::is_retryable_status(status.as_u16()) && attempt < 4 {
+                    tokio::time::sleep(std::time::Duration::from_millis(400 * (1 << (attempt - 1)))).await;
+                    continue;
+                }
+                return Err(MuseError::Api {
+                    status: status.as_u16(),
+                    message: parse_error_message(&text).unwrap_or(text),
+                });
+            }
+            let v: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| MuseError::Other(format!("bad chat response: {e}; body={text}")))?;
+            let shaped = super::chat::parse_completion(&v);
+            return super::chat::to_api_response(shaped)
+                .map_err(|e| MuseError::Other(format!("chat response map failed: {e}")));
+        }
+    }
+
+    async fn create_chat_stream(
+        &self,
+        req: &ResponseRequest,
+        mut on_event: impl FnMut(StreamEvent),
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<ApiResponse> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = super::chat::build_body(req, true);
+        let res = self
+            .http
+            .post(&url)
+            .bearer_auth(&self.api_key)
+            .header("Content-Type", "application/json")
+            .header("Accept", "text/event-stream")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| MuseError::Other(format!("stream connect failed: {e}")))?;
+
+        let status = res.status();
+        let content_type = res
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+
+        if !status.is_success() {
+            let text = res.text().await.unwrap_or_default();
+            return Err(MuseError::Api {
+                status: status.as_u16(),
+                message: parse_error_message(&text).unwrap_or(text),
+            });
+        }
+
+        // Server ignored stream=true → plain JSON completion.
+        if !content_type.contains("text/event-stream") {
+            let text = res.text().await?;
+            let v: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|e| MuseError::Other(format!("bad chat response: {e}; body={text}")))?;
+            let shaped = super::chat::parse_completion(&v);
+            return super::chat::to_api_response(shaped)
+                .map_err(|e| MuseError::Other(format!("chat response map failed: {e}")));
+        }
+
+        let mut stream = res.bytes_stream();
+        let mut parser = super::sse::SseParser::new();
+        let mut acc = super::chat::StreamAccumulator::default();
+
+        loop {
+            let chunk = tokio::select! {
+                _ = cancel.cancelled() => return Err(MuseError::Interrupted),
+                c = stream.next() => c,
+            };
+            let Some(chunk) = chunk else { break };
+            let chunk = chunk.map_err(|e| MuseError::Other(format!("stream chunk error: {e}")))?;
+            for data in parser.push(&chunk) {
+                if data.trim() == "[DONE]" {
+                    continue;
+                }
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                    // Surface provider-side errors mid-stream.
+                    if let Some(msg) = v.pointer("/error/message").and_then(|m| m.as_str()) {
+                        return Err(MuseError::Api { status: 0, message: msg.to_string() });
+                    }
+                    if let Some(delta) = acc.push(&v) {
+                        on_event(StreamEvent::TextDelta(delta));
+                    }
+                }
+            }
+        }
+
+        let shaped = acc.finish();
+        let resp = super::chat::to_api_response(shaped)
+            .map_err(|e| MuseError::Other(format!("chat stream map failed: {e}")))?;
+        on_event(StreamEvent::Completed(resp.clone()));
+        Ok(resp)
     }
 }
 

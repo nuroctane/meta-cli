@@ -20,7 +20,6 @@ pub enum ApiStyle {
 
 /// A selectable provider.
 #[derive(Debug, Clone, Copy)]
-#[allow(dead_code)] // fields consumed by the /login picker + client adapter
 pub struct Provider {
     /// Stable id stored in config.
     pub id: &'static str,
