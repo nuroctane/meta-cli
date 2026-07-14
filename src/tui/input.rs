@@ -21,17 +21,6 @@ pub struct PasteBlock {
     pub content: String,
 }
 
-/// A run of plain text or a single paste chip on a display line.
-#[derive(Clone, Debug)]
-pub enum DisplaySeg {
-    Text(String),
-    Chip {
-        #[allow(dead_code)]
-        id: u32,
-        label: String,
-    },
-}
-
 /// One soft-wrapped row in the input viewport (scroll unit = one of these).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VisualRow {
@@ -228,35 +217,6 @@ impl InputState {
         self.pastes.get(&id)
     }
 
-    /// Display segments for one logical line (no embedded `\n`).
-    pub fn line_display_segs(&self, line: usize) -> Vec<DisplaySeg> {
-        let text = self.text();
-        let line_str = text.split('\n').nth(line).unwrap_or("");
-        // Map line_str back to absolute indices via line starts.
-        let base = self.line_start_index(line);
-        let mut segs = Vec::new();
-        let mut plain = String::new();
-        for (off, ch) in line_str.chars().enumerate() {
-            let abs = base + off;
-            if is_paste_sentinel(ch) {
-                if !plain.is_empty() {
-                    segs.push(DisplaySeg::Text(std::mem::take(&mut plain)));
-                }
-                let label = self
-                    .chip_label_at(abs)
-                    .unwrap_or_else(|| "[pasted 1-1 lines]".into());
-                let id = paste_id_of(ch).unwrap_or(0);
-                segs.push(DisplaySeg::Chip { id, label });
-            } else {
-                plain.push(ch);
-            }
-        }
-        if !plain.is_empty() {
-            segs.push(DisplaySeg::Text(plain));
-        }
-        segs
-    }
-
     fn line_start_index(&self, target_line: usize) -> usize {
         let mut line = 0;
         let mut idx = 0;
@@ -430,46 +390,6 @@ impl InputState {
         let _ = self.start_paste_chip(&normalized);
     }
 
-    /// Append to an existing paste chip by id. Returns false if the id is gone.
-    pub fn append_to_paste(&mut self, id: u32, s: &str) -> bool {
-        let normalized = normalize_paste(s);
-        if normalized.is_empty() {
-            return self.pastes.contains_key(&id);
-        }
-        let Some(p) = self.pastes.get_mut(&id) else {
-            return false;
-        };
-        p.content.push_str(&normalized);
-        // Keep caret after this chip's sentinel if it's still in the buffer.
-        if let Some(pos) = self
-            .buffer
-            .iter()
-            .position(|c| paste_id_of(*c) == Some(id))
-        {
-            self.cursor = pos + 1;
-        }
-        self.selection_anchor = None;
-        true
-    }
-
-    /// Replace paste chip body (clipboard-first: full text overwrites drip prefix).
-    pub fn replace_paste_content(&mut self, id: u32, s: &str) -> bool {
-        let normalized = normalize_paste(s);
-        let Some(p) = self.pastes.get_mut(&id) else {
-            return false;
-        };
-        p.content = normalized;
-        if let Some(pos) = self
-            .buffer
-            .iter()
-            .position(|c| paste_id_of(*c) == Some(id))
-        {
-            self.cursor = pos + 1;
-        }
-        self.selection_anchor = None;
-        true
-    }
-
     /// Create a new paste chip at the caret; returns its id.
     pub fn start_paste_chip(&mut self, s: &str) -> Option<u32> {
         let normalized = normalize_paste(s);
@@ -484,78 +404,6 @@ impl InputState {
         self.cursor += 1;
         self.selection_anchor = None;
         Some(id)
-    }
-
-    /// Merge every run of consecutive paste-chip sentinels into a single chip.
-    /// Safety net when Windows drip / session races create N× `[pasted 1-1]`.
-    /// Returns how many chips were removed.
-    pub fn collapse_adjacent_paste_chips(&mut self) -> usize {
-        let mut removed = 0usize;
-        let mut i = 0usize;
-        while i + 1 < self.buffer.len() {
-            let id_a = paste_id_of(self.buffer[i]);
-            let id_b = paste_id_of(self.buffer[i + 1]);
-            match (id_a, id_b) {
-                (Some(a), Some(b)) => {
-                    if a != b {
-                        let extra = self
-                            .pastes
-                            .get(&b)
-                            .map(|p| p.content.clone())
-                            .unwrap_or_default();
-                        if let Some(pa) = self.pastes.get_mut(&a) {
-                            pa.content.push_str(&extra);
-                        }
-                        self.pastes.remove(&b);
-                    }
-                    self.buffer.remove(i + 1);
-                    removed += 1;
-                    if self.cursor > i + 1 {
-                        self.cursor -= 1;
-                    } else if self.cursor == i + 1 {
-                        // Caret was on/after the removed chip → stay after survivor.
-                        self.cursor = i + 1;
-                    }
-                    if let Some(anchor) = self.selection_anchor.as_mut() {
-                        if *anchor > i + 1 {
-                            *anchor -= 1;
-                        } else if *anchor == i + 1 {
-                            *anchor = i + 1;
-                        }
-                    }
-                    // Stay at `i` — more chips may follow.
-                }
-                _ => i += 1,
-            }
-        }
-        if removed > 0 {
-            self.gc_pastes();
-        }
-        removed
-    }
-
-    /// Count of paste chips currently in the buffer (for tests / diagnostics).
-    pub fn paste_chip_count(&self) -> usize {
-        self.buffer.iter().filter(|c| is_paste_sentinel(**c)).count()
-    }
-
-    /// True if any live chip already holds this exact body (dedupe re-commits).
-    pub fn has_paste_content(&self, s: &str) -> bool {
-        let normalized = normalize_paste(s);
-        self.pastes.values().any(|p| p.content == normalized)
-    }
-
-    /// Legacy helper used by tests / stream catcher.
-    pub fn insert_paste_ex(&mut self, s: &str, force_chip: bool) {
-        let normalized = normalize_paste(s);
-        if normalized.is_empty() {
-            return;
-        }
-        if !force_chip && !should_chip(&normalized) {
-            self.insert_str(&normalized);
-            return;
-        }
-        let _ = self.start_paste_chip(&normalized);
     }
 
     pub fn backspace(&mut self) {
@@ -633,26 +481,6 @@ impl InputState {
         self.cursor = self.index_at_display_col(line + 1, dcol);
     }
 
-    /// Display width of a logical line (chips expand to label width).
-    pub fn line_display_width(&self, line: usize) -> usize {
-        let start = self.line_start_index(line);
-        let mut w = 0usize;
-        let mut i = start;
-        while i < self.buffer.len() && self.buffer[i] != '\n' {
-            w += self.display_width_at(i);
-            i += 1;
-        }
-        w
-    }
-
-    /// Max display width across all lines.
-    pub fn max_line_display_width(&self) -> usize {
-        (0..self.line_count())
-            .map(|l| self.line_display_width(l))
-            .max()
-            .unwrap_or(0)
-    }
-
     pub fn cursor_index(&self) -> usize {
         self.cursor
     }
@@ -661,32 +489,15 @@ impl InputState {
         self.buffer.get(idx).copied()
     }
 
-    /// Place the caret from a mouse click at (hard line, **display** column).
-    pub fn click_at(&mut self, line: usize, display_col: usize) {
-        self.selection_anchor = None;
-        self.cursor = self.index_at_display_col(line, display_col);
-    }
-
     pub fn set_cursor_index(&mut self, idx: usize) {
         self.selection_anchor = None;
         self.cursor = idx.min(self.buffer.len());
-    }
-
-    /// Start a drag-select: anchor + caret at (hard line, display col).
-    pub fn select_start_at(&mut self, line: usize, display_col: usize) {
-        let idx = self.index_at_display_col(line, display_col);
-        self.select_start_at_index(idx);
     }
 
     pub fn select_start_at_index(&mut self, idx: usize) {
         let idx = idx.min(self.buffer.len());
         self.selection_anchor = Some(idx);
         self.cursor = idx;
-    }
-
-    /// Extend selection end to (hard line, display col); keeps anchor.
-    pub fn select_drag_to(&mut self, line: usize, display_col: usize) {
-        self.select_drag_to_index(self.index_at_display_col(line, display_col));
     }
 
     pub fn select_drag_to_index(&mut self, idx: usize) {
@@ -903,13 +714,6 @@ impl InputState {
         self.line_col_of_index(self.cursor)
     }
 
-    /// (line, **display** col) of the caret for rendering (hard-line based).
-    pub fn cursor_display_line_col(&self) -> (usize, usize) {
-        let (line, _) = self.cursor_line_col();
-        let col = self.display_col_of_index(self.cursor);
-        (line, col)
-    }
-
     /// (visual_row, col_in_row) of the caret for soft-wrapped viewports.
     pub fn cursor_visual_pos(&self, width: usize) -> (usize, usize) {
         let row = self.visual_row_of_index(self.cursor, width);
@@ -1089,7 +893,7 @@ mod tests {
         i.insert_str("hello\nworld");
         i.select_all();
         assert_eq!(i.selected_text().as_deref(), Some("hello\nworld"));
-        i.click_at(1, 2); // w|orld (display col 2)
+        i.set_cursor_index(i.index_at_display_col(1, 2)); // w|orld (display col 2)
         assert!(!i.has_selection());
         assert_eq!(i.cursor_line_col(), (1, 2));
         i.select_all();
@@ -1148,53 +952,13 @@ mod tests {
     }
 
     #[test]
-    fn drip_paste_chunks_merge_via_append() {
+    fn two_pastes_make_two_independent_chips() {
         let mut i = InputState::empty_for_test();
-        let id = i.start_paste_chip("line one of many\n").unwrap();
-        assert!(i.append_to_paste(id, "line two of many\n"));
-        assert!(i.append_to_paste(id, "line three of many\n"));
-        assert!(i.append_to_paste(id, &"x".repeat(50)));
-        assert_eq!(i.buffer.len(), 1, "must be ONE chip, not one per drip");
-        let expanded = i.text_expanded();
-        assert!(expanded.contains("line one"));
-        assert!(expanded.contains("line three"));
-        assert!(expanded.contains(&"x".repeat(50)));
-        let label = i.chip_label_at(0).unwrap();
-        assert_eq!(
-            label,
-            format!("[pasted 1-{} lines]", expanded.lines().count())
-        );
-    }
-
-    #[test]
-    fn collapse_adjacent_merges_thousand_one_line_chips() {
-        let mut i = InputState::empty_for_test();
-        // Simulate the broken path: N separate start_paste_chip calls (Windows drip).
-        for n in 1..=20 {
-            let _ = i.start_paste_chip(&format!("line {n}\n"));
-        }
-        assert_eq!(i.paste_chip_count(), 20);
-        let removed = i.collapse_adjacent_paste_chips();
-        assert_eq!(removed, 19);
-        assert_eq!(i.paste_chip_count(), 1, "must collapse to exactly one chip");
-        assert_eq!(i.buffer.len(), 1);
-        let expanded = i.text_expanded();
-        assert!(expanded.starts_with("line 1\n"));
-        assert!(expanded.contains("line 20\n"));
-        assert_eq!(i.chip_label_at(0).as_deref(), Some("[pasted 1-20 lines]"));
-    }
-
-    #[test]
-    fn collapse_adjacent_preserves_text_between_chips() {
-        let mut i = InputState::empty_for_test();
-        let _ = i.start_paste_chip("a\nb\n");
+        i.insert_paste("a\nb\nc");
         i.insert_str(" mid ");
-        let _ = i.start_paste_chip("c\nd\n");
-        // Two chips separated by text — must NOT merge across plain text.
-        assert_eq!(i.paste_chip_count(), 2);
-        assert_eq!(i.collapse_adjacent_paste_chips(), 0);
-        assert_eq!(i.paste_chip_count(), 2);
-        assert_eq!(i.text_expanded(), "a\nb\n mid c\nd\n");
+        i.insert_paste("d\ne\nf");
+        assert_eq!(i.buffer.iter().filter(|c| is_paste_sentinel(**c)).count(), 2);
+        assert_eq!(i.text_expanded(), "a\nb\nc mid d\ne\nf");
     }
 
     #[test]
@@ -1222,8 +986,8 @@ mod tests {
     fn drag_select_across_text() {
         let mut i = InputState::empty_for_test();
         i.insert_str("abcdef");
-        i.select_start_at(0, 1);
-        i.select_drag_to(0, 4);
+        i.select_start_at_index(i.index_at_display_col(0, 1));
+        i.select_drag_to_index(i.index_at_display_col(0, 4));
         assert_eq!(i.selected_text().as_deref(), Some("bcd"));
     }
 
