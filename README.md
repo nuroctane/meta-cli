@@ -34,12 +34,14 @@ curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh 
 ### After install (30 seconds)
 
 ```text
-meta auth login      # paste key from https://dev.meta.ai/  →  ~/.meta/auth.json only
+meta auth login      # Meta Model API key → ~/.meta/auth.json
 meta                 # open the TUI
 meta doctor          # health check
 ```
 
-Or skip the CLI login: run `meta` and use **`/login`** in the TUI (masked entry). No key? login opens automatically.
+Or run `meta` and use **`/login`** in the TUI: pick any of **45+ providers**
+(OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, …),
+enter a masked key, and the endpoint + default model swap with it. No key on launch → login opens automatically.
 
 ### Update (do this later)
 
@@ -176,7 +178,7 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · **`/cd` `/pwd` `/context` `/status` `/doctor` `/budget` `/poor` `/permissions` `/hooks`** |
+| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **drag-select** · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · **multi-provider `/login`** · **`/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips`** · **`/cd` `/pwd` `/context` `/status` `/doctor` `/budget` `/poor` `/permissions` `/hooks`** |
 | **Agent** | Manual / plan / auto · tool loop · subagents · todos · **smarter auto-compact** · **session $ / token budgets** · tool-result spill · Esc cancel · Shift+Tab mid-turn · prompt-cache keys |
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent — **all first-class** (no deferred demotion) |
@@ -205,6 +207,7 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 ## Feature map
 
 ### Agent harness
+- **Multi-provider**: Meta + 45+ catalog entries via `/login`; **Responses** or **Chat Completions** adapter
 - Meta Model API **Responses** streaming + reasoning effort (`minimal` → `xhigh`)
 - **Manual / plan / auto** permission modes — **Shift+Tab** applies mid-turn
 - Tool loop with fail-closed capability flags (read-only / parallel / destructive), approval gates, Esc cancel
@@ -365,10 +368,13 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/model` `/effort` | Model & reasoning |
 | `/sessions` `/resume` | Sessions browser (all workspaces by default) |
 | `/init` `/config` `/clear` `/new` `/exit` | Project & shell |
-| `/login` `/logout` | Pick a provider + enter a key / clear it (45+ providers: OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, Together, local Ollama/LM Studio, …) |
-| `/goal` `/btw` | Standing session goal / one-off note added to your next message |
-| `/codesearch` `/mc` `/feedback` | Fast ripgrep · manage MCP servers · file a GitHub issue |
-| `/tips` | Mouse + keyboard interaction tips |
+| `/login` `/logout` | **Provider picker** (45+) + masked key · clear key ([docs](./docs/authentication.md)) |
+| `/goal` | Standing session goal (invisible context every turn); `/goal clear` |
+| `/btw` | One-off note for the **next** message only |
+| `/codesearch` `/cs` | Fast workspace ripgrep |
+| `/mc` `/mcp` | MCP servers via Executor (`sources` · `status` · `search`) |
+| `/feedback` | File a GitHub issue (`gh` or prefilled browser page) |
+| `/tips` | Mouse + keyboard tips (kept off the lean banner) |
 | `/bug` | Open GitHub issues page |
 
 ### Quick memory

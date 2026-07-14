@@ -68,7 +68,12 @@ meta run "explain what this repo does" -v
 
 ### `meta auth`
 
-Manage authentication against the Meta Model API.
+Manage the stored API key (`~/.meta/auth.json`).
+
+For **multi-provider** sign-in (pick OpenAI, OpenRouter, Ollama, … + endpoint
+and default model), use the TUI slash command **`/login`** — see
+[Authentication](authentication.md). CLI `meta auth login` is the classic
+prompt for a Meta Model API key.
 
 ```bash
 meta auth <SUBCOMMAND>

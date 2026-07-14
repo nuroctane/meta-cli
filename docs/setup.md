@@ -234,7 +234,9 @@ Get a key from [dev.meta.ai](https://dev.meta.ai/) → API keys.
 meta auth login
 ```
 
-Or inside the TUI: `/login` (masked) · `/logout`. No key on launch → login modal opens automatically.
+Or inside the TUI: **`/login`** (provider picker + masked key) · **`/logout`**.
+No key on launch → login modal opens automatically. Non-Meta providers (OpenRouter,
+Ollama, …) are selected through TUI `/login` so endpoint and model switch with the key.
 
 See [Authentication](authentication.md).
 

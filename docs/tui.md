@@ -18,6 +18,20 @@ meta -c                 # continue last session
 meta -r <session-id>    # resume specific session
 ```
 
+### Opening banner
+
+The splash is intentionally lean:
+
+1. MUSE art  
+2. **`<active provider> loaded · v<cli>`**  
+3. **`model · cwd · session`**  
+4. Purple ecosystem line (**sandbox · subagents · tools** + pack status)  
+5. Permission **mode**
+
+Mouse/keyboard interaction tips that used to live under the art are behind
+**`/tips`** so the banner stays short. The active provider name comes from
+`config.provider` (see [Authentication](authentication.md)).
+
 ---
 
 ## Keyboard shortcuts
@@ -142,12 +156,70 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/hooks` | Local tool hook status (`hooks.toml`) |
 | `/doctor` | Inline health check: version · auth · ecosystem · shell · budgets |
 | `/help` | Show keys + commands reference |
-| `/login` | Pick a provider (45+: OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, …) + masked key entry |
-| `/goal` `/btw` | Standing session goal · one-off note for your next message |
-| `/codesearch` `/mc` `/feedback` `/tips` | Ripgrep · MCP servers · file an issue · interaction tips |
+| `/login` | Multi-provider sign-in (see below) |
 | `/logout` | Clear stored API key |
+| `/goal` | Standing session goal (see below) |
+| `/btw` | One-off note for the next message only |
+| `/codesearch` `/cs` | Fast workspace ripgrep |
+| `/mc` `/mcp` | MCP servers via the Executor gateway |
+| `/feedback` | File a GitHub issue (`gh` or browser) |
+| `/tips` | Mouse + keyboard interaction tips (lean banner counterpart) |
 | `/bug` | Open GitHub issues page (report a bug) |
 | `/exit` | Quit Meta CLI |
+
+### Multi-provider `/login`
+
+```text
+/login
+```
+
+Scrollable, **type-to-filter** catalog of 45+ providers → masked key → writes
+`provider` / `base_url` / `model` to config and hot-swaps the HTTP client.
+Full detail: [Authentication](authentication.md).
+
+### Session goal & side notes
+
+| Command | Behaviour |
+|---------|-----------|
+| `/goal <text>` | Standing goal for this session. Prepended as context on **every** turn (not shown as a user bubble). |
+| `/goal` | Show the current goal |
+| `/goal clear` | Drop the goal (`none` / `off` also work) |
+| `/btw <note>` | Queues a one-off note that rides along with your **next** message only (stackable) |
+
+### Code search
+
+```text
+/codesearch <regex or text>
+/cs foo::bar
+```
+
+Runs the workspace `grep` tool immediately and prints matches in the
+transcript (no full agent turn).
+
+### MCP (`/mc`)
+
+```text
+/mc                 # list sources (default)
+/mc sources         # same
+/mc status
+/mc search <query>
+```
+
+Uses the **Executor** gateway (`executor` tool). If MCP is missing:
+
+```bash
+meta ecosystem ensure
+```
+
+### Feedback
+
+```text
+/feedback <what happened / what you'd like>
+```
+
+Creates a GitHub issue on `nuroctane/meta-cli` via `gh` when available;
+otherwise opens a prefilled new-issue page in the browser. Includes CLI
+version, OS, and model in the body footer.
 
 ### Cost control (quick)
 

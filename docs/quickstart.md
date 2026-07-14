@@ -28,8 +28,11 @@ meta auth login
 
 Paste your [Meta Model API key](https://dev.meta.ai/) when prompted. The key is stored locally in `~/.meta/auth.json` — never printed or echoed.
 
-!!! tip "TUI shortcuts"
-    Once in the TUI, you can also use `/login` to re-authenticate and `/logout` to clear the stored key.
+!!! tip "TUI multi-provider login"
+    Inside the TUI, **`/login`** opens a type-to-filter picker over **45+ providers**
+    (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, local Ollama/LM Studio, …),
+    then masked key entry. That path also sets endpoint + default model.
+    **`/logout`** clears the stored key. Details: [Authentication](authentication.md).
 
 ## 3. Open the TUI
 

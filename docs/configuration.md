@@ -7,6 +7,8 @@ Meta CLI is configured via a TOML file and optional rule/hook files, plus enviro
 The config file lives at `~/.meta/config.toml` and is created on first run.
 
 ```toml
+# Active provider id from the catalog (set by TUI /login)
+provider = "meta"
 model = "muse-spark-1.1"
 base_url = "https://api.meta.ai/v1"
 reasoning_effort = "high"
@@ -36,8 +38,9 @@ ecosystem_auto_ensure = true
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `model` | string | `muse-spark-1.1` | Meta Model API model id |
-| `base_url` | string | `https://api.meta.ai/v1` | API endpoint |
+| `provider` | string | `meta` | Catalog id (`meta`, `openai`, `openrouter`, `ollama`, …). Set by TUI **`/login`** with matching `base_url` + `model` |
+| `model` | string | `muse-spark-1.1` | Model id for the active provider |
+| `base_url` | string | `https://api.meta.ai/v1` | API base (no trailing path); providers use Responses or Chat Completions under this base |
 | `reasoning_effort` | string | `high` | Reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `max_turns` | integer | `40` | Max agent turns per prompt (range: 1–200) |
 | `stream` | bool | `true` | Stream API responses |
