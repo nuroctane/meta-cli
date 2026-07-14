@@ -452,6 +452,24 @@ impl InputState {
         true
     }
 
+    /// Replace paste chip body (clipboard-first: full text overwrites drip prefix).
+    pub fn replace_paste_content(&mut self, id: u32, s: &str) -> bool {
+        let normalized = normalize_paste(s);
+        let Some(p) = self.pastes.get_mut(&id) else {
+            return false;
+        };
+        p.content = normalized;
+        if let Some(pos) = self
+            .buffer
+            .iter()
+            .position(|c| paste_id_of(*c) == Some(id))
+        {
+            self.cursor = pos + 1;
+        }
+        self.selection_anchor = None;
+        true
+    }
+
     /// Create a new paste chip at the caret; returns its id.
     pub fn start_paste_chip(&mut self, s: &str) -> Option<u32> {
         let normalized = normalize_paste(s);
@@ -466,6 +484,59 @@ impl InputState {
         self.cursor += 1;
         self.selection_anchor = None;
         Some(id)
+    }
+
+    /// Merge every run of consecutive paste-chip sentinels into a single chip.
+    /// Safety net when Windows drip / session races create N× `[pasted 1-1]`.
+    /// Returns how many chips were removed.
+    pub fn collapse_adjacent_paste_chips(&mut self) -> usize {
+        let mut removed = 0usize;
+        let mut i = 0usize;
+        while i + 1 < self.buffer.len() {
+            let id_a = paste_id_of(self.buffer[i]);
+            let id_b = paste_id_of(self.buffer[i + 1]);
+            match (id_a, id_b) {
+                (Some(a), Some(b)) => {
+                    if a != b {
+                        let extra = self
+                            .pastes
+                            .get(&b)
+                            .map(|p| p.content.clone())
+                            .unwrap_or_default();
+                        if let Some(pa) = self.pastes.get_mut(&a) {
+                            pa.content.push_str(&extra);
+                        }
+                        self.pastes.remove(&b);
+                    }
+                    self.buffer.remove(i + 1);
+                    removed += 1;
+                    if self.cursor > i + 1 {
+                        self.cursor -= 1;
+                    } else if self.cursor == i + 1 {
+                        // Caret was on/after the removed chip → stay after survivor.
+                        self.cursor = i + 1;
+                    }
+                    if let Some(anchor) = self.selection_anchor.as_mut() {
+                        if *anchor > i + 1 {
+                            *anchor -= 1;
+                        } else if *anchor == i + 1 {
+                            *anchor = i + 1;
+                        }
+                    }
+                    // Stay at `i` — more chips may follow.
+                }
+                _ => i += 1,
+            }
+        }
+        if removed > 0 {
+            self.gc_pastes();
+        }
+        removed
+    }
+
+    /// Count of paste chips currently in the buffer (for tests / diagnostics).
+    pub fn paste_chip_count(&self) -> usize {
+        self.buffer.iter().filter(|c| is_paste_sentinel(**c)).count()
     }
 
     /// Legacy helper used by tests / stream catcher.
@@ -1087,6 +1158,37 @@ mod tests {
             label,
             format!("[pasted 1-{} lines]", expanded.lines().count())
         );
+    }
+
+    #[test]
+    fn collapse_adjacent_merges_thousand_one_line_chips() {
+        let mut i = InputState::empty_for_test();
+        // Simulate the broken path: N separate start_paste_chip calls (Windows drip).
+        for n in 1..=20 {
+            let _ = i.start_paste_chip(&format!("line {n}\n"));
+        }
+        assert_eq!(i.paste_chip_count(), 20);
+        let removed = i.collapse_adjacent_paste_chips();
+        assert_eq!(removed, 19);
+        assert_eq!(i.paste_chip_count(), 1, "must collapse to exactly one chip");
+        assert_eq!(i.buffer.len(), 1);
+        let expanded = i.text_expanded();
+        assert!(expanded.starts_with("line 1\n"));
+        assert!(expanded.contains("line 20\n"));
+        assert_eq!(i.chip_label_at(0).as_deref(), Some("[pasted 1-20 lines]"));
+    }
+
+    #[test]
+    fn collapse_adjacent_preserves_text_between_chips() {
+        let mut i = InputState::empty_for_test();
+        let _ = i.start_paste_chip("a\nb\n");
+        i.insert_str(" mid ");
+        let _ = i.start_paste_chip("c\nd\n");
+        // Two chips separated by text — must NOT merge across plain text.
+        assert_eq!(i.paste_chip_count(), 2);
+        assert_eq!(i.collapse_adjacent_paste_chips(), 0);
+        assert_eq!(i.paste_chip_count(), 2);
+        assert_eq!(i.text_expanded(), "a\nb\n mid c\nd\n");
     }
 
     #[test]

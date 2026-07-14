@@ -637,6 +637,9 @@ pub struct App {
     /// append here until the session idles out — prevents N× `[pasted 1-1]`.
     paste_session_id: Option<u32>,
     paste_session_last: Option<Instant>,
+    /// After a clipboard-first commit, drop ConPTY key-drip / bracketed echoes
+    /// until this instant so one paste cannot spawn a thousand chips.
+    paste_suppress_until: Option<Instant>,
     /// Transcript body area (excluding sticky banner) for scrollbar hit-testing.
     pub transcript_body: ratatui::layout::Rect,
     /// Right-edge scrollbar track (1 column).
@@ -884,6 +887,7 @@ pub async fn run_tui(
         key_pending_last: None,
         paste_session_id: None,
         paste_session_last: None,
+        paste_suppress_until: None,
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         jump_chip: ratatui::layout::Rect::default(),
@@ -1023,9 +1027,11 @@ pub async fn run_tui(
             Duration::from_millis(frame_ms)
         };
         if event::poll(wait)? {
-            // Windows often delivers paste as Key events spaced across frames
-            // (not one Event::Paste, not one ready queue). Buffer plain chars
-            // and flush after idle → chip. Never stream a wall of text live.
+            // Paste strategy (Windows ConPTY is hostile):
+            // 1) Clipboard-first: one full body → one chip.
+            // 2) Suppress drip keys / echo pastes for ~2s after commit.
+            // 3) Stream session (3s) + collapse_adjacent as safety nets.
+            // Never trust per-char reassembly as the primary path.
             let mut deferred: Option<Event> = None;
             let mut first = true;
             loop {
@@ -1041,97 +1047,84 @@ pub async fn run_tui(
                 };
 
                 match ev {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
+                    {
                         if let Some(c) = key_as_paste_burst_char(&key) {
-                            // Active paste session: every char appends to the SAME chip.
+                            // Suppress window: drop ConPTY drip that echoes a
+                            // clipboard paste we already committed.
+                            if app.paste_suppressed() {
+                                let _ = drain_paste_burst(&mut deferred, Some(c));
+                                dirty = true;
+                                continue;
+                            }
+                            // Active paste session: keep appending to ONE chip,
+                            // but prefer clipboard if the stream looks huge.
                             if app.paste_session_alive() {
-                                let mut burst = String::new();
-                                burst.push(c);
-                                loop {
-                                    if !event::poll(Duration::ZERO)? {
-                                        break;
+                                let burst = drain_paste_burst(&mut deferred, Some(c));
+                                // If clipboard has a longer wall, commit that once
+                                // and suppress further drip (Quotes.md path).
+                                if let Some(cb) = clipboard_get() {
+                                    if paste_pending_looks_like_wall(&cb)
+                                        && cb.chars().count() >= burst.chars().count()
+                                    {
+                                        app.commit_paste_prefer_clipboard(Some(&burst));
+                                    } else {
+                                        app.ingest_paste_text(&burst);
                                     }
-                                    match event::read()? {
-                                        Event::Key(k) if k.kind == KeyEventKind::Press => {
-                                            if let Some(ch) = key_as_paste_burst_char(&k) {
-                                                burst.push(ch);
-                                            } else {
-                                                deferred = Some(Event::Key(k));
-                                                break;
-                                            }
-                                        }
-                                        Event::Paste(p) => burst.push_str(&p),
-                                        other => {
-                                            deferred = Some(other);
-                                            break;
-                                        }
-                                    }
+                                } else {
+                                    app.ingest_paste_text(&burst);
                                 }
-                                app.ingest_paste_text(&burst);
                                 dirty = true;
                             } else {
-                                app.key_pending.push(c);
+                                // Drain queue into key_pending (includes first char).
+                                let burst = drain_paste_burst(&mut deferred, Some(c));
+                                app.key_pending.push_str(&burst);
                                 app.key_pending_last = Some(Instant::now());
-                                // Drain anything already queued into the same burst.
-                                loop {
-                                    if !event::poll(Duration::ZERO)? {
-                                        break;
-                                    }
-                                    match event::read()? {
-                                        Event::Key(k) if k.kind == KeyEventKind::Press => {
-                                            if let Some(ch) = key_as_paste_burst_char(&k) {
-                                                app.key_pending.push(ch);
-                                                app.key_pending_last = Some(Instant::now());
-                                            } else {
-                                                deferred = Some(Event::Key(k));
-                                                break;
-                                            }
-                                        }
-                                        Event::Paste(p) => {
-                                            app.key_pending.push_str(&p);
-                                            app.key_pending_last = Some(Instant::now());
-                                        }
-                                        other => {
-                                            deferred = Some(other);
-                                            break;
-                                        }
-                                    }
-                                }
-                                // Promote to paste session as soon as it looks like a wall.
+                                // Promote to paste as soon as it looks like a wall:
+                                // clipboard-first so Quotes.md is one chip, not 1-1s.
                                 if paste_pending_looks_like_wall(&app.key_pending) {
-                                    let burst = std::mem::take(&mut app.key_pending);
+                                    let wall = std::mem::take(&mut app.key_pending);
                                     app.key_pending_last = None;
-                                    app.ingest_paste_text(&burst);
+                                    app.commit_paste_prefer_clipboard(Some(&wall));
                                 }
                                 dirty = true;
                             }
                         } else {
                             // Shortcut / nav — commit any pending text first.
-                            if app.flush_key_pending() {
-                                dirty = true;
-                            }
+                            // Also ends suppress so Backspace/Enter always work.
+                            let _ = app.flush_key_pending();
+                            app.clear_paste_suppress();
                             app.end_paste_session();
-                            app.on_key(key);
+                            // Only deliver Press to handlers (ignore key-repeat
+                            // for shortcuts so held keys don't fire N times).
+                            if key.kind == KeyEventKind::Press {
+                                app.on_key(key);
+                            }
                             dirty = true;
                         }
                     }
                     Event::Mouse(m) => {
-                        if app.flush_key_pending() {
-                            dirty = true;
-                        }
+                        let _ = app.flush_key_pending();
                         app.on_mouse(m);
                         dirty = true;
                     }
                     Event::Paste(s) => {
-                        // Bracketed paste: fold any pending keys, then session ingest.
-                        if !app.key_pending.is_empty() {
-                            app.key_pending.push_str(&s);
-                            let burst = std::mem::take(&mut app.key_pending);
-                            app.key_pending_last = None;
-                            app.ingest_paste_text(&burst);
-                        } else {
-                            app.ingest_paste_text(&s);
+                        // Bracketed paste / echo — suppress if we already chipped.
+                        if app.paste_suppressed() {
+                            dirty = true;
+                            continue;
                         }
+                        // Clipboard-first: system clipboard often has the full
+                        // body while Event::Paste is chunked or partial.
+                        let pending = std::mem::take(&mut app.key_pending);
+                        app.key_pending_last = None;
+                        let stream = if pending.is_empty() {
+                            s
+                        } else {
+                            format!("{pending}{s}")
+                        };
+                        app.commit_paste_prefer_clipboard(Some(&stream));
                         dirty = true;
                     }
                     Event::Resize(_, _) => dirty = true,
@@ -1162,12 +1155,21 @@ pub async fn run_tui(
             }
         }
         // Expire paste session after quiet period so the next paste is a new chip.
+        // 3s — large Windows drips take longer than 600ms and used to spawn 1-1 chips.
         if app
             .paste_session_last
-            .map(|t| t.elapsed() >= Duration::from_millis(600))
+            .map(|t| t.elapsed() >= Duration::from_millis(PASTE_SESSION_MS))
             .unwrap_or(false)
         {
             app.end_paste_session();
+        }
+        // Drop expired suppress window.
+        if app
+            .paste_suppress_until
+            .map(|t| Instant::now() >= t)
+            .unwrap_or(false)
+        {
+            app.clear_paste_suppress();
         }
 
         // 3) Ambient / animation dirty flags.
@@ -1662,19 +1664,15 @@ impl App {
                 self.should_quit = true;
                 return;
             }
-            // Ctrl+V / Shift+Insert: paste — walls of text become chips, never dump raw.
+            // Ctrl+V / Shift+Insert: clipboard-first paste → one chip + suppress drip.
             KeyCode::Char('v') if ctrl => {
                 let _ = self.flush_key_pending();
-                if let Some(t) = clipboard_get() {
-                    self.ingest_paste_text(&t);
-                }
+                self.commit_paste_prefer_clipboard(None);
                 return;
             }
             KeyCode::Insert if shift => {
                 let _ = self.flush_key_pending();
-                if let Some(t) = clipboard_get() {
-                    self.ingest_paste_text(&t);
-                }
+                self.commit_paste_prefer_clipboard(None);
                 return;
             }
             // Ctrl+X: cut input selection (or whole input if none); chips expand.
@@ -3539,10 +3537,16 @@ fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 
 // ── system clipboard (Ctrl+C / Ctrl+V / Ctrl+X) ───────────────────────────
 
+/// How long a paste session stays open for stream appends (Windows drip).
+const PASTE_SESSION_MS: u64 = 3000;
+/// After clipboard-first commit, ignore drip keys / echo pastes this long.
+const PASTE_SUPPRESS_MS: u64 = 2000;
+
 /// Plain text from a key that unbracketed paste might emit as a flood of Key events.
 /// Ctrl/Alt/Super chords are shortcuts, not paste content. Shift is allowed (uppercase).
+/// Press **and** Repeat both count — Windows ConPTY often emits Repeat for drip paste.
 fn key_as_paste_burst_char(key: &KeyEvent) -> Option<char> {
-    if key.kind != KeyEventKind::Press {
+    if key.kind != KeyEventKind::Press && key.kind != KeyEventKind::Repeat {
         return None;
     }
     if key
@@ -3564,18 +3568,140 @@ fn paste_pending_looks_like_wall(s: &str) -> bool {
     s.contains('\n') || s.chars().count() >= 24
 }
 
+/// Drain a burst of paste-like key events (and inline `Event::Paste`) from the
+/// queue. `first` is the char already read (if any). Non-paste events are left
+/// in `deferred`. Returns the concatenated text.
+fn drain_paste_burst(deferred: &mut Option<Event>, first: Option<char>) -> String {
+    let mut burst = String::new();
+    if let Some(c) = first {
+        burst.push(c);
+    }
+    loop {
+        if !event::poll(Duration::ZERO).unwrap_or(false) {
+            break;
+        }
+        match event::read() {
+            Ok(Event::Key(k))
+                if k.kind == KeyEventKind::Press || k.kind == KeyEventKind::Repeat =>
+            {
+                if let Some(ch) = key_as_paste_burst_char(&k) {
+                    burst.push(ch);
+                } else {
+                    *deferred = Some(Event::Key(k));
+                    break;
+                }
+            }
+            Ok(Event::Paste(p)) => burst.push_str(&p),
+            Ok(other) => {
+                *deferred = Some(other);
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+    burst
+}
+
 impl App {
     fn paste_session_alive(&self) -> bool {
         self.paste_session_id.is_some()
             && self
                 .paste_session_last
-                .map(|t| t.elapsed() < Duration::from_millis(600))
+                .map(|t| t.elapsed() < Duration::from_millis(PASTE_SESSION_MS))
                 .unwrap_or(false)
+    }
+
+    fn paste_suppressed(&self) -> bool {
+        self.paste_suppress_until
+            .map(|t| Instant::now() < t)
+            .unwrap_or(false)
+    }
+
+    fn arm_paste_suppress(&mut self, content_len: usize) {
+        // Large walls drip longer than 2s — scale suppress with size, cap at 8s.
+        let scaled = (content_len as u64 / 20).clamp(PASTE_SUPPRESS_MS, 8000);
+        self.paste_suppress_until = Some(Instant::now() + Duration::from_millis(scaled));
+    }
+
+    fn clear_paste_suppress(&mut self) {
+        self.paste_suppress_until = None;
     }
 
     fn end_paste_session(&mut self) {
         self.paste_session_id = None;
         self.paste_session_last = None;
+    }
+
+    /// Clipboard-first paste commit. Prefer system clipboard when it looks like
+    /// a wall (Windows always stages the full body there before ConPTY drips).
+    /// Falls back to `stream` when clipboard is empty/unavailable/short.
+    /// Arms suppress so drip keys cannot spawn a thousand 1-1 chips.
+    ///
+    /// When a session chip already holds a drip prefix, **replace** it with the
+    /// full body (do not append — that would duplicate the prefix).
+    fn commit_paste_prefer_clipboard(&mut self, stream: Option<&str>) {
+        let cb = clipboard_get();
+        let text = match (cb.as_deref(), stream) {
+            (Some(c), Some(s)) => {
+                // Prefer clipboard when it is a wall and at least as large as the stream,
+                // or when stream is empty.
+                if s.is_empty() {
+                    c.to_string()
+                } else if paste_pending_looks_like_wall(c)
+                    && c.chars().count() >= s.chars().count()
+                {
+                    c.to_string()
+                } else if paste_pending_looks_like_wall(c) && !paste_pending_looks_like_wall(s) {
+                    // Stream is still a tiny drip prefix; clipboard has the real body.
+                    c.to_string()
+                } else {
+                    s.to_string()
+                }
+            }
+            (Some(c), None) => c.to_string(),
+            (None, Some(s)) => s.to_string(),
+            (None, None) => return,
+        };
+        if text.is_empty() {
+            return;
+        }
+        // Drop any partial key reassembly — clipboard/stream is authoritative.
+        self.key_pending.clear();
+        self.key_pending_last = None;
+
+        if let Some(m) = &mut self.login {
+            m.buf.push_str(&text);
+            self.arm_paste_suppress(text.chars().count());
+            return;
+        }
+        if self.approval.is_some() || self.picker.is_some() {
+            return;
+        }
+
+        // Session open → replace body (clipboard is the full truth).
+        if let Some(id) = self.paste_session_id {
+            if self.input.replace_paste_content(id, &text) {
+                self.paste_session_last = Some(Instant::now());
+                let _ = self.input.collapse_adjacent_paste_chips();
+                self.arm_paste_suppress(text.chars().count());
+                self.ensure_input_caret_visible();
+                self.palette_idx = 0;
+                self.palette_scroll = 0;
+                return;
+            }
+            self.paste_session_id = None;
+        }
+
+        // Fresh chip with full body.
+        if let Some(id) = self.input.start_paste_chip(&text) {
+            self.paste_session_id = Some(id);
+            self.paste_session_last = Some(Instant::now());
+            let _ = self.input.collapse_adjacent_paste_chips();
+            self.arm_paste_suppress(text.chars().count());
+            self.ensure_input_caret_visible();
+            self.palette_idx = 0;
+            self.palette_scroll = 0;
+        }
     }
 
     /// Ingest paste text into exactly one chip for the current session.
@@ -3596,6 +3722,7 @@ impl App {
         if let Some(id) = self.paste_session_id {
             if self.input.append_to_paste(id, s) {
                 self.paste_session_last = Some(Instant::now());
+                let _ = self.input.collapse_adjacent_paste_chips();
                 self.ensure_input_caret_visible();
                 self.palette_idx = 0;
                 self.palette_scroll = 0;
@@ -3606,9 +3733,12 @@ impl App {
         }
 
         // Start a new chip with this text (any size — stream will grow it).
+        // Always chip when coming through ingest (paste path), even for short
+        // first drips — session will grow the body; collapse merges stragglers.
         if let Some(id) = self.input.start_paste_chip(s) {
             self.paste_session_id = Some(id);
             self.paste_session_last = Some(Instant::now());
+            let _ = self.input.collapse_adjacent_paste_chips();
             self.ensure_input_caret_visible();
             self.palette_idx = 0;
             self.palette_scroll = 0;
@@ -3632,9 +3762,9 @@ impl App {
             return false;
         }
 
-        // Active paste session or wall-like buffer → one chip (session).
+        // Active paste session or wall-like buffer → clipboard-first chip.
         if self.paste_session_alive() || paste_pending_looks_like_wall(&s) {
-            self.ingest_paste_text(&s);
+            self.commit_paste_prefer_clipboard(Some(&s));
             return true;
         }
 
