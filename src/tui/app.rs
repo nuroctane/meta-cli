@@ -616,11 +616,18 @@ pub struct App {
     pub input_inner: ratatui::layout::Rect,
     /// First visible input line (vertical scroll) + horizontal scroll offset.
     pub input_scroll_top: usize,
+    /// User-controlled horizontal pan (cells). Draw clamps to line width.
     pub input_x_off: u16,
+    /// Usable content width inside the input (set each draw) for h-scroll clamp.
+    pub input_usable_w: usize,
     /// Visible row count inside the input inner area (set each draw).
     pub input_view_h: usize,
-    /// Dragging to select text inside the input box.
+    /// Press is in the input (may become a drag-select).
     pub input_drag: bool,
+    /// True only after the pointer moved past the click threshold.
+    pub input_selecting: bool,
+    /// Origin (line, display_col) of the input press for threshold math.
+    pub input_drag_origin: Option<(usize, usize)>,
     /// Transcript body area (excluding sticky banner) for scrollbar hit-testing.
     pub transcript_body: ratatui::layout::Rect,
     /// Right-edge scrollbar track (1 column).
@@ -859,8 +866,11 @@ pub async fn run_tui(
         input_inner: ratatui::layout::Rect::default(),
         input_scroll_top: 0,
         input_x_off: 0,
-        input_view_h: 1,
+        input_usable_w: 40,
+        input_view_h: 4,
         input_drag: false,
+        input_selecting: false,
+        input_drag_origin: None,
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         jump_chip: ratatui::layout::Rect::default(),
@@ -1482,6 +1492,7 @@ impl App {
 
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
         match key.code {
             // Ctrl+C: copy selection (transcript → input → open peek body) → else
@@ -1620,6 +1631,23 @@ impl App {
             // default, not a surprise recall into the input box.
             KeyCode::Up if alt => self.input.history_prev(),
             KeyCode::Down if alt => self.input.history_next(),
+            KeyCode::Up if shift => {
+                // Shift+↑ always extends selection in the draft when non-empty.
+                if !self.input.is_empty() {
+                    self.input.extend_up_line();
+                    self.ensure_input_caret_visible();
+                } else {
+                    self.scroll_up(1);
+                }
+            }
+            KeyCode::Down if shift => {
+                if !self.input.is_empty() {
+                    self.input.extend_down_line();
+                    self.ensure_input_caret_visible();
+                } else {
+                    self.scroll_down(1);
+                }
+            }
             KeyCode::Up => match self.arrow_action(true) {
                 ArrowAction::Palette => self.palette_step(-1),
                 ArrowAction::Caret => {
@@ -1644,6 +1672,14 @@ impl App {
             }
             KeyCode::Right if ctrl => {
                 self.input.word_right();
+                self.ensure_input_caret_visible();
+            }
+            KeyCode::Left if shift => {
+                self.input.extend_left();
+                self.ensure_input_caret_visible();
+            }
+            KeyCode::Right if shift => {
+                self.input.extend_right();
                 self.ensure_input_caret_visible();
             }
             KeyCode::Left => {
@@ -1767,17 +1803,19 @@ impl App {
 
         match m.kind {
             MouseEventKind::ScrollUp => {
-                if self.palette_visible() {
+                // Input hitbox wins over palette when the pointer is in the prompt
+                // (palette floats above but shouldn't steal draft scroll).
+                if self.hit_input_box(m.column, m.row) && !approval_open {
+                    self.wheel_input(-1);
+                    if self.input_drag {
+                        self.note_input_drag_motion(m.column, m.row);
+                        self.input_drag_to(m.column, m.row);
+                    }
+                } else if self.palette_visible() {
                     self.palette_wheel_step(-1);
                 } else if self.wheel_over_open_peek(m.column, m.row) {
                     // Wheel inside a pinned peek scrolls its body, not the page.
                     self.peek_scroll = self.peek_scroll.saturating_sub(3);
-                } else if self.hit_input_box(m.column, m.row) && !approval_open {
-                    // Hover/scroll over the entire input hitbox scrolls the prompt.
-                    self.scroll_input(-3);
-                    if self.input_drag {
-                        self.input_drag_to(m.column, m.row);
-                    }
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
@@ -1791,18 +1829,19 @@ impl App {
                 }
             }
             MouseEventKind::ScrollDown => {
-                if self.palette_visible() {
+                if self.hit_input_box(m.column, m.row) && !approval_open {
+                    self.wheel_input(1);
+                    if self.input_drag {
+                        self.note_input_drag_motion(m.column, m.row);
+                        self.input_drag_to(m.column, m.row);
+                    }
+                } else if self.palette_visible() {
                     self.palette_wheel_step(1);
                 } else if self.wheel_over_open_peek(m.column, m.row) {
                     self.peek_scroll = self
                         .peek_scroll
                         .saturating_add(3)
                         .min(self.peek_rows.saturating_sub(1));
-                } else if self.hit_input_box(m.column, m.row) && !approval_open {
-                    self.scroll_input(3);
-                    if self.input_drag {
-                        self.input_drag_to(m.column, m.row);
-                    }
                 } else {
                     self.scroll_down(3);
                     if self.mouse_left_down && self.select_anchor.is_some() {
@@ -1880,19 +1919,25 @@ impl App {
                     self.select_anchor = None;
                     self.selection = None;
                     self.input_drag = false;
+                    self.input_selecting = false;
+                    self.input_drag_origin = None;
                     self.scrollbar_press(m.row);
                 } else if self.hit_input_box(m.column, m.row) {
-                    // Input owns the pointer: place caret + start drag-select.
+                    // Input owns the pointer: arm potential drag-select (threshold on move).
                     self.scrollbar_drag = false;
                     self.select_anchor = None;
                     self.selecting = false;
                     self.selection = None;
                     self.close_peek();
                     self.input_drag = true;
+                    self.input_selecting = false;
+                    self.input_drag_origin = self.input_pos_at(m.column, m.row);
                     self.input_select_start(m.column, m.row);
                 } else if self.in_transcript(m.column, m.row) {
                     self.scrollbar_drag = false;
                     self.input_drag = false;
+                    self.input_selecting = false;
+                    self.input_drag_origin = None;
                     self.input.clear_selection();
                     // Begin potential drag-select; click actions fire on Up if
                     // the pointer barely moved (so drag never fights peek/expand).
@@ -1910,6 +1955,8 @@ impl App {
                     self.selecting = false;
                     self.selection = None;
                     self.input_drag = false;
+                    self.input_selecting = false;
+                    self.input_drag_origin = None;
                     self.close_peek();
                 }
                 self.update_hover_from_mouse();
@@ -1936,10 +1983,17 @@ impl App {
                 if self.scrollbar_drag {
                     self.scrollbar_drag = false;
                 } else if self.input_drag {
-                    // Keep a real selection; clear empty click-anchor.
+                    // Click (no threshold): place caret only. Real drag: keep selection.
+                    let selecting = self.input_selecting;
                     self.input_drag = false;
-                    if !self.input.has_selection() {
-                        self.input.clear_selection();
+                    self.input_selecting = false;
+                    self.input_drag_origin = None;
+                    if !selecting {
+                        if let Some((line, dcol)) = self.input_pos_at(m.column, m.row) {
+                            self.input.click_at(line, dcol);
+                        } else {
+                            self.input.clear_selection();
+                        }
                     }
                 } else if approval_open {
                     // Don't run transcript click handlers under the modal.
@@ -1992,8 +2046,14 @@ impl App {
             return;
         }
         if self.input_drag {
-            self.maybe_autoscroll_input_while_selecting(row);
-            self.input_drag_to(col, row);
+            self.note_input_drag_motion(col, row);
+            self.maybe_autoscroll_input_while_selecting(col, row);
+            if self.input_selecting {
+                self.input_drag_to(col, row);
+            } else if let Some((line, dcol)) = self.input_pos_at(col, row) {
+                // Still a click — keep selection collapsed under the pointer.
+                self.input.select_start_at(line, dcol);
+            }
             return;
         }
         if self.select_anchor.is_none() {
@@ -2377,10 +2437,53 @@ impl App {
         }
     }
 
-    /// Keep the caret line inside the visible input window after typing/paste.
+    fn max_input_x_off(&self) -> u16 {
+        let usable = self.input_usable_w.max(1);
+        let w = self.input.max_line_display_width();
+        w.saturating_sub(usable) as u16
+    }
+
+    fn nudge_input_x(&mut self, delta: i32) {
+        let max = self.max_input_x_off();
+        if delta < 0 {
+            self.input_x_off = self.input_x_off.saturating_sub((-delta) as u16);
+        } else {
+            self.input_x_off = (self.input_x_off.saturating_add(delta as u16)).min(max);
+        }
+    }
+
+    /// Wheel over input: vertical when content is taller than the pane;
+    /// otherwise pan horizontally when the line is wider than the pane.
+    fn wheel_input(&mut self, dir: i32) {
+        let h = self.input_view_h.max(1);
+        let max_top = self.input.line_count().saturating_sub(h);
+        if max_top > 0 {
+            self.scroll_input(dir * 3);
+        } else if self.max_input_x_off() > 0 {
+            self.nudge_input_x(dir * 4);
+        }
+    }
+
+    /// Cross the click→drag threshold (display cells or line change).
+    fn note_input_drag_motion(&mut self, col: u16, row: u16) {
+        if self.input_selecting {
+            return;
+        }
+        let Some(origin) = self.input_drag_origin else {
+            return;
+        };
+        let Some(now) = self.input_pos_at(col, row) else {
+            return;
+        };
+        if now.0 != origin.0 || now.1.abs_diff(origin.1) > 1 {
+            self.input_selecting = true;
+        }
+    }
+
+    /// Keep the caret line (and its column) inside the visible input window.
     fn ensure_input_caret_visible(&mut self) {
         let h = self.input_view_h.max(1);
-        let (line, _) = self.input.cursor_line_col();
+        let (line, dcol) = self.input.cursor_display_line_col();
         let max_top = self.input.line_count().saturating_sub(h);
         if line < self.input_scroll_top {
             self.input_scroll_top = line;
@@ -2388,18 +2491,56 @@ impl App {
             self.input_scroll_top = line + 1 - h;
         }
         self.input_scroll_top = self.input_scroll_top.min(max_top);
+
+        let usable = self.input_usable_w.max(1);
+        if dcol < self.input_x_off as usize {
+            self.input_x_off = dcol as u16;
+        } else if dcol >= self.input_x_off as usize + usable {
+            self.input_x_off = (dcol + 1).saturating_sub(usable) as u16;
+        }
+        self.input_x_off = self.input_x_off.min(self.max_input_x_off());
     }
 
-    /// While drag-selecting in the input, nudge the viewport at the edges.
-    fn maybe_autoscroll_input_while_selecting(&mut self, row: u16) {
-        let inner = self.input_inner;
-        if inner.height == 0 {
+    /// While drag-selecting, accelerate scroll at edges (vertical + horizontal).
+    fn maybe_autoscroll_input_while_selecting(&mut self, col: u16, row: u16) {
+        if !self.input_selecting {
             return;
         }
-        if row < inner.y.saturating_add(1) {
-            self.scroll_input(-1);
+        let inner = self.input_inner;
+        if inner.height == 0 || inner.width == 0 {
+            return;
+        }
+        // Vertical: scale by how far outside the box the pointer is.
+        if row < inner.y {
+            let dist = (inner.y - row) as i32;
+            self.scroll_input(-(1 + dist.min(6)));
+        } else if row >= inner.bottom() {
+            let dist = (row + 1 - inner.bottom()) as i32;
+            self.scroll_input(1 + dist.min(6));
+        } else if row < inner.y.saturating_add(1) {
+            self.scroll_input(-2);
         } else if row + 1 >= inner.bottom() {
-            self.scroll_input(1);
+            self.scroll_input(2);
+        }
+
+        // Horizontal pan at left/right of the text area (after prefix).
+        let content_left = inner.x.saturating_add(2);
+        let content_right = inner.right().saturating_sub(1);
+        if col <= content_left.saturating_add(1) {
+            self.nudge_input_x(-4);
+        } else if col + 1 >= content_right {
+            self.nudge_input_x(4);
+        }
+
+        // Keep the drag point's column in view.
+        if let Some((_, dcol)) = self.input_pos_at(col, row) {
+            let usable = self.input_usable_w.max(1);
+            if dcol < self.input_x_off as usize {
+                self.input_x_off = dcol as u16;
+            } else if dcol >= self.input_x_off as usize + usable {
+                self.input_x_off = (dcol + 1).saturating_sub(usable) as u16;
+            }
+            self.input_x_off = self.input_x_off.min(self.max_input_x_off());
         }
     }
 

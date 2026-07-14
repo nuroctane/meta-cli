@@ -2163,7 +2163,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let (cur_line, cur_disp_col) = app.input.cursor_display_line_col();
     let h = (inner.height as usize).max(1);
     app.input_view_h = h;
-    // User-controlled vertical scroll (wheel / drag); clamp only here.
+    // User-controlled vertical + horizontal scroll; clamp only here.
     // Caret visibility is adjusted on type/paste/nav via ensure_input_caret_visible.
     let max_top = app.input.line_count().saturating_sub(h);
     if app.input_scroll_top > max_top {
@@ -2172,7 +2172,15 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let top = app.input_scroll_top;
 
     let usable = (inner.width as usize).saturating_sub(3);
-    let x_off = cur_disp_col.saturating_sub(usable) as u16;
+    app.input_usable_w = usable;
+    let max_x = app
+        .input
+        .max_line_display_width()
+        .saturating_sub(usable) as u16;
+    if app.input_x_off > max_x {
+        app.input_x_off = max_x;
+    }
+    let x_off = app.input_x_off;
 
     let visible: Vec<Line> = lines.into_iter().skip(top).take(h).collect();
     f.render_widget(
@@ -2194,7 +2202,7 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     app.input_area = area;
     app.input_inner = inner;
     app.input_scroll_top = top;
-    app.input_x_off = x_off;
+    // input_x_off already updated above (clamped)
 }
 
 // ── statusline ─────────────────────────────────────────────────────────────

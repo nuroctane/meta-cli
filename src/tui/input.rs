@@ -144,11 +144,21 @@ impl InputState {
         self.buffer.is_empty()
     }
 
+    /// Replace buffer. Large multi-line / long blobs are re-chipped so history
+    /// recall does not dump raw paste soup back into the composer.
     pub fn set_text(&mut self, s: &str) {
+        let normalized = normalize_paste(s);
         self.drop_all_pastes();
-        self.buffer = s.chars().filter(|c| *c != '\r').collect();
-        self.cursor = self.buffer.len();
         self.selection_anchor = None;
+        if should_chip(&normalized) {
+            if let Some(id) = self.alloc_paste(normalized.clone()) {
+                self.buffer = vec![paste_sentinel(id)];
+                self.cursor = 1;
+                return;
+            }
+        }
+        self.buffer = normalized.chars().collect();
+        self.cursor = self.buffer.len();
     }
 
     pub fn clear(&mut self) {
@@ -442,6 +452,72 @@ impl InputState {
         if self.cursor < self.buffer.len() {
             self.cursor += 1;
         }
+    }
+
+    /// Shift+Left: extend or start selection, then move caret left.
+    pub fn extend_left(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    /// Shift+Right: extend or start selection, then move caret right.
+    pub fn extend_right(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        if self.cursor < self.buffer.len() {
+            self.cursor += 1;
+        }
+    }
+
+    pub fn extend_up_line(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        let (line, _) = self.cursor_line_col();
+        if line == 0 {
+            return;
+        }
+        let dcol = self.display_col_of_index(self.cursor);
+        self.cursor = self.index_at_display_col(line - 1, dcol);
+    }
+
+    pub fn extend_down_line(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+        let (line, _) = self.cursor_line_col();
+        if line + 1 >= self.line_count() {
+            return;
+        }
+        let dcol = self.display_col_of_index(self.cursor);
+        self.cursor = self.index_at_display_col(line + 1, dcol);
+    }
+
+    /// Display width of a logical line (chips expand to label width).
+    pub fn line_display_width(&self, line: usize) -> usize {
+        let start = self.line_start_index(line);
+        let mut w = 0usize;
+        let mut i = start;
+        while i < self.buffer.len() && self.buffer[i] != '\n' {
+            w += self.display_width_at(i);
+            i += 1;
+        }
+        w
+    }
+
+    /// Max display width across all lines.
+    pub fn max_line_display_width(&self) -> usize {
+        (0..self.line_count())
+            .map(|l| self.line_display_width(l))
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn cursor_index(&self) -> usize {
+        self.cursor
     }
 
     /// Place the caret from a mouse click at (line, **display** column).
@@ -796,5 +872,51 @@ mod tests {
         i.select_start_at(0, 1);
         i.select_drag_to(0, 4);
         assert_eq!(i.selected_text().as_deref(), Some("bcd"));
+    }
+
+    #[test]
+    fn set_text_rechips_large_history() {
+        let mut i = InputState::empty_for_test();
+        let body = "alpha\nbeta\ngamma\ndelta";
+        i.set_text(body);
+        assert_eq!(i.buffer.len(), 1);
+        assert!(is_paste_sentinel(i.buffer[0]));
+        assert_eq!(i.text_expanded(), body);
+    }
+
+    #[test]
+    fn set_text_keeps_small_raw() {
+        let mut i = InputState::empty_for_test();
+        i.set_text("hi");
+        assert_eq!(i.text(), "hi");
+        assert!(i.pastes.is_empty());
+    }
+
+    #[test]
+    fn shift_extend_selection() {
+        let mut i = InputState::empty_for_test();
+        i.insert_str("abcd");
+        i.move_left();
+        i.move_left(); // caret at 'c'
+        i.extend_right();
+        i.extend_right();
+        assert_eq!(i.selected_text().as_deref(), Some("cd"));
+    }
+
+    #[test]
+    fn index_at_display_col_with_chip() {
+        let mut i = InputState::empty_for_test();
+        i.insert_str("ab");
+        i.insert_paste("one\ntwo\nthree");
+        i.insert_str("cd");
+        // "ab" + chip + "cd"
+        assert_eq!(i.buffer.len(), 5);
+        let chip_w = i.display_width_at(2);
+        assert!(chip_w > 5);
+        // Click in middle of chip → chip index
+        let mid = 2 + chip_w / 2;
+        assert_eq!(i.index_at_display_col(0, mid), 2);
+        // Past chip → 'c'
+        assert_eq!(i.index_at_display_col(0, 2 + chip_w), 3);
     }
 }
