@@ -761,6 +761,17 @@ pub struct App {
     /// keystroke is never mistaken for a paste. See `flush_paste_accum`.
     paste_accum: String,
     paste_accum_at: Option<Instant>,
+    /// Merged paste session — ensures a large wall of text that the PTY split
+    /// across many frames / Event::Paste chunks becomes ONE chip, not N chips.
+    /// Any paste arriving within PASTE_MERGE_WINDOW appends to this chip.
+    active_paste_id: Option<u32>,
+    active_paste_at: Option<Instant>,
+    /// Last raw (non-chip) paste insertion, for retroactive conversion.
+    /// If a paste arrives as many small raw chunks that together exceed the chip
+    /// threshold, we delete the previous raw range and re-chip the combined text.
+    last_raw_start: Option<usize>,
+    last_raw_len: usize,
+    last_raw_text: String,
     /// Standing session goal (`/goal`), prepended to every model turn as context
     /// without appearing in the transcript. Cleared with `/goal clear`.
     session_goal: Option<String>,
@@ -1011,6 +1022,11 @@ pub async fn run_tui(
         input_drag_origin: None,
         paste_accum: String::new(),
         paste_accum_at: None,
+        active_paste_id: None,
+        active_paste_at: None,
+        last_raw_start: None,
+        last_raw_len: 0,
+        last_raw_text: String::new(),
         session_goal: None,
         pending_btw: Vec::new(),
         transcript_body: ratatui::layout::Rect::default(),
@@ -1194,15 +1210,27 @@ pub async fn run_tui(
                         }
 
                         if let Some(c) = key_as_paste_burst_char(&key) {
-                            // Drain only further paste-text / Event::Paste; park
-                            // anything else in `deferred` (incl. KeyRelease).
+                            // Drain further paste-text / Event::Paste; skip
+                            // KeyRelease (Windows ConPTY interleaves Press/Release
+                            // for every char — treating Release as a break made
+                            // pastes type out char-by-char and never coalesce).
                             let mut burst = String::new();
                             burst.push(c);
                             loop {
                                 if !event::poll(Duration::ZERO)? {
                                     break;
                                 }
-                                match event::read()? {
+                                let next = match event::read() {
+                                    Ok(ev) => ev,
+                                    Err(_) => break,
+                                };
+                                match next {
+                                    Event::Key(k)
+                                        if k.kind == KeyEventKind::Release =>
+                                    {
+                                        // Ignore release — keep draining the burst.
+                                        continue;
+                                    }
                                     Event::Key(k)
                                         if key_as_paste_burst_char(&k).is_some() =>
                                     {
@@ -1249,9 +1277,15 @@ pub async fn run_tui(
                         dirty = true;
                     }
                     Event::Paste(s) => {
-                        app.flush_paste_accum();
-                        app.on_paste(&s);
+                        // Bracketed paste (the clean path) — but the terminal may
+                        // split a huge paste into many Event::Paste chunks across
+                        // frames. Coalesce them in paste_accum and flush as ONE chip,
+                        // which then uses the active_paste_id merge window so even
+                        // split flushes become a single chip.
+                        app.paste_accum.push_str(&s);
+                        app.paste_accum_at = Some(Instant::now());
                         dirty = true;
+                        continue;
                     }
                     Event::Resize(_, _) => dirty = true,
                     _ => {}
@@ -1721,6 +1755,21 @@ impl App {
             return;
         }
 
+        // Any normal key (not paste) that reaches here ends the "raw small paste"
+        // merge chain. We keep the chip merge window time-based + cursor-checked,
+        // but raw small pastes should not retroactively swallow typed chars.
+        // Note: paste bursts go via paste_accum, not on_key, so split raw pastes
+        // arriving back-to-back will still merge via on_paste.
+        if self.paste_accum.is_empty() {
+            // Clear only the raw tracker; chip tracking stays for its time window
+            // and is cursor-checked inside on_paste.
+            if self.last_raw_start.is_some() {
+                self.last_raw_start = None;
+                self.last_raw_len = 0;
+                self.last_raw_text.clear();
+            }
+        }
+
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
@@ -1754,6 +1803,7 @@ impl App {
                     self.interrupt();
                 } else if !self.input.is_empty() {
                     self.input.clear();
+                    self.clear_paste_merge_state();
                 } else if self
                     .quit_armed
                     .map(|t| t.elapsed() < Duration::from_secs(2))
@@ -1813,14 +1863,20 @@ impl App {
                     self.interrupt();
                 } else if self.palette_visible() {
                     self.input.clear();
+                    self.clear_paste_merge_state();
                 } else if !self.input.is_empty() {
                     self.input.clear();
+                    self.clear_paste_merge_state();
                 }
             }
             // Shift+Enter → newline. Plain Enter → always submit. Never the reverse.
             KeyCode::Enter if shift && !ctrl && !alt => {
                 self.input.insert_char('\n');
                 self.ensure_input_caret_visible();
+                // Newline is typing — break raw chain (chip merge is cursor-checked).
+                self.last_raw_start = None;
+                self.last_raw_len = 0;
+                self.last_raw_text.clear();
             }
             KeyCode::Enter => {
                 if self.palette_visible() {
@@ -1845,6 +1901,8 @@ impl App {
                 }
                 let submitted = self.input.submit();
                 self.submit_text(&submitted);
+                // After submit, start fresh — no dangling paste session.
+                self.clear_paste_merge_state();
             }
             KeyCode::Tab => {
                 if self.palette_visible() {
@@ -2014,6 +2072,14 @@ impl App {
             self.mouse_left_down = false;
             self.on_login_mouse(m);
             return;
+        }
+
+        // Mouse click/drag moves caret → break raw merge chain (same rationale
+        // as on_key). Chip merge is cursor-checked inside on_paste.
+        if self.paste_accum.is_empty() && self.last_raw_start.is_some() {
+            self.last_raw_start = None;
+            self.last_raw_len = 0;
+            self.last_raw_text.clear();
         }
 
         self.mouse_col = m.column;
@@ -3797,7 +3863,13 @@ fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 
 /// A coalesced paste burst flushes into one chip after this quiet gap. Small
 /// enough to feel instant; large enough to stitch a PTY-split paste together.
-const PASTE_FLUSH_MS: u64 = 30;
+/// 120ms gives the PTY time to deliver a wall of text that was split across
+/// many frames, while still feeling instant.
+const PASTE_FLUSH_MS: u64 = 120;
+/// Any paste arriving within this window after a chip is created appends to
+/// the same chip instead of spawning a new `[pasted 1-1]` chip. This is what
+/// stops the thousand-chip spam when the terminal splits a paste.
+const PASTE_MERGE_MS: u64 = 800;
 
 /// Printable text that may be part of an unbracketed paste drip.
 /// **Never** Enter or Tab — those are real keys (submit / focus), not paste.
@@ -3819,10 +3891,16 @@ fn key_as_paste_burst_char(key: &KeyEvent) -> Option<char> {
 }
 
 impl App {
-    /// Handle a resolved paste (bracketed `Event::Paste`, a coalesced key
-    /// burst, or Ctrl+V). Routes to the masked login field when open, otherwise
-    /// into the composer where `insert_paste` collapses large blocks into a
-    /// single `[pasted N lines]` chip and inserts short pastes inline.
+    /// Handle a resolved paste. This is the **single place** where chips are
+    /// created, and it implements the Claude-Code-style merge window that
+    /// prevents a wall of text split across many PTY frames from becoming
+    /// a thousand `[pasted 1-1 lines]` chips.
+    ///
+    /// - Any paste arriving within PASTE_MERGE_MS of the previous paste
+    ///   appends to the same chip (or, if the previous paste was raw small
+    ///   text, retroactively converts the combined text into one chip).
+    /// - Small pastes stay inline unless they grow past the chip threshold
+    ///   during the merge window.
     fn on_paste(&mut self, s: &str) {
         let text: String = s.chars().filter(|c| *c != '\r').collect();
         if text.is_empty() {
@@ -3835,7 +3913,144 @@ impl App {
         if self.approval.is_some() || self.picker.is_some() {
             return;
         }
-        self.input.insert_paste(&text);
+
+        let now = Instant::now();
+        let within_merge = self
+            .active_paste_at
+            .map(|t| t.elapsed() < std::time::Duration::from_millis(PASTE_MERGE_MS))
+            .unwrap_or(false);
+
+        // 1) Active chip exists and we're within the merge window → append.
+        if within_merge {
+            if let Some(active_id) = self.active_paste_id {
+                if self.input.has_paste_id(active_id) {
+                    // Only merge if caret is still immediately after the active chip.
+                    // This prevents a later paste at a different cursor location from
+                    // growing an old chip, while still handling the PTY-split case where
+                    // flushes happen back-to-back with cursor after the chip.
+                    let cursor = self.input.cursor_index();
+                    let mut should_merge = false;
+                    if cursor > 0 {
+                        if let Some(id_at) = self.input.paste_id_at(cursor - 1) {
+                            if id_at == active_id {
+                                should_merge = true;
+                            }
+                        }
+                    }
+                    if should_merge {
+                        // Deduplicate: if the chip already ends with this exact text
+                        // (can happen when both Ctrl+V and bracketed paste fire for
+                        // the same clipboard), don't double-append.
+                        if let Some(existing) = self.input.paste_at(cursor - 1) {
+                            if existing.content.ends_with(&text) || existing.content == text {
+                                return;
+                            }
+                        }
+                        if self.input.append_to_paste(active_id, &text) {
+                            self.active_paste_at = Some(now);
+                            self.ensure_input_caret_visible();
+                            self.palette_idx = 0;
+                            self.palette_scroll = 0;
+                            return;
+                        }
+                    }
+                }
+                // Active id stale (chip deleted) → fall through to new chip.
+                self.active_paste_id = None;
+            }
+
+            // 2) Previous paste was raw small text, still within window.
+            //    We retroactively convert combined => chip if it now qualifies,
+            //    or merge raw pieces together.
+            if let Some(raw_start) = self.last_raw_start {
+                let raw_len = self.last_raw_len;
+                // Sanity: cursor should still be at end of raw, and buffer long enough.
+                // If user moved cursor or edited, we don't attempt retroactive merge.
+                let cur = self.input.cursor_index();
+                if cur >= raw_start + raw_len && raw_len > 0 {
+                    // Delete old raw range.
+                    let combined = format!("{}{}", self.last_raw_text, text);
+                    let should = crate::tui::input::should_chip(&combined);
+                    // Remove previous raw insertion.
+                    self.input.delete_range(raw_start, raw_start + raw_len);
+                    if should {
+                        if let Some(id) = self.input.start_paste_chip(&combined) {
+                            self.active_paste_id = Some(id);
+                            self.active_paste_at = Some(now);
+                            self.last_raw_start = None;
+                            self.last_raw_len = 0;
+                            self.last_raw_text.clear();
+                            self.ensure_input_caret_visible();
+                            self.palette_idx = 0;
+                            self.palette_scroll = 0;
+                            return;
+                        }
+                    } else {
+                        // Still small — re-insert combined as raw and keep tracking.
+                        let new_start = self.input.cursor_index();
+                        self.input.insert_str(&combined);
+                        self.last_raw_start = Some(new_start);
+                        self.last_raw_len = combined.chars().count();
+                        self.last_raw_text = combined;
+                        self.active_paste_at = Some(now);
+                        self.ensure_input_caret_visible();
+                        self.palette_idx = 0;
+                        self.palette_scroll = 0;
+                        return;
+                    }
+                } else {
+                    // Cursor moved — break raw merge chain.
+                    self.last_raw_start = None;
+                    self.last_raw_len = 0;
+                    self.last_raw_text.clear();
+                }
+            }
+        } else {
+            // Outside merge window — clear stale raw tracker.
+            self.last_raw_start = None;
+            self.last_raw_len = 0;
+            self.last_raw_text.clear();
+            if self
+                .active_paste_at
+                .map(|t| t.elapsed() >= std::time::Duration::from_millis(PASTE_MERGE_MS))
+                .unwrap_or(false)
+            {
+                self.active_paste_id = None;
+            }
+        }
+
+        // 3) Fresh paste (no merge).
+        if crate::tui::input::should_chip(&text) {
+            if let Some(id) = self.input.start_paste_chip(&text) {
+                self.active_paste_id = Some(id);
+                self.active_paste_at = Some(now);
+                self.last_raw_start = None;
+                self.last_raw_len = 0;
+                self.last_raw_text.clear();
+            } else {
+                // Slot exhaustion — fallback to raw but don't lose content.
+                let start = self.input.cursor_index();
+                self.input.insert_str(&text);
+                self.last_raw_start = Some(start);
+                self.last_raw_len = text.chars().count();
+                self.last_raw_text = text;
+                self.active_paste_id = None;
+                self.active_paste_at = Some(now);
+            }
+        } else {
+            // Small inline paste.
+            // If we're still within merge window and last was raw, this path
+            // was already handled above. Here it's a truly fresh small paste.
+            let start = self.input.cursor_index();
+            self.input.insert_str(&text);
+            // Track raw for potential retroactive merge if more paste arrives quickly.
+            self.last_raw_start = Some(start);
+            self.last_raw_len = text.chars().count();
+            self.last_raw_text = text;
+            self.active_paste_id = None;
+            self.active_paste_at = Some(now);
+        }
+
         self.ensure_input_caret_visible();
         self.palette_idx = 0;
         self.palette_scroll = 0;
@@ -3851,6 +4066,17 @@ impl App {
         self.on_paste(&text);
     }
 
+    /// Clear the paste merge session — called when the user types / moves
+    /// caret / deletes, so the next paste starts a fresh chip.
+    #[allow(dead_code)]
+    fn clear_paste_merge_state(&mut self) {
+        self.active_paste_id = None;
+        // Keep active_paste_at for a short grace? No — break immediately on edit.
+        self.active_paste_at = None;
+        self.last_raw_start = None;
+        self.last_raw_len = 0;
+        self.last_raw_text.clear();
+    }
 }
 
 fn clipboard_set(text: &str) {

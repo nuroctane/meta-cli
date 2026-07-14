@@ -87,7 +87,7 @@ pub fn paste_chip_label(content: &str) -> String {
     format!("[pasted 1-{n} lines]")
 }
 
-fn should_chip(s: &str) -> bool {
+pub(crate) fn should_chip(s: &str) -> bool {
     let lines = paste_line_count(s);
     let chars = s.chars().filter(|c| *c != '\r').count();
     // Any multi-line paste, or anything longer than a short phrase.
@@ -208,6 +208,46 @@ impl InputState {
         let id = paste_id_of(c)?;
         let p = self.pastes.get(&id)?;
         Some(paste_chip_label(&p.content))
+    }
+
+    /// Id of paste chip at buffer index, if any.
+    pub fn paste_id_at(&self, idx: usize) -> Option<u32> {
+        let c = *self.buffer.get(idx)?;
+        paste_id_of(c)
+    }
+
+    /// Append text to an existing paste block (for merging consecutive drips).
+    pub fn append_to_paste(&mut self, id: u32, s: &str) -> bool {
+        let normalized = normalize_paste(s);
+        if normalized.is_empty() {
+            return false;
+        }
+        if let Some(p) = self.pastes.get_mut(&id) {
+            p.content.push_str(&normalized);
+            return true;
+        }
+        false
+    }
+
+    /// Delete a range [lo, hi) from the buffer.
+    pub fn delete_range(&mut self, lo: usize, hi: usize) {
+        if lo >= hi || lo >= self.buffer.len() {
+            return;
+        }
+        let hi = hi.min(self.buffer.len());
+        self.buffer.drain(lo..hi);
+        if self.cursor > hi {
+            self.cursor -= hi - lo;
+        } else if self.cursor > lo {
+            self.cursor = lo;
+        }
+        self.selection_anchor = None;
+        self.gc_pastes();
+    }
+
+    /// Check if buffer contains a paste chip with this id.
+    pub fn has_paste_id(&self, id: u32) -> bool {
+        self.pastes.contains_key(&id)
     }
 
     #[allow(dead_code)]
@@ -378,21 +418,26 @@ impl InputState {
     }
 
     /// Paste from clipboard / bracketed paste. Large blobs → one chip.
-    pub fn insert_paste(&mut self, s: &str) {
+    /// Returns Some(id) if chip was created, None if raw inserted.
+    #[allow(dead_code)]
+    pub fn insert_paste(&mut self, s: &str) -> Option<u32> {
         let normalized = normalize_paste(s);
         if normalized.is_empty() {
-            return;
+            return None;
         }
         if !should_chip(&normalized) {
             self.insert_str(&normalized);
-            return;
+            return None;
         }
-        let _ = self.start_paste_chip(&normalized);
+        self.start_paste_chip(&normalized)
     }
 
     /// Create a new paste chip at the caret; returns its id.
     pub fn start_paste_chip(&mut self, s: &str) -> Option<u32> {
         let normalized = normalize_paste(s);
+        if normalized.is_empty() {
+            return None;
+        }
         self.delete_selection();
         let id = self.alloc_paste(normalized)?;
         let ch = paste_sentinel(id);
@@ -1073,5 +1118,62 @@ mod tests {
         assert_eq!(i.visual_row_of_index(25, 10), 2);
         // Caret mid second row
         assert_eq!(i.visual_row_of_index(15, 10), 1);
+    }
+
+    #[test]
+    fn append_to_paste_merges_drips_into_one_chip() {
+        let mut i = InputState::empty_for_test();
+        let first = "line one of many
+line two
+";
+        let id = i.start_paste_chip(first).expect("chip");
+        assert_eq!(i.buffer.len(), 1);
+        assert_eq!(i.paste_id_at(0), Some(id));
+        for _ in 0..100 {
+            let ok = i.append_to_paste(id, "more line
+");
+            assert!(ok);
+        }
+        assert_eq!(i.buffer.len(), 1, "must stay ONE chip, not 100");
+        let expanded = i.text_expanded();
+        assert!(expanded.contains("line one"));
+        assert!(expanded.lines().count() > 50);
+        let label = i.chip_label_at(0).unwrap();
+        assert!(label.starts_with("[pasted 1-"));
+    }
+
+    #[test]
+    fn delete_range_enables_raw_to_chip_conversion() {
+        let mut i = InputState::empty_for_test();
+        i.insert_str("hello");
+        assert_eq!(i.text(), "hello");
+        i.delete_range(0, 5);
+        assert_eq!(i.text(), "");
+        let combined = "hello world this is now a very long paste that should become a chip because it exceeds threshold";
+        let id = i.start_paste_chip(combined).unwrap();
+        assert_eq!(i.buffer.len(), 1);
+        assert!(is_paste_sentinel(i.buffer[0]));
+        assert_eq!(i.paste_id_at(0), Some(id));
+        assert_eq!(i.text_expanded(), combined);
+    }
+
+    #[test]
+    fn thousand_small_pastes_merged_via_append() {
+        let mut i = InputState::empty_for_test();
+        let big = (0..1000)
+            .map(|n| format!("line {}
+", n))
+            .collect::<String>();
+        let id = i.start_paste_chip(&big).unwrap();
+        for _ in 0..999 {
+            let _ = i.append_to_paste(id, "x");
+        }
+        assert_eq!(
+            i.buffer.iter().filter(|c| is_paste_sentinel(**c)).count(),
+            1,
+            "must be ONE chip even after 1000 appends"
+        );
+        assert!(i.text_expanded().len() >= 1000);
+        assert_eq!(i.buffer.len(), 1);
     }
 }
