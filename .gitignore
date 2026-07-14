@@ -23,6 +23,9 @@ credentials*
 secrets*
 **/secrets*
 
+# Local agent instructions only (never publish to main)
+AGENTS.md
+
 # Editor / OS
 .idea/
 .vscode/
