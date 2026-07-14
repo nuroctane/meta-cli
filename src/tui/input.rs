@@ -10,8 +10,9 @@ const PASTE_BASE: u32 = 0xE000;
 const PASTE_SLOT_COUNT: u32 = 4096;
 
 /// Multi-line or long pastes collapse into a chip when either threshold is hit.
+/// Keep these low — walls of text must never dump into the composer (Claude-style).
 const PASTE_CHIP_MIN_LINES: usize = 2;
-const PASTE_CHIP_MIN_CHARS: usize = 200;
+const PASTE_CHIP_MIN_CHARS: usize = 40;
 
 #[derive(Clone, Debug)]
 pub struct PasteBlock {
@@ -91,15 +92,16 @@ fn paste_line_count(content: &str) -> usize {
     n.max(1)
 }
 
-/// Label shown in the composer for a collapsed paste.
+/// Label shown in the composer for a collapsed paste (Claude-style).
 pub fn paste_chip_label(content: &str) -> String {
     let n = paste_line_count(content);
-    format!("pasted lines 1-{n}")
+    format!("[pasted 1-{n} lines]")
 }
 
 fn should_chip(s: &str) -> bool {
     let lines = paste_line_count(s);
     let chars = s.chars().filter(|c| *c != '\r').count();
+    // Any multi-line paste, or anything longer than a short phrase.
     lines >= PASTE_CHIP_MIN_LINES || chars >= PASTE_CHIP_MIN_CHARS
 }
 
@@ -242,7 +244,7 @@ impl InputState {
                 }
                 let label = self
                     .chip_label_at(abs)
-                    .unwrap_or_else(|| "pasted lines 1-1".into());
+                    .unwrap_or_else(|| "[pasted 1-1 lines]".into());
                 let id = paste_id_of(ch).unwrap_or(0);
                 segs.push(DisplaySeg::Chip { id, label });
             } else {
@@ -398,17 +400,26 @@ impl InputState {
 
     pub fn insert_str(&mut self, s: &str) {
         self.delete_selection();
-        for c in s.chars() {
-            if c == '\r' || is_paste_sentinel(c) {
-                continue;
-            }
-            self.buffer.insert(self.cursor, c);
-            self.cursor += 1;
+        let chars: Vec<char> = s
+            .chars()
+            .filter(|c| *c != '\r' && !is_paste_sentinel(*c))
+            .collect();
+        if chars.is_empty() {
+            return;
         }
+        // O(n) splice — never per-char insert (that "types out" large pastes slowly).
+        let mut new_buf = Vec::with_capacity(self.buffer.len() + chars.len());
+        new_buf.extend_from_slice(&self.buffer[..self.cursor]);
+        new_buf.extend_from_slice(&chars);
+        new_buf.extend_from_slice(&self.buffer[self.cursor..]);
+        self.cursor += chars.len();
+        self.buffer = new_buf;
         self.selection_anchor = None;
     }
 
-    /// Paste from clipboard / bracketed paste — chips large multi-line bodies.
+    /// Paste from clipboard / bracketed paste / unbracketed key-flood.
+    /// Multi-line or long blobs become a **single chip** in the composer; full
+    /// text is stored and expanded on submit (Claude Code behaviour).
     pub fn insert_paste(&mut self, s: &str) {
         let normalized = normalize_paste(s);
         if normalized.is_empty() {
@@ -420,12 +431,16 @@ impl InputState {
         }
         self.delete_selection();
         let Some(id) = self.alloc_paste(normalized) else {
-            // Slot exhaustion — fall back to raw insert.
+            // Slot exhaustion — still avoid slow per-char typing; dump as one splice.
             self.insert_str(s);
             return;
         };
         let ch = paste_sentinel(id);
-        self.buffer.insert(self.cursor, ch);
+        let mut new_buf = Vec::with_capacity(self.buffer.len() + 1);
+        new_buf.extend_from_slice(&self.buffer[..self.cursor]);
+        new_buf.push(ch);
+        new_buf.extend_from_slice(&self.buffer[self.cursor..]);
+        self.buffer = new_buf;
         self.cursor += 1;
         self.selection_anchor = None;
     }
@@ -987,7 +1002,7 @@ mod tests {
         assert!(is_paste_sentinel(i.buffer[0]));
         assert_eq!(i.text_expanded(), body);
         let label = i.chip_label_at(0).unwrap();
-        assert_eq!(label, "pasted lines 1-3");
+        assert_eq!(label, "[pasted 1-3 lines]");
         let submitted = i.submit();
         assert_eq!(submitted, body);
         assert!(i.is_empty());
@@ -996,11 +1011,27 @@ mod tests {
     #[test]
     fn long_single_line_paste_chips() {
         let mut i = InputState::empty_for_test();
-        let body = "x".repeat(250);
+        let body = "x".repeat(80);
         i.insert_paste(&body);
-        assert_eq!(i.buffer.len(), 1);
+        assert_eq!(i.buffer.len(), 1, "long single-line paste must be one chip, not raw text");
         assert!(is_paste_sentinel(i.buffer[0]));
         assert_eq!(i.text_expanded(), body);
+        assert_eq!(i.chip_label_at(0).as_deref(), Some("[pasted 1-1 lines]"));
+    }
+
+    #[test]
+    fn wall_of_text_is_one_chip_not_n_chars() {
+        let mut i = InputState::empty_for_test();
+        let mut body = String::new();
+        for n in 1..=50 {
+            body.push_str(&format!("line {n} of a giant paste wall\n"));
+        }
+        i.insert_paste(&body);
+        assert_eq!(i.buffer.len(), 1);
+        assert_eq!(i.line_count(), 1, "chip is a single buffer glyph / one hard line");
+        assert!(i.text_expanded().starts_with("line 1"));
+        assert!(i.text_expanded().contains("line 50"));
+        assert_eq!(i.chip_label_at(0).as_deref(), Some("[pasted 1-50 lines]"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::usage::{TokenUsage, UsageTracker};
 use crossterm::cursor::{Hide, Show};
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -1010,25 +1010,70 @@ pub async fn run_tui(
             Duration::from_millis(frame_ms)
         };
         if event::poll(wait)? {
+            // Unbracketed paste (Windows Terminal right-click, some hosts) arrives as a
+            // flood of Key events — not Event::Paste. Coalesce ready key chars into one
+            // insert_paste so the composer gets a chip, not a wall of slow typing.
+            let mut deferred: Option<Event> = None;
+            let mut first = true;
             loop {
-                match event::read()? {
+                let ev = if let Some(e) = deferred.take() {
+                    e
+                } else if first {
+                    // Outer poll already said something is ready.
+                    first = false;
+                    event::read()?
+                } else if event::poll(Duration::ZERO)? {
+                    event::read()?
+                } else {
+                    break;
+                };
+
+                match ev {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        app.on_key(key);
-                        dirty = true;
+                        if let Some(c) = key_as_paste_burst_char(&key) {
+                            // More input already queued → treat as paste burst.
+                            if event::poll(Duration::ZERO)? {
+                                let mut burst = String::new();
+                                burst.push(c);
+                                loop {
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    match event::read()? {
+                                        Event::Key(k) if k.kind == KeyEventKind::Press => {
+                                            if let Some(ch) = key_as_paste_burst_char(&k) {
+                                                burst.push(ch);
+                                            } else {
+                                                deferred = Some(Event::Key(k));
+                                                break;
+                                            }
+                                        }
+                                        Event::Paste(p) => burst.push_str(&p),
+                                        other => {
+                                            deferred = Some(other);
+                                            break;
+                                        }
+                                    }
+                                }
+                                apply_composer_paste(&mut app, &burst);
+                                dirty = true;
+                            } else {
+                                // Single keystroke typing path (palette, etc.).
+                                app.on_key(key);
+                                dirty = true;
+                            }
+                        } else {
+                            app.on_key(key);
+                            dirty = true;
+                        }
                     }
                     Event::Mouse(m) => {
                         app.on_mouse(m);
                         dirty = true;
                     }
                     Event::Paste(s) => {
-                        if let Some(m) = &mut app.login {
-                            m.buf.push_str(s.trim());
-                            dirty = true;
-                        } else if app.approval.is_none() && app.picker.is_none() {
-                            app.input.insert_paste(&s);
-                            app.ensure_input_caret_visible();
-                            dirty = true;
-                        }
+                        apply_composer_paste(&mut app, &s);
+                        dirty = true;
                     }
                     Event::Resize(_, _) => dirty = true,
                     _ => {}
@@ -1036,7 +1081,8 @@ pub async fn run_tui(
                 if app.should_quit {
                     break;
                 }
-                if !event::poll(Duration::ZERO)? {
+                // Continue if we have deferred work or more events ready.
+                if deferred.is_none() && !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
@@ -1538,8 +1584,15 @@ impl App {
                 self.should_quit = true;
                 return;
             }
-            // Ctrl+V: paste into the input (large pastes collapse to chips).
+            // Ctrl+V / Shift+Insert: paste — walls of text become chips, never dump raw.
             KeyCode::Char('v') if ctrl => {
+                if let Some(t) = clipboard_get() {
+                    self.input.insert_paste(&t);
+                    self.ensure_input_caret_visible();
+                }
+                return;
+            }
+            KeyCode::Insert if shift => {
                 if let Some(t) = clipboard_get() {
                     self.input.insert_paste(&t);
                     self.ensure_input_caret_visible();
@@ -3407,6 +3460,39 @@ fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
 }
 
 // ── system clipboard (Ctrl+C / Ctrl+V / Ctrl+X) ───────────────────────────
+
+/// Plain text from a key that unbracketed paste might emit as a flood of Key events.
+/// Ctrl/Alt/Super chords are shortcuts, not paste content. Shift is allowed (uppercase).
+fn key_as_paste_burst_char(key: &KeyEvent) -> Option<char> {
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+    if key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER)
+    {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char(c) => Some(c),
+        KeyCode::Enter => Some('\n'),
+        KeyCode::Tab => Some('\t'),
+        _ => None,
+    }
+}
+
+/// Apply pasted text to the login field or composer (chips large blobs).
+fn apply_composer_paste(app: &mut App, s: &str) {
+    if let Some(m) = &mut app.login {
+        m.buf.push_str(s.trim());
+        return;
+    }
+    if app.approval.is_some() || app.picker.is_some() {
+        return;
+    }
+    app.input.insert_paste(s);
+    app.ensure_input_caret_visible();
+}
 
 fn clipboard_set(text: &str) {
     if let Ok(mut cb) = arboard::Clipboard::new() {
