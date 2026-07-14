@@ -8,13 +8,13 @@ description: >
 
 # Resume Codex
 
-**Peer skill** — same handoff as `resume-claude` / `resume-grok` / `resume-meta`.
+**Peer skill** — same handoff as `resume-claude` / `resume-grok` / `resume-nur`.
 
-Set `TOOL=codex`. Reader: `~/.meta/skills/resume-session/session_reader.py`
+Set `TOOL=codex`. Reader: `~/.nur/skills/resume-session/session_reader.py`
 
 ```bash
-python3 ~/.meta/skills/resume-session/session_reader.py codex list --cwd "$PWD" --json
-python3 ~/.meta/skills/resume-session/session_reader.py codex show latest --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py codex list --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py codex show latest --cwd "$PWD" --json
 ```
 
 Follow `CORE.md` in that directory. Inert history only.

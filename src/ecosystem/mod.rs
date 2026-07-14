@@ -158,7 +158,7 @@ pub fn marker_path() -> PathBuf {
 /// Ensure the full Meta ecosystem is installed and initialised.
 /// Safe to call on every launch — skips heavy work when the marker is fresh.
 pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
-    // Always heal ~/.muse → ~/.meta gaps before creating empty ruflo/skills dirs.
+    // Always heal ~/.muse → ~/.nur gaps before creating empty ruflo/skills dirs.
     let _ = crate::config::ensure_dirs();
 
     if !force {
@@ -315,8 +315,8 @@ fn seed_default_plur_engrams() {
         }
     }
     let seeds = [
-        "When editing code in meta-cli or similar agents, prefer apply_patch / multi_edit over full file rewrites for multi-hunk changes.",
-        "Never commit secrets, API keys, or ~/.meta/auth.json. Keys live only in local auth storage.",
+        "When editing code in nur-cli or similar agents, prefer apply_patch / multi_edit over full file rewrites for multi-hunk changes.",
+        "Never commit secrets, API keys, or ~/.nur/auth.json. Keys live only in local auth storage.",
         "Prefer graphify query/path/explain over broad grep when graphify-out/graph.json exists for architecture questions.",
         "PLUR engrams are shared memory — learn corrections and preferences so future sessions remember them.",
         "Ruflo memory is vector memory for patterns and trajectories; use it for cross-session swarm knowledge.",
@@ -361,7 +361,7 @@ fn ensure_ruflo(node_ok: bool) -> ComponentStatus {
     let _ = fs::create_dir_all(&home);
     let db = ruflo_db_path();
 
-    // Initialise memory DB once (global under ~/.meta/ruflo — does not pollute projects).
+    // Initialise memory DB once (global under ~/.nur/ruflo — does not pollute projects).
     if !db.is_file() {
         let path_s = db.to_string_lossy().into_owned();
         let _ = run_quiet(
@@ -707,7 +707,7 @@ pub fn quick_status() -> String {
             return st.report();
         }
     }
-    "Meta ecosystem not provisioned yet — background ensure is running, or run:\n  meta ecosystem ensure\n".into()
+    "Meta ecosystem not provisioned yet — background ensure is running, or run:\n  nur ecosystem ensure\n".into()
 }
 
 /// One-line snapshot for TUI open. Instant; no npm/uv.

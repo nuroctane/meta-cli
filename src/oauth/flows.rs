@@ -104,7 +104,7 @@ fn pkce_challenge(verifier: &str) -> String {
 fn http() -> Result<reqwest::blocking::Client> {
     reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(60))
-        .user_agent(format!("meta-cli/{}", env!("CARGO_PKG_VERSION")))
+        .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|e| MuseError::Other(e.to_string()))
 }
@@ -151,9 +151,9 @@ fn wait_localhost_code(
                     }
                 }
                 let body = if code.is_some() {
-                    "<html><body><h2>Signed in — you can close this tab and return to Meta CLI.</h2></body></html>"
+                    "<html><body><h2>Signed in — you can close this tab and return to NurCLI.</h2></body></html>"
                 } else {
-                    "<html><body><h2>Missing code — try again from Meta CLI.</h2></body></html>"
+                    "<html><body><h2>Missing code — try again from NurCLI.</h2></body></html>"
                 };
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",

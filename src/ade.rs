@@ -7,7 +7,7 @@ use std::fs;
 use std::io::Write;
 use std::process::Command;
 
-/// Set terminal title (OSC 0/2). Keep the word `meta` in the title so Orca/ADEs
+/// Set terminal title (OSC 0/2). Keep the word `nur` in the title so Orca/ADEs
 /// can still recognize the agent process.
 pub fn set_terminal_title(title: &str) {
     print!("\x1b]0;{title}\x07");
@@ -72,14 +72,14 @@ pub fn abbreviate_for_title(prompt: &str, max_chars: usize) -> String {
     s
 }
 
-/// Write ADE discovery file at ~/.meta/ade.json
+/// Write ADE discovery file at ~/.nur/ade.json
 pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &TokenUsage) {
     let _ = crate::config::ensure_dirs();
     let body = json!({
         "schema_version": 1,
         "agent": "meta",
         "provider": "meta",
-        "product": "Meta CLI",
+        "product": "NurCLI",
         "model": model,
         "model_label": crate::config::model_display_name(model),
         "session_id": session_id,
@@ -241,7 +241,7 @@ if defined ORCA_AGENT_HOOK_ENDPOINT if exist "%ORCA_AGENT_HOOK_ENDPOINT%" call "
 if "%ORCA_AGENT_HOOK_PORT%"=="" exit /b 0
 if "%ORCA_AGENT_HOOK_TOKEN%"=="" exit /b 0
 if "%ORCA_PANE_KEY%"=="" exit /b 0
-set "ORCA_META_HOME=%USERPROFILE%\.meta"
+set "ORCA_META_HOME=%USERPROFILE%\.nur"
 REM Match Rust meta_home(): META_HOME wins over legacy MUSE_HOME.
 if not "%MUSE_HOME%"=="" set "ORCA_META_HOME=%MUSE_HOME%"
 if not "%META_HOME%"=="" set "ORCA_META_HOME=%META_HOME%"

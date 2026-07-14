@@ -1,10 +1,10 @@
 # Configuration
 
-Meta CLI is configured via a TOML file and optional rule/hook files, plus environment variables.
+NurCLI is configured via a TOML file and optional rule/hook files, plus environment variables.
 
 ## Config file
 
-The config file lives at `~/.meta/config.toml` and is created on first run.
+The config file lives at `~/.nur/config.toml` and is created on first run.
 
 ```toml
 # Active provider id from the catalog (set by TUI /login)
@@ -16,7 +16,7 @@ max_turns = 40
 stream = true
 context_window = 1000000
 
-# Tool results larger than this spill to ~/.meta/tool-results/ (0 = unlimited)
+# Tool results larger than this spill to ~/.nur/tool-results/ (0 = unlimited)
 tool_result_max_chars = 12000
 
 # Optional hard stops (omit or leave unset for unlimited)
@@ -38,7 +38,7 @@ ecosystem_auto_ensure = true
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `provider` | string | `meta` | Catalog id (`meta`, `openai`, `openrouter`, `ollama`, …). Set by TUI **`/login`** with matching `base_url` + `model` |
+| `provider` | string | `nur` | Catalog id (`nur`, `openai`, `openrouter`, `ollama`, …). Set by TUI **`/login`** with matching `base_url` + `model` |
 | `model` | string | `muse-spark-1.1` | Model id for the active provider |
 | `base_url` | string | `https://api.meta.ai/v1` | API base (no trailing path); providers use Responses or Chat Completions under this base |
 | `reasoning_effort` | string | `high` | Reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh` |
@@ -51,7 +51,7 @@ ecosystem_auto_ensure = true
 | `compact_keep_user_turns` | integer | `4` | Recent user turns kept after compaction |
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |
 | `poor_mode` | bool | `false` | Skip PLUR auto-inject, skills catalog, and long memory in the system prompt |
-| `ecosystem_auto_ensure` | bool | `true` | Background TTL **repair** of packs on later TUI opens (first install is foreground via one-liner / EXE / `meta install`); set `false` to skip repair |
+| `ecosystem_auto_ensure` | bool | `true` | Background TTL **repair** of packs on later TUI opens (first install is foreground via one-liner / EXE / `nur install`); set `false` to skip repair |
 
 ### Reasoning effort levels
 
@@ -81,7 +81,7 @@ When a ceiling is hit, the agent **refuses new API turns** with a clear status m
 
 ## Permission rules
 
-Optional file: **`~/.meta/permissions.toml`** (and/or project **`.meta/permissions.toml`** — both are merged).
+Optional file: **`~/.nur/permissions.toml`** (and/or project **`.meta/permissions.toml`** — both are merged).
 
 ```toml
 # Patterns: "tool" or "tool:glob"  (* = any sequence)
@@ -105,7 +105,7 @@ Reload without restart: `/permissions reload`.
 
 ## Tool hooks
 
-Optional file: **`~/.meta/hooks.toml`**.
+Optional file: **`~/.nur/hooks.toml`**.
 
 ```toml
 pre_tool = "echo pre $META_TOOL"
@@ -143,7 +143,7 @@ Non-zero **pre_tool** exit blocks the tool. Missing file = no hooks. Check statu
 
 | Variable | Purpose |
 |----------|---------|
-| `META_HOME` | Override data home (default `~/.meta`) |
+| `META_HOME` | Override data home (default `~/.nur`) |
 | `MUSE_HOME` | Override data home (legacy) |
 | `META_CWD` | Default working directory |
 
@@ -154,7 +154,7 @@ Non-zero **pre_tool** exit blocks the tool. Missing file = no hooks. Check statu
 | `META_STATUS_PATH` | Path to live status file |
 | `META_USAGE_LOG_PATH` | Path to usage log |
 | `META_SESSION_ID` | Current session id |
-| `META_PROVIDER` | Provider identifier (set to `meta`) |
+| `META_PROVIDER` | Provider identifier (set to `nur`) |
 
 ### Update control
 
@@ -175,15 +175,15 @@ Non-zero **pre_tool** exit blocks the tool. Missing file = no hooks. Check statu
 
 ## Data home
 
-All Meta CLI state lives under `~/.meta/` by default:
+All NurCLI state lives under `~/.nur/` by default:
 
 ```
-~/.meta/
+~/.nur/
 ├── auth.json           # API key
 ├── config.toml         # Configuration
 ├── permissions.toml    # Optional allow/deny/ask rules
 ├── hooks.toml          # Optional pre/post tool hooks
-├── meta.log            # Tracing (not painted into the TUI)
+├── nur.log            # Tracing (not painted into the TUI)
 ├── status.json         # Live token/cost status
 ├── usage.jsonl         # Per-request usage log
 ├── ade.json            # ADE discovery manifest
@@ -203,15 +203,15 @@ Override with `META_HOME` (or legacy `MUSE_HOME`).
 
 ## Legacy migration
 
-If you upgraded from a pre-0.5.14 build, Meta CLI automatically gap-fills missing files from `~/.muse/` into `~/.meta/`. Existing files are never overwritten. When the same session id exists in both homes, the **richer** copy (more tokens / newer) wins.
+If you upgraded from a pre-0.5.14 build, NurCLI automatically gap-fills missing files from `~/.muse/` into `~/.nur/`. Existing files are never overwritten. When the same session id exists in both homes, the **richer** copy (more tokens / newer) wins.
 
-`meta auth logout` clears auth from both `~/.meta/` and legacy `~/.muse/`.
+`nur auth logout` clears auth from both `~/.nur/` and legacy `~/.muse/`.
 
 ---
 
 ## Project instructions
 
-Meta CLI reads project-level instruction files from your working directory:
+NurCLI reads project-level instruction files from your working directory:
 
 | File | Purpose |
 |------|---------|

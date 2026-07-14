@@ -1,18 +1,18 @@
 [package]
-name = "meta-cli"
+name = "nur-cli"
 version = "0.10.0"
 edition = "2021"
-description = "Fully loaded unofficial Meta Model API coding agent — vision (look/extract_frames), streaming TUI, tools + sandbox, Graphify/PLUR/Ruflo/Executor + 800+ skills, subagents, atomic sessions, meta doctor"
+description = "NurCLI — fully loaded multi-provider coding agent (TUI, vision, tools, sandbox, Graphify/PLUR/Ruflo/Executor + 800+ skills). Optional Meta Model API provider (muse-spark) among many."
 license = "GPL-3.0-or-later"
-authors = ["meta-cli contributors"]
-repository = "https://github.com/nuroctane/meta-cli"
+authors = ["NurCLI contributors"]
+repository = "https://github.com/nuroctane/nur-cli"
 readme = "README.md"
-keywords = ["meta", "muse", "ai", "cli", "agent", "tui", "coding-agent", "graphify", "skills"]
+keywords = ["nur", "nurcli", "ai", "cli", "agent", "tui", "coding-agent", "graphify", "skills"]
 categories = ["command-line-utilities", "development-tools"]
 
-# Single binary; install scripts copy meta(.exe) → muse(.exe) for the alias.
+# Single binary: `nur` (no muse alias).
 [[bin]]
-name = "meta"
+name = "nur"
 path = "src/main.rs"
 
 [dependencies]

@@ -1,6 +1,6 @@
 # TUI
 
-The Meta-blue terminal UI for interactive sessions.
+The Nur-gold terminal UI for interactive sessions.
 
 !!! quote "Built with Ratatui"
     The entire interface — cards, borders, animations, drag-select, and the
@@ -123,7 +123,7 @@ See [Permission modes](#permission-modes) below for exactly what each mode allow
 
 ### Quick memory
 
-Type `#` followed by a note to save it directly to `~/.meta/memory.md` without starting a turn:
+Type `#` followed by a note to save it directly to `~/.nur/memory.md` without starting a turn:
 
 ```text
 # use cargo-nextest for test runner, not cargo test
@@ -165,7 +165,7 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/feedback` | File a GitHub issue (`gh` or browser) |
 | `/tips` | Mouse + keyboard interaction tips (lean banner counterpart) |
 | `/bug` | Open GitHub issues page (report a bug) |
-| `/exit` | Quit Meta CLI |
+| `/exit` | Quit NurCLI |
 
 ### Multi-provider `/login`
 
@@ -208,7 +208,7 @@ transcript (no full agent turn).
 Uses the **Executor** gateway (`executor` tool). If MCP is missing:
 
 ```bash
-meta ecosystem ensure
+nur ecosystem ensure
 ```
 
 ### Feedback
@@ -217,7 +217,7 @@ meta ecosystem ensure
 /feedback <what happened / what you'd like>
 ```
 
-Creates a GitHub issue on `nuroctane/meta-cli` via `gh` when available;
+Creates a GitHub issue on `nuroctane/nur-cli` via `gh` when available;
 otherwise opens a prefilled new-issue page in the browser. Includes CLI
 version, OS, and model in the body footer.
 
@@ -229,7 +229,7 @@ version, OS, and model in the body footer.
 /poor                   # leaner system prompt (tools unchanged)
 ```
 
-Oversized tool results automatically spill under `~/.meta/tool-results/` with a short preview for the model — see [Configuration](configuration.md).
+Oversized tool results automatically spill under `~/.nur/tool-results/` with a short preview for the model — see [Configuration](configuration.md).
 
 ---
 
@@ -296,7 +296,7 @@ No keyboard shortcuts — move the highlight with the wheel or `↑`/`↓`, choo
 Open with `Ctrl+R` or `/sessions`. Browse recent sessions with a prompt-first picker — see the first user message of each session to find the one you want.
 
 - Defaults to **all** workspaces (not only the current cwd). Toggle **here** / **all** with Tab or the scope chip.
-- Scans both `~/.meta/sessions` and legacy `~/.muse/sessions`; when the same id exists twice, the **richer** copy wins.
+- Scans both `~/.nur/sessions` and legacy `~/.muse/sessions`; when the same id exists twice, the **richer** copy wins.
 - Lists show message counts, tokens, and **estimated cost** so high-spend sessions are easy to spot.
 - Session saves write a sidecar **`.json.bak`** before overwrite.
 
@@ -312,15 +312,15 @@ The splash shows the active model title. The rest of the chrome is model-agnosti
 
 ## ADE / Orca integration
 
-Meta CLI writes live status files for host panels:
+NurCLI writes live status files for host panels:
 
 | Path | Contents |
 |------|----------|
-| `~/.meta/status.json` | Live tokens, cost, model, state |
-| `~/.meta/usage.jsonl` | Per-request log |
-| `~/.meta/ade.json` | Discovery manifest |
+| `~/.nur/status.json` | Live tokens, cost, model, state |
+| `~/.nur/usage.jsonl` | Per-request log |
+| `~/.nur/ade.json` | Discovery manifest |
 
 ```bash
-meta install-hook           # install Orca agent hook
+nur install-hook           # install Orca agent hook
 orca terminal create --command meta   # launch in Orca
 ```

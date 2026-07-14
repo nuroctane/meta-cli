@@ -1,26 +1,26 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-  One-shot install of Meta CLI (unofficial) — builds the `meta` binary (muse alias too).
+  One-shot install of NurCLI (unofficial) — builds the `nur` binary ().
 
 .DESCRIPTION
   Works two ways:
     1) From a clone:  .\install.ps1
     2) Remote one-shot (no clone yet):
-         irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+         irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
 
   Steps: ensure Rust → clone if needed → cargo build --release →
-  install meta (+ muse alias) to %USERPROFILE%\.local\bin → PATH → Orca hook →
+  install nur to %USERPROFILE%\.local\bin → PATH → Orca hook →
   optional auth if META_API_KEY / MODEL_API_KEY is set.
 
   Secrets are NEVER written into the repo. Keys live only in:
-    %USERPROFILE%\.meta\auth.json   or   env META_API_KEY / MODEL_API_KEY
+    %USERPROFILE%\.nur\auth.json   or   env META_API_KEY / MODEL_API_KEY
 
 .PARAMETER SkipHook
   Skip Orca agent-hook install.
 
 .PARAMETER RepoDir
-  Where to clone/build (default: %USERPROFILE%\laboratory\meta-cli).
+  Where to clone/build (default: %USERPROFILE%\laboratory\nur-cli).
 #>
 param(
     [switch]$SkipHook,
@@ -28,7 +28,7 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RepoUrl = "https://github.com/nuroctane/meta-cli.git"
+$RepoUrl = "https://github.com/nuroctane/nur-cli.git"
 $Branch = "main"
 
 function Write-Step($msg) { Write-Host "  → $msg" -ForegroundColor Cyan }
@@ -36,7 +36,7 @@ function Write-Ok($msg)   { Write-Host "  ✓ $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "  ! $msg" -ForegroundColor Yellow }
 
 Write-Host ""
-Write-Host "  Meta CLI (unofficial) installer" -ForegroundColor Blue
+Write-Host "  NurCLI (unofficial) installer" -ForegroundColor Blue
 Write-Host "  Meta Model API agent · not affiliated with Meta" -ForegroundColor DarkGray
 Write-Host ""
 
@@ -49,14 +49,14 @@ if (-not $scriptRoot -and $MyInvocation.MyCommand.Path) {
 $inRepo = $false
 if ($scriptRoot -and (Test-Path (Join-Path $scriptRoot "Cargo.toml"))) {
     $toml = Get-Content (Join-Path $scriptRoot "Cargo.toml") -Raw
-    if ($toml -match 'name\s*=\s*"meta-cli"') {
+    if ($toml -match 'name\s*=\s*"nur-cli"') {
         $RepoDir = $scriptRoot
         $inRepo = $true
     }
 }
 
 if (-not $RepoDir) {
-    $RepoDir = Join-Path $env:USERPROFILE "laboratory\meta-cli"
+    $RepoDir = Join-Path $env:USERPROFILE "laboratory\nur-cli"
 }
 
 if (-not $inRepo) {
@@ -78,7 +78,7 @@ if (-not $inRepo) {
         } finally { Pop-Location }
     } else {
         if (Test-Path $RepoDir) {
-            throw "Directory exists but is not a meta-cli checkout: $RepoDir"
+            throw "Directory exists but is not a nur-cli checkout: $RepoDir"
         }
         Write-Step "Cloning $RepoUrl …"
         git clone --branch $Branch --single-branch $RepoUrl $RepoDir
@@ -94,7 +94,7 @@ $env:Path = "$cargoBin;$env:Path"
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     Write-Step "Rust/cargo not found — installing rustup (stable)…"
-    $rustup = Join-Path $env:TEMP "rustup-init-meta-cli.exe"
+    $rustup = Join-Path $env:TEMP "rustup-init-nur-cli.exe"
     Invoke-WebRequest -Uri "https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe" -OutFile $rustup
     & $rustup -y --default-toolchain stable
     if ($LASTEXITCODE -ne 0) {
@@ -150,23 +150,19 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo build --release failed" }
 } finally { Pop-Location }
 
-$built = Join-Path $RepoDir "target\release\meta.exe"
-if (-not (Test-Path $built)) {
-    # cargo may only emit muse.exe if meta target name not picked up yet
-    $built = Join-Path $RepoDir "target\release\muse.exe"
-}
-if (-not (Test-Path $built)) { throw "missing release binary (meta.exe / muse.exe)" }
+$built = Join-Path $RepoDir "target\release\nur.exe"
+if (-not (Test-Path $built)) { throw "missing release binary: $built" }
 
 # ── install binary ────────────────────────────────────────────────────────
 $destDir = Join-Path $env:USERPROFILE ".local\bin"
 New-Item -ItemType Directory -Force -Path $destDir | Out-Null
-# Primary command is always `meta` (not the model name). `muse` is a legacy alias only.
+# Primary (and only) command is `nur`.
 function Install-BinarySafe([string]$Source, [string]$Target) {
     try {
         Copy-Item -Force $Source $Target -ErrorAction Stop
         return $true
     } catch {
-        # Binary locked by a running TUI — swap via rename so `meta` still updates.
+        # Binary locked by a running TUI — swap via rename so `nur` still updates.
         $bak = "$Target.old"
         try {
             if (Test-Path $bak) { Remove-Item -Force $bak -ErrorAction SilentlyContinue }
@@ -175,25 +171,31 @@ function Install-BinarySafe([string]$Source, [string]$Target) {
             Remove-Item -Force $bak -ErrorAction SilentlyContinue
             return $true
         } catch {
-            Write-Warn "Could not replace $Target (is meta still running?). Close it and re-run install."
+            Write-Warn "Could not replace $Target (is nur still running?). Close it and re-run install."
             return $false
         }
     }
 }
-$dest = Join-Path $destDir "meta.exe"
-$museAlias = Join-Path $destDir "muse.exe"
+$dest = Join-Path $destDir "nur.exe"
 # Integrity: SHA-256 of the release binary (written next to install + verified after copy).
 $builtHash = (Get-FileHash -Algorithm SHA256 -Path $built).Hash.ToLowerInvariant()
 if (-not (Install-BinarySafe $built $dest)) {
-    throw "Failed to install primary binary: $dest — quit any running meta session and re-run."
+    throw "Failed to install primary binary: $dest — quit any running nur session and re-run."
 }
-# Optional alias only — always prefer `meta`
-[void](Install-BinarySafe $built $museAlias)
+# Drop legacy muse.exe alias if present (rebrand — no muse starter).
+$legacyMuse = Join-Path $destDir "muse.exe"
+if (Test-Path $legacyMuse) {
+    try { Remove-Item -Force $legacyMuse -ErrorAction SilentlyContinue } catch {}
+}
+$legacyMeta = Join-Path $destDir "meta.exe"
+if (Test-Path $legacyMeta) {
+    try { Remove-Item -Force $legacyMeta -ErrorAction SilentlyContinue } catch {}
+}
 $installedHash = (Get-FileHash -Algorithm SHA256 -Path $dest).Hash.ToLowerInvariant()
 if ($installedHash -ne $builtHash) {
-    throw "Integrity check failed: installed meta.exe hash does not match build ($builtHash vs $installedHash)"
+    throw "Integrity check failed: installed nur.exe hash does not match build ($builtHash vs $installedHash)"
 }
-Set-Content -Path (Join-Path $destDir "meta.sha256") -Value "$builtHash  meta.exe" -Encoding ascii
+Set-Content -Path (Join-Path $destDir "nur.sha256") -Value "$builtHash  nur.exe" -Encoding ascii
 Write-Ok "SHA-256 $builtHash"
 $env:Path = "$destDir;$env:Path"
 
@@ -217,7 +219,7 @@ try {
     & $dest ecosystem ensure --force 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     Write-Ok "Ecosystem provisioned"
 } catch {
-    Write-Warn "Ecosystem ensure incomplete: $($_.Exception.Message) — re-run: meta install"
+    Write-Warn "Ecosystem ensure incomplete: $($_.Exception.Message) — re-run: nur install"
 }
 
 # ── Browser tool: stage extension + target the default browser ────────────
@@ -227,7 +229,7 @@ try {
 try {
     & $dest browser setup 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
 } catch {
-    Write-Warn "Browser setup deferred — run later: meta browser setup"
+    Write-Warn "Browser setup deferred — run later: nur browser setup"
 }
 
 # ── Orca hook (best-effort) ───────────────────────────────────────────────
@@ -241,7 +243,8 @@ if (-not $SkipHook) {
 }
 
 # ── auth: never print the key ─────────────────────────────────────────────
-$key = $env:META_API_KEY
+$key = $env:NUR_API_KEY
+if (-not $key) { $key = $env:META_API_KEY }
 if (-not $key) { $key = $env:MODEL_API_KEY }
 if (-not $key) { $key = $env:MUSE_API_KEY }
 if (-not $key) {
@@ -255,22 +258,22 @@ if (-not $key) {
 }
 
 if ($key -and $key.Trim().Length -gt 0) {
-    Write-Step "API key found in environment — saving to ~/.meta/auth.json (local only)…"
+    Write-Step "API key found in environment — saving to ~/.nur/auth.json (local only)…"
     # Pipe via env so the key is not put on the process command line
     $env:META_API_KEY = $key.Trim()
     & $dest auth login --key $env:META_API_KEY 2>$null | Out-Null
-    Write-Ok "Auth stored under $env:USERPROFILE\.meta\ (never committed to git)"
+    Write-Ok "Auth stored under $env:USERPROFILE\.nur\ (never committed to git)"
 } else {
     Write-Warn "No API key in env yet. After install:"
-    Write-Host "      meta auth login" -ForegroundColor DarkGray
-    Write-Host "    or set User env META_API_KEY from https://dev.meta.ai/" -ForegroundColor DarkGray
+    Write-Host "      nur auth login" -ForegroundColor DarkGray
+    Write-Host "    or set User env NUR_API_KEY (or META_API_KEY for Meta Model API) from https://dev.meta.ai/" -ForegroundColor DarkGray
 }
 
 Write-Host ""
 Write-Host "  Done." -ForegroundColor Green
-Write-Host "  Run:   meta" -ForegroundColor White
-Write-Host "  Auth:  meta auth login     (key stays in ~/.meta only)" -ForegroundColor DarkGray
+Write-Host "  Run:   nur" -ForegroundColor White
+Write-Host "  Auth:  nur auth login     (key stays in ~/.nur only)" -ForegroundColor DarkGray
 Write-Host "  Stack: graphify + plur + ruflo installed during this run" -ForegroundColor DarkGray
-Write-Host "  Orca:  orca terminal create --command meta" -ForegroundColor DarkGray
-Write-Host "  Docs:  https://github.com/nuroctane/meta-cli" -ForegroundColor DarkGray
+Write-Host "  Orca:  orca terminal create --command nur" -ForegroundColor DarkGray
+Write-Host "  Docs:  https://github.com/nuroctane/nur-cli" -ForegroundColor DarkGray
 Write-Host ""

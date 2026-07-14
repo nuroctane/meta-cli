@@ -63,7 +63,7 @@ impl Tool for ExecutorTool {
         let bin = ecosystem::find_bin("executor").ok_or_else(|| {
             MuseError::Tool(
                 "executor CLI not found. Meta auto-installs it — npm i -g executor \
-                 then meta ecosystem ensure"
+                 then nur ecosystem ensure"
                     .into(),
             )
         })?;

@@ -167,7 +167,7 @@ impl Session {
         let legacy = crate::config::legacy_muse_home()
             .join("sessions")
             .join(format!("{id}.json"));
-        // Prefer the **richer** of ~/.meta vs legacy ~/.muse (more tokens wins).
+        // Prefer the **richer** of ~/.nur vs legacy ~/.muse (more tokens wins).
         // Never silently drop a high-cost chat in favour of a thin twin.
         if path.is_file() && legacy.is_file() {
             let prefer_legacy = match (
@@ -344,8 +344,8 @@ pub fn list_sessions() -> Result<Vec<Session>> {
     Ok(out)
 }
 
-/// Fast listing for `/sessions` UI and `meta sessions` — skips `input_items`.
-/// Scans both `~/.meta/sessions` and legacy `~/.muse/sessions`.
+/// Fast listing for `/sessions` UI and `nur sessions` — skips `input_items`.
+/// Scans both `~/.nur/sessions` and legacy `~/.muse/sessions`.
 ///
 /// When the same id exists in both homes (migration / dual write), **keeps the
 /// richer copy** (more tokens, then newer `updated_at`) — never drops a paid

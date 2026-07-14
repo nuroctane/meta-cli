@@ -4,18 +4,17 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const DEFAULT_BASE_URL: &str = "https://api.meta.ai/v1";
-/// Default Meta Model API model id (wire format). Override via `/model`, `--model`,
-/// config, or `META_MODEL`. UI chrome stays model-agnostic except the splash title,
-/// which uses [`model_display_name`].
+/// Default model id when provider is Meta Model API (wire format). Override via
+/// `/model`, `--model`, config, or `NUR_MODEL` / `META_MODEL`.
 pub const DEFAULT_MODEL: &str = "muse-spark-1.1";
 pub const DEFAULT_REASONING: &str = "high";
 
-/// Pretty-print a Meta model id for the splash title / status only.
-/// Example: `muse-spark-1.1` → `Muse Spark 1.1`.
+/// Pretty-print a model id for the splash title / status only.
+/// Example: `muse-spark-1.1` → `Muse Spark 1.1` (vendor model name preserved).
 pub fn model_display_name(model_id: &str) -> String {
     let s = model_id.trim();
     if s.is_empty() {
-        return "Meta model".into();
+        return "model".into();
     }
     if s.contains(' ') {
         return s.to_string();
@@ -64,7 +63,7 @@ pub struct Config {
     #[serde(default = "default_context_window")]
     pub context_window: u64,
     /// Max chars of a single tool result kept inline in the model context.
-    /// Larger outputs spill to `~/.meta/tool-results/` with a short preview.
+    /// Larger outputs spill to `~/.nur/tool-results/` with a short preview.
     /// `0` = unlimited (legacy behavior).
     #[serde(default = "default_tool_result_max_chars")]
     pub tool_result_max_chars: u64,
@@ -87,7 +86,7 @@ pub struct Config {
     #[serde(default)]
     pub poor_mode: bool,
     /// When true (default), TUI open background-repairs graphify/plur/ruflo/browser packs.
-    /// Set false for a pure binary + chat experience until `meta ecosystem ensure`.
+    /// Set false for a pure binary + chat experience until `nur ecosystem ensure`.
     #[serde(default = "default_true")]
     pub ecosystem_auto_ensure: bool,
 }
@@ -153,17 +152,24 @@ fn default_compact_tool_body_max() -> u64 {
     800
 }
 
-/// Legacy home from pre-0.5.14 builds (`~/.muse`). Still read for migration.
+/// Oldest legacy home (`~/.muse`). Still read for migration.
 pub fn legacy_muse_home() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".muse")
 }
 
-/// Meta CLI data home: `~/.meta` (secrets, sessions, status, skills, memory).
-/// Override with `META_HOME` (or legacy `MUSE_HOME`).
-pub fn meta_home() -> PathBuf {
-    for var in ["META_HOME", "MUSE_HOME"] {
+/// Previous product home (`~/.nur`) before NurCLI rebrand. Gap-filled into [`nur_home`].
+pub fn legacy_meta_home() -> PathBuf {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".meta")
+}
+
+/// NurCLI data home: `~/.nur` (secrets, sessions, status, skills, memory).
+/// Override: `NUR_HOME`, then legacy `META_HOME` / `MUSE_HOME`.
+pub fn nur_home() -> PathBuf {
+    for var in ["NUR_HOME", "META_HOME", "MUSE_HOME"] {
         if let Ok(h) = std::env::var(var) {
             let h = h.trim();
             if !h.is_empty() {
@@ -173,66 +179,68 @@ pub fn meta_home() -> PathBuf {
     }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join(".meta")
+        .join(".nur")
 }
 
-/// Alias for call sites still named `muse_home` — always resolves to [`meta_home`].
+/// Deprecated alias — always [`nur_home`].
+pub fn meta_home() -> PathBuf {
+    nur_home()
+}
+
+/// Deprecated alias — always [`nur_home`].
 pub fn muse_home() -> PathBuf {
-    meta_home()
+    nur_home()
 }
 
 pub fn config_path() -> PathBuf {
-    meta_home().join("config.toml")
+    nur_home().join("config.toml")
 }
 
 pub fn auth_path() -> PathBuf {
-    meta_home().join("auth.json")
+    nur_home().join("auth.json")
 }
 
 pub fn sessions_dir() -> PathBuf {
-    meta_home().join("sessions")
+    nur_home().join("sessions")
 }
 
 /// Live status file for ADE / host panels — token usage, model, session.
 pub fn status_path() -> PathBuf {
-    meta_home().join("status.json")
+    nur_home().join("status.json")
 }
 
 /// Append-only usage log for host billing dashboards.
 pub fn usage_log_path() -> PathBuf {
-    meta_home().join("usage.jsonl")
+    nur_home().join("usage.jsonl")
 }
 
-/// Fill gaps in `~/.meta` from legacy `~/.muse` (never overwrites existing files).
-///
-/// Runs on every `ensure_dirs` so partial upgrades (e.g. default config already
-/// written under `.meta` while auth/sessions still live in `.muse`) still heal.
-fn migrate_legacy_home_if_needed(meta: &std::path::Path) {
-    let legacy = legacy_muse_home();
-    if !legacy.is_dir() || legacy == meta {
+const MIGRATE_FILES: &[&str] = &[
+    "auth.json",
+    "config.toml",
+    "memory.md",
+    "history.jsonl",
+    "latest_session.json",
+    "cwd_sessions.json",
+    "usage.jsonl",
+    "status.json",
+    "ade.json",
+    "ecosystem.json",
+];
+
+/// Gap-fill one legacy root into `dest` (never overwrites existing files).
+fn gap_fill_from(legacy: &std::path::Path, dest: &std::path::Path) {
+    if !legacy.is_dir() || legacy == dest {
         return;
     }
-    let files = [
-        "auth.json",
-        "config.toml",
-        "memory.md",
-        "history.jsonl",
-        "latest_session.json",
-        "cwd_sessions.json",
-        "usage.jsonl",
-        "status.json",
-        "ade.json",
-        "ecosystem.json",
-    ];
-    for name in files {
+    for name in MIGRATE_FILES {
         let src = legacy.join(name);
-        let dst = meta.join(name);
+        let dst = dest.join(name);
         if src.is_file() && !dst.exists() {
             let _ = fs::copy(&src, &dst);
         }
     }
     let src_sess = legacy.join("sessions");
-    let dst_sess = meta.join("sessions");
+    let dst_sess = dest.join("sessions");
     if src_sess.is_dir() {
         let _ = fs::create_dir_all(&dst_sess);
         if let Ok(entries) = fs::read_dir(&src_sess) {
@@ -247,25 +255,33 @@ fn migrate_legacy_home_if_needed(meta: &std::path::Path) {
             }
         }
     }
-    // Skills + ruflo DB: merge missing files into dest (so ensure-first
-    // creating an empty ruflo/ dir does not strand legacy memory.db).
     for name in ["skills", "ruflo", "skill-packs"] {
         let src = legacy.join(name);
-        let dst = meta.join(name);
+        let dst = dest.join(name);
         if src.is_dir() {
             let _ = copy_dir_recursive(&src, &dst);
         }
     }
 }
 
-/// Copy a single missing file from legacy home into meta home (used by auth heal).
+/// Fill gaps in `~/.nur` from legacy `~/.nur` then `~/.muse` (never overwrites).
+fn migrate_legacy_home_if_needed(dest: &std::path::Path) {
+    gap_fill_from(&legacy_meta_home(), dest);
+    gap_fill_from(&legacy_muse_home(), dest);
+}
+
+/// Copy a single missing file from legacy homes into nur home (auth heal).
 pub fn promote_legacy_file(name: &str) -> bool {
-    let meta = meta_home();
-    let src = legacy_muse_home().join(name);
-    let dst = meta.join(name);
-    if src.is_file() && !dst.exists() {
-        let _ = fs::create_dir_all(&meta);
-        return fs::copy(&src, &dst).is_ok();
+    let dest = nur_home();
+    for legacy in [legacy_meta_home(), legacy_muse_home()] {
+        let src = legacy.join(name);
+        let dst = dest.join(name);
+        if src.is_file() && !dst.exists() {
+            let _ = fs::create_dir_all(&dest);
+            if fs::copy(&src, &dst).is_ok() {
+                return true;
+            }
+        }
     }
     false
 }
@@ -286,7 +302,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 }
 
 pub fn ensure_dirs() -> Result<()> {
-    let home = meta_home();
+    let home = nur_home();
     fs::create_dir_all(&home)?;
     fs::create_dir_all(sessions_dir())?;
     migrate_legacy_home_if_needed(&home);
@@ -305,22 +321,20 @@ pub fn load_config() -> Result<Config> {
         toml::from_str(&text).map_err(|e| MuseError::Config(e.to_string()))?
     };
     // Self-hosted OpenAI-compat (Ollama, vLLM, LiteLLM, custom gateways).
-    if let Ok(u) = std::env::var("META_BASE_URL") {
-        let u = u.trim().trim_end_matches('/').to_string();
-        if !u.is_empty() {
-            cfg.base_url = u;
-        }
-    }
+    apply_base_url_env(&mut cfg);
     cfg.validate()?;
     Ok(cfg)
 }
 
-/// Apply `META_BASE_URL` env override onto a config (e.g. after `/login` sets catalog URL).
+/// Apply `NUR_BASE_URL` / legacy `META_BASE_URL` env override onto a config.
 pub fn apply_base_url_env(cfg: &mut Config) {
-    if let Ok(u) = std::env::var("META_BASE_URL") {
-        let u = u.trim().trim_end_matches('/').to_string();
-        if !u.is_empty() {
-            cfg.base_url = u;
+    for var in ["NUR_BASE_URL", "META_BASE_URL"] {
+        if let Ok(u) = std::env::var(var) {
+            let u = u.trim().trim_end_matches('/').to_string();
+            if !u.is_empty() {
+                cfg.base_url = u;
+                return;
+            }
         }
     }
 }
@@ -371,53 +385,43 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos();
-        std::env::temp_dir().join(format!("meta-cli-{label}-{n}"))
+        std::env::temp_dir().join(format!("nur-cli-{label}-{n}"))
     }
 
     #[test]
     fn migrate_fills_missing_files_without_overwrite() {
         let root = unique_tmp("migrate");
-        let legacy = root.join(".muse");
-        let meta = root.join(".meta");
-        fs::create_dir_all(legacy.join("sessions")).unwrap();
-        fs::create_dir_all(&meta).unwrap();
-        fs::write(legacy.join("auth.json"), r#"{"api_key":"k","source":"t"}"#).unwrap();
-        fs::write(legacy.join("config.toml"), "model = \"from-legacy\"\n").unwrap();
-        fs::write(legacy.join("sessions").join("abc.json"), "{}").unwrap();
-        // Pre-existing config in meta must not be overwritten
-        fs::write(meta.join("config.toml"), "model = \"keep-me\"\n").unwrap();
+        let legacy_muse = root.join(".muse");
+        let legacy_meta = root.join(".meta");
+        let nur = root.join(".nur");
+        fs::create_dir_all(legacy_muse.join("sessions")).unwrap();
+        fs::create_dir_all(&legacy_meta).unwrap();
+        fs::create_dir_all(&nur).unwrap();
+        fs::write(legacy_muse.join("auth.json"), r#"{"api_key":"k","source":"t"}"#).unwrap();
+        fs::write(legacy_meta.join("memory.md"), "from-meta\n").unwrap();
+        fs::write(legacy_muse.join("sessions").join("abc.json"), "{}").unwrap();
+        // Pre-existing config in nur must not be overwritten
+        fs::write(nur.join("config.toml"), "model = \"keep-me\"\n").unwrap();
 
-        // Simulate gap-fill (same logic as migrate, with explicit roots)
-        for name in ["auth.json", "config.toml"] {
-            let src = legacy.join(name);
-            let dst = meta.join(name);
-            if src.is_file() && !dst.exists() {
-                fs::copy(&src, &dst).unwrap();
-            }
-        }
-        let dst_sess = meta.join("sessions");
-        fs::create_dir_all(&dst_sess).unwrap();
-        for e in fs::read_dir(legacy.join("sessions")).unwrap() {
-            let e = e.unwrap();
-            let dst = dst_sess.join(e.file_name());
-            if !dst.exists() {
-                fs::copy(e.path(), dst).unwrap();
-            }
-        }
+        gap_fill_from(&legacy_meta, &nur);
+        gap_fill_from(&legacy_muse, &nur);
 
-        assert_eq!(
-            fs::read_to_string(meta.join("config.toml")).unwrap().contains("keep-me"),
-            true
+        assert!(
+            fs::read_to_string(nur.join("config.toml"))
+                .unwrap()
+                .contains("keep-me")
         );
-        assert!(meta.join("auth.json").is_file());
-        assert!(meta.join("sessions").join("abc.json").is_file());
+        assert!(nur.join("auth.json").is_file());
+        assert!(nur.join("memory.md").is_file());
+        assert!(nur.join("sessions").join("abc.json").is_file());
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn model_display_name_title_cases() {
+        assert_eq!(model_display_name(""), "model");
+        assert_eq!(model_display_name("  "), "model");
         assert_eq!(model_display_name("muse-spark-1.1"), "Muse Spark 1.1");
-        assert_eq!(model_display_name("  "), "Meta model");
     }
 }
 

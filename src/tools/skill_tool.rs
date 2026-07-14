@@ -37,7 +37,7 @@ impl Tool for SkillTool {
             "list" => {
                 if skills.is_empty() {
                     return Ok(
-                        "no skills installed — add <name>/SKILL.md under ~/.meta/skills/, \
+                        "no skills installed — add <name>/SKILL.md under ~/.nur/skills/, \
                          ~/.agents/skills/, or the workspace .meta/.agents skills dirs. \
                          Graphify: uv tool install graphifyy && graphify install --platform agents"
                             .into(),

@@ -362,7 +362,7 @@ impl Tool for ExtractFrames {
 
     fn description(&self) -> &str {
         "Extract a sparse set of still frames from a video (ffmpeg). Default ~1 fps, \
-         capped (default 8). Writes JPEGs under .meta/frames/<stem>/ and returns paths. \
+         capped (default 8). Writes JPEGs under .nur/frames/<stem>/ and returns paths. \
          Prefer this over looking at every frame. Then call look on the paths (or the \
          whole dir listing) for vision. Requires ffmpeg on PATH."
     }

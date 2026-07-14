@@ -2,7 +2,7 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum MuseError {
-    #[error("not authenticated: set META_API_KEY / MODEL_API_KEY or run `meta auth login`")]
+    #[error("not authenticated: set NUR_API_KEY (or META_API_KEY for Meta provider) or run `nur auth login`")]
     NotAuthenticated,
 
     #[error("API error ({status}): {message}")]

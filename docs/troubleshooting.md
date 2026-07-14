@@ -1,18 +1,18 @@
 # Troubleshooting
 
-## `meta doctor`
+## `nur doctor`
 
 The built-in health check for install, auth, config, and ecosystem:
 
 ```bash
-meta doctor
+nur doctor
 ```
 
 ### What it checks
 
 | Check | Shows |
 |-------|-------|
-| `binary` | Path to the `meta` binary |
+| `binary` | Path to the `nur` binary |
 | `config` | Model, effort, max_turns, **budget** (`$/tok` caps), config path |
 | `auth` | Whether a key is set (last 4 chars only) |
 | `home` | Data home directory |
@@ -30,15 +30,15 @@ meta doctor
 **All green:**
 
 ```text
-meta doctor · v0.10.0
+nur doctor · v0.10.0
 
-binary  C:\Users\you\.local\bin\meta.exe
+binary  C:\Users\you\.local\bin\nur.exe
 config  model=muse-spark-1.1 effort=high max_turns=40 budget=∞$/∞tok  (C:\Users\you\.meta\config.toml)
 auth    key set (…abcd)
 home    C:\Users\you\.meta
 status  C:\Users\you\.meta\status.json
 usage   C:\Users\you\.meta\usage.jsonl
-sessions C:\Users\you\.meta\sessions
+sessions C:\Users\you\.nur\sessions
 
 ecosystem
   graphify  ✓
@@ -64,26 +64,26 @@ doctor complete
 ## How do I update Meta?
 
 ```bash
-meta update
+nur update
 ```
 
-That pulls your Laboratory checkout (`~/laboratory/meta-cli` or `~/Laboratory/meta-cli`), runs `cargo build --release`, reinstalls `~/.local/bin/meta`, and re-runs ecosystem / browser setup.
+That pulls your Laboratory checkout (`~/laboratory/nur-cli` or `~/Laboratory/nur-cli`), runs `cargo build --release`, reinstalls `~/.local/bin/meta`, and re-runs ecosystem / browser setup.
 
 | If… | Then… |
 |-----|--------|
-| No source checkout | `meta update` falls back to `meta install` (repair from the running binary) |
-| You use the Windows EXE only | Re-download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) and double‑click, **or** `meta update` if you later have a clone |
+| No source checkout | `nur update` falls back to `nur install` (repair from the running binary) |
+| You use the Windows EXE only | Re-download `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) and double‑click, **or** `nur update` if you later have a clone |
 | You want a full network reinstall | Re-run the [one-liner](setup.md) |
-| You only want stack packs refreshed | `meta ecosystem ensure --force` (does not rebuild the CLI) |
+| You only want stack packs refreshed | `nur ecosystem ensure --force` (does not rebuild the CLI) |
 
 Confirm:
 
 ```bash
-meta --version
-meta doctor
+nur --version
+nur doctor
 ```
 
-More: **[Setup → Update](setup.md#update-keep-meta-current)** · **[Commands → meta update](commands.md#meta-update)**.
+More: **[Setup → Update](setup.md#update-keep-meta-current)** · **[Commands → nur update](commands.md#meta-update)**.
 
 ---
 
@@ -91,7 +91,7 @@ More: **[Setup → Update](setup.md#update-keep-meta-current)** · **[Commands �
 
 ### `command not found: meta`
 
-The `meta` binary is not on your PATH.
+The `nur` binary is not on your PATH.
 
 **Fix:**
 
@@ -113,7 +113,7 @@ No API key found.
 **Fix:**
 
 ```bash
-meta auth login
+nur auth login
 # or
 export META_API_KEY="your-key-here"
 ```
@@ -123,9 +123,9 @@ export META_API_KEY="your-key-here"
 Sessions are never auto-deleted. If a chat “vanished”:
 
 1. Toggle the sessions picker scope to **all** (not only this cwd) — Tab or the scope chip.
-2. CLI: `meta sessions --limit 50` and look at the **COST** column for high-spend chats.
+2. CLI: `nur sessions --limit 50` and look at the **COST** column for high-spend chats.
 3. Resume by id: `meta -r <prefix>` (first 8 chars of the UUID are enough when unique).
-4. Check both `~/.meta/sessions/` and legacy `~/.muse/sessions/`. Sidecar `*.json.bak` may hold the previous save.
+4. Check both `~/.nur/sessions/` and legacy `~/.muse/sessions/`. Sidecar `*.json.bak` may hold the previous save.
 
 ### Session budget stopped the agent
 
@@ -141,11 +141,11 @@ session cost $X ≥ budget $Y
 /budget save
 ```
 
-Or edit `max_session_cost_usd` / `max_session_tokens` in `~/.meta/config.toml`.
+Or edit `max_session_cost_usd` / `max_session_tokens` in `~/.nur/config.toml`.
 
 ### Garbled text in the TUI on launch
 
-Logs go to `~/.meta/meta.log` (not stderr). If you still see noise, check that you're on **v0.10.0+** and no wrapper is redirecting `RUST_LOG` to the console at `warn` for syntect.
+Logs go to `~/.nur/nur.log` (not stderr). If you still see noise, check that you're on **v0.10.0+** and no wrapper is redirecting `RUST_LOG` to the console at `warn` for syntect.
 
 ### Ecosystem components missing
 
@@ -173,8 +173,8 @@ ecosystem
     ```
 2. Re-run any one-shot installer:
     ```bash
-    meta install
-    # or: meta ecosystem ensure --force
+    nur install
+    # or: nur ecosystem ensure --force
     # or re-run the one-liner / double-click a fresh release EXE
     ```
 
@@ -192,29 +192,29 @@ Binary may be corrupted or from a different source.
 
 ```bash
 # already on PATH
-meta install
+nur install
 
 # Windows one-liner
-irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
 
 # macOS / Linux one-liner
-curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
 
-# or download meta-windows-x86_64.exe from Releases and double-click
+# or download nur-windows-x86_64.exe from Releases and double-click
 ```
 
 ### API errors / rate limits
 
 If you see API errors:
 
-1. Check your key: `meta auth status`
-2. Check the model: `cat ~/.meta/config.toml`
+1. Check your key: `nur auth status`
+2. Check the model: `cat ~/.nur/config.toml`
 3. Verify the API is up: [dev.meta.ai](https://dev.meta.ai/)
 
 ### Session not resuming
 
 ```bash
-meta sessions              # list sessions
+nur sessions              # list sessions
 meta -r <session-id>       # resume by id
 meta -c                    # continue most recent for this cwd
 ```
@@ -225,27 +225,27 @@ meta -c                    # continue most recent for this cwd
 config  invalid reasoning_effort 'super' — use minimal|low|medium|high|xhigh
 ```
 
-**Fix:** Edit `~/.meta/config.toml` and set a valid effort level.
+**Fix:** Edit `~/.nur/config.toml` and set a valid effort level.
 
 ---
 
 ## Legacy migration
 
-If you upgraded from a pre-0.5.14 build (using `~/.muse/`), Meta CLI automatically gap-fills missing files into `~/.meta/`. Existing files are never overwritten.
+If you upgraded from a pre-0.5.14 build (using `~/.muse/`), NurCLI automatically gap-fills missing files into `~/.nur/`. Existing files are never overwritten.
 
 To manually migrate:
 
 ```bash
 # Files are copied automatically on first run.
 # To force a clean start:
-meta auth logout     # clears both ~/.meta and ~/.muse
-meta auth login      # re-authenticate
+nur auth logout     # clears both ~/.nur and ~/.muse
+nur auth login      # re-authenticate
 ```
 
 ---
 
 ## Getting more help
 
-- Run `meta doctor` for a full diagnostic
-- Check the [GitHub issues](https://github.com/nuroctane/meta-cli/issues)
-- Open a new issue with your `meta doctor` output
+- Run `nur doctor` for a full diagnostic
+- Check the [GitHub issues](https://github.com/nuroctane/nur-cli/issues)
+- Open a new issue with your `nur doctor` output

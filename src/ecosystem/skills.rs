@@ -1,4 +1,4 @@
-//! Install Meta-bundled SKILL packs into `~/.meta/skills/` so the agent
+//! Install Meta-bundled SKILL packs into `~/.nur/skills/` so the agent
 //! discovers them on first launch (also mirrors to `~/.agents/skills`).
 
 use crate::config::muse_home;
@@ -109,10 +109,10 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
         )],
     ),
     (
-        "resume-meta",
+        "resume-nur",
         &[(
             "SKILL.md",
-            include_str!("../../skills/resume-meta/SKILL.md"),
+            include_str!("../../skills/resume-nur/SKILL.md"),
         )],
     ),
     (
@@ -131,7 +131,7 @@ description: "Local-first shared memory for AI agents (engrams + episodes). Use 
 
 # PLUR — shared agent memory
 
-Meta CLI auto-installs `@plur-ai/cli` and provisions `~/.plur/`. Use the **`plur`** tool
+NurCLI auto-installs `@plur-ai/cli` and provisions `~/.plur/`. Use the **`plur`** tool
 (or `/plur` slash command) — do not ask the user to run npm.
 
 ## When to use
@@ -159,7 +159,7 @@ Meta CLI auto-installs `@plur-ai/cli` and provisions `~/.plur/`. Use the **`plur
 ## Rules
 
 - Never store secrets, API keys, tokens, or passwords in engrams.
-- Scope project knowledge with `scope` (e.g. `project:meta-cli`); personal prefs → `global`.
+- Scope project knowledge with `scope` (e.g. `project:nur-cli`); personal prefs → `global`.
 - After a user correction, learn it immediately so the next turn benefits.
 - PLUR is memory of *assertions*, not a code index — use graphify for code structure.
 
@@ -173,8 +173,8 @@ description: "Agent meta-harness: vector memory, swarm coordination, hive-mind, 
 
 # Ruflo — agent orchestration harness
 
-Meta CLI auto-installs `ruflo` and provisions global vector memory at
-`~/.meta/ruflo/memory.db`. Use the **`ruflo`** tool (or `/ruflo`) — no separate init.
+NurCLI auto-installs `ruflo` and provisions global vector memory at
+`~/.nur/ruflo/memory.db`. Use the **`ruflo`** tool (or `/ruflo`) — no separate init.
 
 ## When to use
 
@@ -200,7 +200,7 @@ Meta CLI auto-installs `ruflo` and provisions global vector memory at
 
 ## Rules
 
-- Default memory lives under Meta's home (`~/.meta/ruflo/`) so project trees stay clean.
+- Default memory lives under Meta's home (`~/.nur/ruflo/`) so project trees stay clean.
 - Prefer PLUR for *preferences and corrections*; Ruflo memory for *patterns, trajectories, embeddings*.
 - Prefer graphify for *code structure graphs*.
 - Do not require Claude Code — Meta is the host agent.

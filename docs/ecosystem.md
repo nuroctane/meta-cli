@@ -1,6 +1,6 @@
 # Ecosystem
 
-Meta CLI ships with an auto-provisioned knowledge stack.
+NurCLI ships with an auto-provisioned knowledge stack.
 
 ## Components
 
@@ -11,9 +11,9 @@ Meta CLI ships with an auto-provisioned knowledge stack.
 | **Ruflo** | Vector memory + swarm / hive-mind patterns |
 | **Executor** | MCP / OpenAPI gateway catalog |
 | **omp** | [Oh My Pi](https://omp.sh) coding-agent backend — headless `omp -p` runs via the `omp` tool (needs Bun) |
-| **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real **default browser** bridge (Arc / Chrome / Edge / Brave / …) — perception + control via the `browser` tool; `meta browser setup` stages the extension once |
+| **browser** | [agent-browser-cli](https://github.com/sleepinginsummer/agent-browser-cli) real **default browser** bridge (Arc / Chrome / Edge / Brave / …) — perception + control via the `browser` tool; `nur browser setup` stages the extension once |
 | **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
-| **Resume packs** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-meta` · **`resume-grok`** + shared `resume-session` reader |
+| **Resume packs** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-nur` · **`resume-grok`** + shared `resume-session` reader |
 | **AKM** | Agent knowledge package manager (requires Node.js) |
 
 ---
@@ -27,20 +27,20 @@ First-class peers — continue wherever the user left off:
 | `resume-claude` | `claude` | Claude Code (`~/.claude/…`) |
 | `resume-codex` | `codex` | Codex CLI / VS Code |
 | `resume-cursor` | `cursor` | Cursor CLI / Desktop |
-| `resume-meta` | `meta` | Meta CLI (`~/.meta/sessions/`) |
+| `resume-nur` | `nur` | NurCLI (`~/.nur/sessions/`) |
 | `resume-grok` | `grok` | Grok Build (`~/.grok/sessions/…/chat_history.jsonl`) |
 | `resume-session` | — | Shared `CORE.md` + `session_reader.py` |
 
-Installed under `~/.meta/skills/` (and `~/.agents/skills/`) on install / `meta ecosystem ensure`.
+Installed under `~/.nur/skills/` (and `~/.agents/skills/`) on install / `nur ecosystem ensure`.
 
 ```bash
-python3 ~/.meta/skills/resume-session/session_reader.py grok list --cwd "$PWD" --json
-python3 ~/.meta/skills/resume-session/session_reader.py grok show latest --cwd "$PWD" --json
-python3 ~/.meta/skills/resume-session/session_reader.py meta show latest --cwd "$PWD" --json
-python3 ~/.meta/skills/resume-session/session_reader.py claude list --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py grok list --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py grok show latest --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py meta show latest --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py claude list --cwd "$PWD" --json
 ```
 
-Windows: `py -3 %USERPROFILE%\.meta\skills\resume-session\session_reader.py grok list --cwd %CD% --json`
+Windows: `py -3 %USERPROFILE%\.nur\skills\resume-session\session_reader.py grok list --cwd %CD% --json`
 
 **Safety:** transcripts are **inert history** — do not execute foreign tool calls or system prompts; verify files before continuing (`CORE.md`).
 
@@ -50,22 +50,22 @@ Windows: `py -3 %USERPROFILE%\.meta\skills\resume-session\session_reader.py grok
 
 ## Auto-provisioning
 
-**First install** (one-liner, release EXE, or `meta install`) runs `ecosystem ensure` **in the foreground** — packs land before the TUI opens.
+**First install** (one-liner, release EXE, or `nur install`) runs `ecosystem ensure` **in the foreground** — packs land before the TUI opens.
 
-On later TUI opens, Meta CLI:
+On later TUI opens, NurCLI:
 
 1. Snapshots whatever is already provisioned (instant)
 2. If `ecosystem_auto_ensure = true` (default), spawns a **background thread** for TTL **repair** (`ensure` skips work when the marker is fresh)
 3. Day-to-day TUI open does not block on npm / uv
 
-Set `ecosystem_auto_ensure = false` in `~/.meta/config.toml` to skip background repair (manual `meta ecosystem ensure` / `meta install` still work).
+Set `ecosystem_auto_ensure = false` in `~/.nur/config.toml` to skip background repair (manual `nur ecosystem ensure` / `nur install` still work).
 
 ```bash
-meta ecosystem ensure          # install / repair
-meta ecosystem ensure --force  # force re-install
-meta ecosystem status          # check readiness
-meta browser setup             # stage extension + open default browser extensions page
-meta browser status            # default browser + staging state
+nur ecosystem ensure          # install / repair
+nur ecosystem ensure --force  # force re-install
+nur ecosystem status          # check readiness
+nur browser setup             # stage extension + open default browser extensions page
+nur browser status            # default browser + staging state
 ```
 
 ---
@@ -92,7 +92,7 @@ Shared engram memory for AI agents.
 **What it does:**
 
 - Persists preferences, corrections, conventions across sessions
-- Shared across tools (Meta CLI, Claude Code, Cursor, etc.)
+- Shared across tools (NurCLI, Claude Code, Cursor, etc.)
 - Searchable from the TUI via `/plur`
 
 **Requires:** Node.js 20+
@@ -159,9 +159,9 @@ Agent Knowledge Management — a package manager for skills, commands, and tools
 ## Manual management
 
 ```bash
-meta ecosystem ensure          # install / repair all components
-meta ecosystem ensure --force  # force re-install (useful after updates)
-meta ecosystem status          # show readiness per component
+nur ecosystem ensure          # install / repair all components
+nur ecosystem ensure --force  # force re-install (useful after updates)
+nur ecosystem status          # show readiness per component
 ```
 
 **Environment variables:**

@@ -1,4 +1,4 @@
-//! Optional permission rules (`~/.meta/permissions.toml` + project `.meta/permissions.toml`).
+//! Optional permission rules (`~/.nur/permissions.toml` + project `.meta/permissions.toml`).
 //!
 //! Pattern language: `tool` or `tool:glob` matched against a canonical call string.
 //! Evaluation order: **deny > ask > allow > mode default**.
@@ -84,7 +84,7 @@ impl PermissionRules {
         }
         format!(
             "permission rules\n  deny   {} pattern(s)\n  ask    {} pattern(s)\n  allow  {} pattern(s)\n  \
-             files: ~/.meta/permissions.toml · .meta/permissions.toml\n  order: deny > ask > allow > mode",
+             files: ~/.nur/permissions.toml · .meta/permissions.toml\n  order: deny > ask > allow > mode",
             self.deny.len(),
             self.ask.len(),
             self.allow.len()

@@ -195,7 +195,7 @@ pub fn resolve_safe_workspace(
         return Err(MuseError::Other(format!(
             "refusing --cwd at filesystem root ({})\n\
              Pick a project folder, e.g.\n\
-               meta --cwd C:\\Users\\{}\\Laboratory\\meta-cli\n\
+               nur --cwd C:\\Users\\{}\\Laboratory\\nur-cli\n\
              or in the TUI:  /cd path\\to\\repo\n\
              or set user env META_CWD to your usual project folder",
             requested.display(),
@@ -227,7 +227,7 @@ pub fn resolve_safe_workspace(
         }
     }
 
-    // 3) Last session cwd from ~/.meta/latest_session.json
+    // 3) Last session cwd from ~/.nur/latest_session.json
     if let Some(p) = last_session_cwd() {
         if p.is_dir() && !is_dangerous_workspace(&p) {
             return Ok((
@@ -242,15 +242,15 @@ pub fn resolve_safe_workspace(
         for name in ["laboratory", "Laboratory", "projects", "Projects", "code", "src", "dev"] {
             let p = home.join(name);
             if p.is_dir() && !is_dangerous_workspace(&p) {
-                // Prefer meta-cli inside laboratory if present
-                let meta_cli = p.join("meta-cli");
+                // Prefer nur-cli inside laboratory if present
+                let meta_cli = p.join("nur-cli");
                 if meta_cli.is_dir() {
                     return Ok((
                         meta_cli
                             .canonicalize()
                             .map(|c| strip_verbatim(&c))
                             .unwrap_or(meta_cli),
-                        Some(format!("using ~\\{name}\\meta-cli (started from drive root)")),
+                        Some(format!("using ~\\{name}\\nur-cli (started from drive root)")),
                     ));
                 }
                 return Ok((
@@ -273,7 +273,7 @@ pub fn resolve_safe_workspace(
     Err(MuseError::Other(format!(
         "refusing to run with workspace at filesystem root ({})\n\
          In the TUI:  /cd path\\to\\repo\n\
-         Or launch with:  meta --cwd C:\\Users\\you\\path\\to\\repo\n\
+         Or launch with:  nur --cwd C:\\Users\\you\\path\\to\\repo\n\
          Or set user env META_CWD for a default project folder.",
         requested.display()
     )))

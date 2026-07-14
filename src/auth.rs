@@ -113,7 +113,7 @@ pub fn provider_mismatch(auth: &Auth, cfg_provider: &str) -> bool {
 }
 
 /// Resolve a usable bearer credential (any provider / env).
-/// Order: env keys → `~/.meta/auth.json` (with OAuth refresh) → legacy `~/.muse`.
+/// Order: `NUR_API_KEY` → vendor/legacy envs → `~/.nur/auth.json` → legacy homes.
 pub fn resolve_api_key() -> Result<String> {
     resolve_api_key_for(None)
 }
@@ -122,7 +122,8 @@ pub fn resolve_api_key() -> Result<String> {
 /// a different provider (prevents sending Grok tokens to OpenAI, etc.).
 /// Env keys always win and are not provider-scoped.
 pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
-    for var in ["META_API_KEY", "MODEL_API_KEY", "MUSE_API_KEY"] {
+    // NUR_API_KEY = app generic; META_API_KEY kept for Meta Model API / old installs.
+    for var in ["NUR_API_KEY", "META_API_KEY", "MODEL_API_KEY", "MUSE_API_KEY"] {
         if let Ok(k) = std::env::var(var) {
             let k = k.trim().to_string();
             if !k.is_empty() {
@@ -135,7 +136,7 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
         if let Some(exp) = expected_provider {
             if provider_mismatch(&auth, exp) {
                 return Err(MuseError::Other(format!(
-                    "saved credentials are for provider '{}' but active provider is '{}'. Run /login (or meta auth logout) and sign in again.",
+                    "saved credentials are for provider '{}' but active provider is '{}'. Run /login (or nur auth logout) and sign in again.",
                     auth.provider, exp
                 )));
             }
@@ -146,9 +147,15 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
             return Ok(k);
         }
     }
-    // Legacy path if migration hasn't run yet — promote into ~/.meta for next time.
-    let legacy = crate::config::legacy_muse_home().join("auth.json");
-    if legacy.exists() {
+    // Legacy path if migration hasn't run yet — promote into ~/.nur for next time.
+    for legacy_home in [
+        crate::config::legacy_meta_home(),
+        crate::config::legacy_muse_home(),
+    ] {
+        let legacy = legacy_home.join("auth.json");
+        if !legacy.exists() {
+            continue;
+        }
         let text = fs::read_to_string(&legacy)?;
         let auth: Auth = serde_json::from_str(&text)?;
         let k = auth.api_key.trim().to_string();
@@ -335,9 +342,14 @@ pub fn key_fingerprint(key: &str) -> String {
 
 pub fn auth_status() -> Result<()> {
     // Status should report mismatch without hard-failing the command.
-    let env_source = if std::env::var("META_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false)
+    let env_source = if std::env::var("NUR_API_KEY").map(|k| !k.trim().is_empty()).unwrap_or(false)
     {
-        Some("META_API_KEY env")
+        Some("NUR_API_KEY env")
+    } else if std::env::var("META_API_KEY")
+        .map(|k| !k.trim().is_empty())
+        .unwrap_or(false)
+    {
+        Some("META_API_KEY env (Meta provider / legacy app)")
     } else if std::env::var("MODEL_API_KEY")
         .map(|k| !k.trim().is_empty())
         .unwrap_or(false)
@@ -360,7 +372,7 @@ pub fn auth_status() -> Result<()> {
         println!("provider: (env — not scoped)");
         println!("expires: no expiry");
         println!("key: {}", key_fingerprint(&key));
-        println!("note: env keys override ~/.meta/auth.json");
+        println!("note: env keys override ~/.nur/auth.json");
         return Ok(());
     }
 
@@ -371,7 +383,7 @@ pub fn auth_status() -> Result<()> {
                 .map(|c| c.provider)
                 .unwrap_or_default();
             println!("authenticated: yes");
-            println!("source: ~/.meta/auth.json");
+            println!("source: ~/.nur/auth.json");
             if !auth.provider.is_empty() {
                 println!("provider: {}", auth.provider);
             } else {
@@ -394,21 +406,24 @@ pub fn auth_status() -> Result<()> {
             println!("expires: {}", format_expires_relative(auth.expires_at));
             println!("key: {}", key_fingerprint(&auth.api_key));
             println!(
-                "note: ~/.meta/auth.json is plaintext secrets (Unix 0600; Windows profile ACLs)"
+                "note: ~/.nur/auth.json is plaintext secrets (Unix 0600; Windows profile ACLs)"
             );
             Ok(())
         }
         _ => {
-            // Legacy muse path?
-            let legacy = crate::config::legacy_muse_home().join("auth.json");
-            if legacy.exists() {
-                println!("authenticated: yes (legacy ~/.muse — will promote on use)");
-                println!("source: ~/.muse/auth.json");
-                return Ok(());
+            for (label, home) in [
+                ("~/.meta", crate::config::legacy_meta_home()),
+                ("~/.muse", crate::config::legacy_muse_home()),
+            ] {
+                if home.join("auth.json").exists() {
+                    println!("authenticated: yes (legacy {label} — will promote on use)");
+                    println!("source: {label}/auth.json");
+                    return Ok(());
+                }
             }
             println!("authenticated: no");
-            println!("run: meta auth login");
-            println!("or set META_API_KEY / MODEL_API_KEY");
+            println!("run: nur auth login");
+            println!("or set NUR_API_KEY (or META_API_KEY for Meta Model API)");
             println!("or /login in the TUI (browser sign-in for Grok, Claude, …)");
             Ok(())
         }

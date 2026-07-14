@@ -88,7 +88,7 @@ impl Tool for BrowserTool {
         let bin = ecosystem::find_bin(BIN).ok_or_else(|| {
             MuseError::Tool(
                 "agent-browser-cli not found. Meta auto-installs it — or run \
-                 `meta browser setup` to stage the extension and finish one-time \
+                 `nur browser setup` to stage the extension and finish one-time \
                  setup for your default browser."
                     .into(),
             )

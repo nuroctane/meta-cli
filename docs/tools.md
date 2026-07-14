@@ -1,6 +1,6 @@
 # Tools
 
-All native tools available to the Meta CLI agent.
+All native tools available to the NurCLI agent.
 
 ## Tool families
 
@@ -21,7 +21,7 @@ All of the above are **first-class** in the tool schema every turn (nothing is h
 
 ### Tool results and context
 
-- Results larger than `tool_result_max_chars` (default **12000**) are written under `~/.meta/tool-results/` and the model gets a short preview + path (use `read_file` for more).
+- Results larger than `tool_result_max_chars` (default **12000**) are written under `~/.nur/tool-results/` and the model gets a short preview + path (use `read_file` for more).
 - Set `tool_result_max_chars = 0` for unlimited inline results (legacy behaviour).
 
 ---
@@ -77,7 +77,7 @@ Execute shell commands. Hardened with:
 - **Sandbox** — when available, runs in an isolated environment
 
 !!! note "Shell backend"
-    Meta CLI uses Git Bash on Windows when available, otherwise falls back to PowerShell. On macOS/Linux it uses Bash. Check with `meta doctor`.
+    NurCLI uses Git Bash on Windows when available, otherwise falls back to PowerShell. On macOS/Linux it uses Bash. Check with `nur doctor`.
 
 ---
 
@@ -89,7 +89,7 @@ Attach workspace images or video so the model sees them. Accepts png, jpg, webp,
 
 ### `extract_frames`
 
-Extract keyframes from video via ffmpeg. Output goes to `.meta/frames/<name>/`.
+Extract keyframes from video via ffmpeg. Output goes to `.nur/frames/<name>/`.
 
 ---
 
@@ -146,7 +146,7 @@ mode and is blocked in plan mode: `open`, `click`, `fill`, `send_keys`, `exec`,
 `close`. `screenshot` is plan-safe perception — pair it with `look` for vision.
 Cookie reading is deliberately not exposed.
 
-**Setup is automatic.** The one-liner, release EXE, and `meta install` provision
+**Setup is automatic.** The one-liner, release EXE, and `nur install` provision
 the CLI, stage the `tmwd_cdp_bridge` extension (no download), detect your
 **default browser**, and run browser setup — which opens that browser's
 `chrome://extensions` page. The only manual step is a one-time **Load unpacked**
@@ -154,8 +154,8 @@ click (a Chromium security boundary that can't be scripted); the staged folder
 path is copied to your clipboard. Re-run any time with:
 
 ```bash
-meta browser setup     # stage + open the default browser's extensions page
-meta browser status    # detected default browser + extension state
+nur browser setup     # stage + open the default browser's extensions page
+nur browser status    # detected default browser + extension state
 ```
 
 The `browser` tool's own `status` action folds in this local state so the agent
@@ -168,7 +168,7 @@ Delegate a focused coding task to the [Oh My Pi](https://omp.sh) agent backend
 used). Strong at LSP-backed refactors, debugger-driven diagnosis (DAP), AST
 rewrites, and web research. `run` is write-class: it needs approval in manual
 mode and is blocked in plan mode; `status`/`version` are free. Provisioned by
-`meta ecosystem ensure` when Bun is installed.
+`nur ecosystem ensure` when Bun is installed.
 
 ### `skill`
 
@@ -176,7 +176,7 @@ Load a skill into context.
 
 ### `memory`
 
-Read or append to the cross-session memory journal (`~/.meta/memory.md`).
+Read or append to the cross-session memory journal (`~/.nur/memory.md`).
 
 ---
 

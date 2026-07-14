@@ -2,33 +2,28 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "meta",
+    name = "nur",
     version,
-    about = "Meta CLI (unofficial) — vision · TUI · tools · Graphify/PLUR/Ruflo · 800+ skills",
-    long_about = "Meta CLI — unofficial, fully loaded community coding agent for Meta Model API.\n\n\
+    about = "NurCLI — multi-provider coding agent · vision · TUI · tools · 800+ skills",
+    long_about = "NurCLI — fully loaded multi-provider coding agent.\n\n\
 What you get:\n\
-  · Streaming Meta-blue TUI — duration chips, expandable thought/tool cards,\n\
+  · Streaming Nur-gold TUI — duration chips, expandable thought/tool cards,\n\
     click-to-peek, drag-select + scrollbar, Ctrl+A/C/V, sessions browser\n\
   · Vision — look (images/short video) · extract_frames (ffmpeg keyframes)\n\
-    via Responses input_image / input_video; media paths in prompts auto-attach\n\
-  · Real agent harness — manual/plan/auto modes, tool loop, subagents, todos,\n\
-    auto-compact, approvals with mini-diff, Esc cancel, Shift+Tab live mode flip\n\
-  · Native tools — read/edit/shell/web/git + knowledge stack\n\
-  · Ecosystem auto-wired — Graphify · PLUR · Ruflo · Executor · 800+ skills · AKM\n\
-  · Hardened by default — sandbox, bash denylist, SSRF blocks, API retries,\n\
-    prompt-cache keys, atomic ~/.meta IO, install SHA-256, meta doctor\n\
-  · Host panels — live status.json / usage.jsonl for ADE/Orca-style dashboards\n\n\
-Model: any Meta Model API id via --model / /model / config (default from config).\n\
-Secrets stay in ~/.meta/ only.  Not affiliated with Meta Platforms, Inc.\n\
-Repo: github.com/nuroctane/meta-cli  ·  Invoke as: meta  (alias: muse)"
+  · Real agent harness — manual/plan/auto modes, tools, subagents, todos\n\
+  · Ecosystem — Graphify · PLUR · Ruflo · Executor · 800+ skills · AKM\n\
+  · Hardened by default — sandbox, denylist, SSRF blocks, atomic ~/.nur IO\n\n\
+Providers include Meta Model API (muse-spark), OpenAI, Anthropic, local Ollama, …\n\
+Secrets stay in ~/.nur/ only.  Not affiliated with Meta Platforms, Inc.\n\
+Repo: github.com/nuroctane/nur-cli  ·  Invoke as: nur"
 )]
 pub struct Cli {
     /// Initial prompt for interactive session
     #[arg(value_name = "PROMPT")]
     pub prompt: Option<String>,
 
-    /// Meta Model API model id (default from config)
-    #[arg(short, long, env = "META_MODEL")]
+    /// Model id (default from config / provider). Env: NUR_MODEL or META_MODEL.
+    #[arg(short, long, env = "NUR_MODEL")]
     pub model: Option<String>,
 
     /// Working directory
@@ -95,7 +90,7 @@ pub enum Commands {
     InstallHook,
     /// One-stop install: binary → PATH → prereqs → ecosystem → browser (no TUI)
     Install,
-    /// Alias for `meta install`
+    /// Alias for `nur install`
     SelfInstall,
     /// Pull latest source + rebuild/reinstall full stack (same spirit as the one-liner)
     Update,
@@ -135,7 +130,7 @@ pub enum EcosystemCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum AuthCmd {
-    /// Save API key to ~/.meta/auth.json
+    /// Save API key to ~/.nur/auth.json
     Login {
         /// API key (optional; prompts if omitted)
         #[arg(long)]

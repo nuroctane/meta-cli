@@ -1,8 +1,8 @@
-site_name: Meta CLI Documentation
+site_name: NurCLI Documentation
 site_description: Fully loaded terminal coding agent for Meta Model API
-site_url: https://nuroctane.github.io/meta-cli/
-repo_url: https://github.com/nuroctane/meta-cli
-repo_name: nuroctane/meta-cli
+site_url: https://nuroctane.github.io/nur-cli/
+repo_url: https://github.com/nuroctane/nur-cli
+repo_name: nuroctane/nur-cli
 
 theme:
   name: material

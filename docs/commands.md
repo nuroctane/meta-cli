@@ -1,6 +1,6 @@
 # Commands
 
-Full CLI reference for Meta CLI.
+Full CLI reference for NurCLI.
 
 ## Usage
 
@@ -29,27 +29,27 @@ meta <COMMAND> [ARGS]
 
 ```bash
 meta                                    # open interactive TUI
-meta install                            # one-stop stack install (same as release EXE)
+nur install                            # one-stop stack install (same as release EXE)
 meta "fix the bug"                      # start with a prompt
 meta "design from ref.mp4"             # vision: auto-attach media
 meta -c                                 # continue last session
 meta -r abc123                          # resume session abc123
-meta --mode plan "explain this"         # plan: explore + shell, no edits/commits
-meta --effort xhigh "deep analysis"     # maximum reasoning
-meta --model muse-spark-1.1 "hello"     # explicit model
-meta run "add tests" -y                 # headless + auto-approve
+nur --mode plan "explain this"         # plan: explore + shell, no edits/commits
+nur --effort xhigh "deep analysis"     # maximum reasoning
+nur --model muse-spark-1.1 "hello"     # explicit model
+nur run "add tests" -y                 # headless + auto-approve
 ```
 
 ---
 
 ## Subcommands
 
-### `meta run`
+### `nur run`
 
 Run a single agent turn headlessly. Prints the final answer to stdout.
 
 ```bash
-meta run <PROMPT...> [OPTIONS]
+nur run <PROMPT...> [OPTIONS]
 ```
 
 | Arg / Flag | Description |
@@ -60,62 +60,62 @@ meta run <PROMPT...> [OPTIONS]
 **Example:**
 
 ```bash
-meta run "write a hello world in Rust" -y
-meta run "explain what this repo does" -v
+nur run "write a hello world in Rust" -y
+nur run "explain what this repo does" -v
 ```
 
 ---
 
-### `meta auth`
+### `nur auth`
 
-Manage the stored API key (`~/.meta/auth.json`).
+Manage the stored API key (`~/.nur/auth.json`).
 
 For **multi-provider** sign-in (pick OpenAI, OpenRouter, Ollama, … + endpoint
 and default model), use the TUI slash command **`/login`** — see
-[Authentication](authentication.md). CLI `meta auth login` is the classic
+[Authentication](authentication.md). CLI `nur auth login` is the classic
 prompt for a Meta Model API key.
 
 ```bash
-meta auth <SUBCOMMAND>
+nur auth <SUBCOMMAND>
 ```
 
-#### `meta auth login`
+#### `nur auth login`
 
-Save API key to `~/.meta/auth.json`.
+Save API key to `~/.nur/auth.json`.
 
 ```bash
-meta auth login [--key <KEY>]
+nur auth login [--key <KEY>]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--key <KEY>` | API key (optional; prompts if omitted) |
 
-#### `meta auth status`
+#### `nur auth status`
 
 Show auth status. Never prints the full key.
 
 ```bash
-meta auth status
+nur auth status
 ```
 
-#### `meta auth logout`
+#### `nur auth logout`
 
-Remove saved key from `~/.meta/auth.json` and legacy `~/.muse/`.
+Remove saved key from `~/.nur/auth.json` and legacy `~/.muse/`.
 
 ```bash
-meta auth logout
-meta auth logout --revoke   # local delete + best-effort revoke notes for az/aws/gcloud
+nur auth logout
+nur auth logout --revoke   # local delete + best-effort revoke notes for az/aws/gcloud
 ```
 
 ---
 
-### `meta sessions`
+### `nur sessions`
 
-List recent sessions (prompt-first summaries from `~/.meta/sessions` and legacy `~/.muse/sessions`).
+List recent sessions (prompt-first summaries from `~/.nur/sessions` and legacy `~/.muse/sessions`).
 
 ```bash
-meta sessions [--limit <N>]
+nur sessions [--limit <N>]
 ```
 
 | Flag | Default | Description |
@@ -136,47 +136,47 @@ meta usage
 
 ---
 
-### `meta install`
+### `nur install`
 
-One-stop install — **same job as the release EXE and the shell one-liners** (minus compiling from source): copy binary → PATH → prereqs (best-effort) → ecosystem ensure → browser stage → Orca hook → optional auth from env. **No TUI** until this finishes (or until you open `meta` afterward).
+One-stop install — **same job as the release EXE and the shell one-liners** (minus compiling from source): copy binary → PATH → prereqs (best-effort) → ecosystem ensure → browser stage → Orca hook → optional auth from env. **No TUI** until this finishes (or until you open `nur` afterward).
 
 ```bash
-meta install
+nur install
 # alias:
 meta self-install
 ```
 
-Double-clicking `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) runs this path automatically, then opens Meta.
+Double-clicking `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) runs this path automatically, then opens Meta.
 
-### `meta update`
+### `nur update`
 
 **How you upgrade Meta.** Pull latest source, rebuild release, reinstall binary + full stack.
 
 ```bash
-meta update
+nur update
 ```
 
 | Step | Action |
 |------|--------|
-| Source | Uses `~/laboratory/meta-cli` or `~/Laboratory/meta-cli` if present |
+| Source | Uses `~/laboratory/nur-cli` or `~/Laboratory/nur-cli` if present |
 | Git | `git pull --ff-only origin main` |
 | Build | `cargo build --release` |
 | Binary | Installs to `~/.local/bin/meta` (+ `muse`) |
 | Stack | `ecosystem ensure --force`, `browser setup`, Orca hook |
-| No checkout | Falls back to `meta install` (repair from the running binary) |
+| No checkout | Falls back to `nur install` (repair from the running binary) |
 
-Afterward: `meta --version` · `meta doctor`.
+Afterward: `nur --version` · `nur doctor`.
 
-Full paths and alternatives (one-liner / EXE / `meta install`): **[Setup → Update](setup.md#update-keep-meta-current)**.
+Full paths and alternatives (one-liner / EXE / `nur install`): **[Setup → Update](setup.md#update-keep-meta-current)**.
 
 ---
 
-### `meta doctor`
+### `nur doctor`
 
 Diagnose install, auth, config, and ecosystem readiness.
 
 ```bash
-meta doctor
+nur doctor
 ```
 
 Checks:
@@ -195,80 +195,80 @@ See [Troubleshooting](troubleshooting.md) for interpreting results.
 
 ---
 
-### `meta ecosystem`
+### `nur ecosystem`
 
 Manage the Graphify / PLUR / Ruflo / browser / omp ecosystem.
 
 ```bash
-meta ecosystem <SUBCOMMAND>
+nur ecosystem <SUBCOMMAND>
 ```
 
-#### `meta ecosystem ensure`
+#### `nur ecosystem ensure`
 
-Install or repair Graphify, PLUR, Ruflo, skills, and related packs. The one-liner, release EXE, and `meta install` already run this **in the foreground**. On later TUI opens it also runs as **background TTL repair** when `ecosystem_auto_ensure = true` (default).
+Install or repair Graphify, PLUR, Ruflo, skills, and related packs. The one-liner, release EXE, and `nur install` already run this **in the foreground**. On later TUI opens it also runs as **background TTL repair** when `ecosystem_auto_ensure = true` (default).
 
 ```bash
-meta ecosystem ensure [--force]
+nur ecosystem ensure [--force]
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--force`, `-f` | Force re-install even if marker is fresh |
 
-#### `meta ecosystem status`
+#### `nur ecosystem status`
 
 Show ecosystem readiness.
 
 ```bash
-meta ecosystem status
+nur ecosystem status
 ```
 
 ---
 
-### `meta browser`
+### `nur browser`
 
 Set up the real-browser `browser` tool for your **default Chromium browser**
 (Arc, Chrome, Edge, Brave, …). Stages the `tmwd_cdp_bridge` extension and
 walks you through the one-time Load unpacked click.
 
 ```bash
-meta browser <SUBCOMMAND>
+nur browser <SUBCOMMAND>
 ```
 
-#### `meta browser setup`
+#### `nur browser setup`
 
 Stage the extension (no download), detect the default browser, copy the staged
 path to the clipboard, and open `chrome://extensions`.
 
 ```bash
-meta browser setup
+nur browser setup
 ```
 
-#### `meta browser status`
+#### `nur browser status`
 
 Show detected default browser + extension staging state.
 
 ```bash
-meta browser status
+nur browser status
 ```
 
 Also runs automatically from the installer after `ecosystem ensure`.
 
 ---
 
-### `meta install-hook`
+### `nur install-hook`
 
 Install the Orca agent hook for usage/status reporting.
 
 ```bash
-meta install-hook
+nur install-hook
 ```
 
 ---
 
 ## Project instruction files
 
-Meta CLI loads project-level instructions from your working directory at session start:
+NurCLI loads project-level instructions from your working directory at session start:
 
 | File | Purpose |
 |------|---------|
@@ -281,7 +281,7 @@ Meta CLI loads project-level instructions from your working directory at session
 
 ## Safe workspace
 
-When launched from a drive root (`C:\` or `/`), Meta CLI auto-selects a safe workspace by checking (in order):
+When launched from a drive root (`C:\` or `/`), NurCLI auto-selects a safe workspace by checking (in order):
 
 1. Git repository root
 2. Last session's working directory

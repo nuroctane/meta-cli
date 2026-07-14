@@ -1,4 +1,4 @@
-//! Optional local tool hooks (`~/.meta/hooks.toml`).
+//! Optional local tool hooks (`~/.nur/hooks.toml`).
 //!
 //! ```toml
 //! pre_tool = "echo checking $META_TOOL"

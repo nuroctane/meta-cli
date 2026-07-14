@@ -1,8 +1,8 @@
 //! One-stop self-install — same job as `install.ps1` / `install.sh`, minus the
 //! cargo build (this binary *is* the product).
 //!
-//! Release users: download `meta-windows-*.exe` → run it → full stack lands
-//! under `~/.local/bin` + `~/.meta` **before** any TUI. No "open first, packs later".
+//! Release users: download `nur-windows-*.exe` → run it → full stack lands
+//! under `~/.local/bin` + `~/.nur` **before** any TUI. No "open first, packs later".
 
 use crate::config;
 use crate::ecosystem;
@@ -42,22 +42,12 @@ pub fn install_dir() -> PathBuf {
 
 #[cfg(windows)]
 pub fn install_binary_path() -> PathBuf {
-    install_dir().join("meta.exe")
+    install_dir().join("nur.exe")
 }
 
 #[cfg(not(windows))]
 pub fn install_binary_path() -> PathBuf {
-    install_dir().join("meta")
-}
-
-#[cfg(windows)]
-fn muse_alias_path() -> PathBuf {
-    install_dir().join("muse.exe")
-}
-
-#[cfg(not(windows))]
-fn muse_alias_path() -> PathBuf {
-    install_dir().join("muse")
+    install_dir().join("nur")
 }
 
 fn marker_path() -> PathBuf {
@@ -65,7 +55,7 @@ fn marker_path() -> PathBuf {
 }
 
 /// True when this process was launched as a GitHub Releases artifact
-/// (`meta-windows-x86_64.exe`, etc.) rather than the installed `meta` name.
+/// (`nur-windows-x86_64.exe`, etc.) rather than the installed `nur` name.
 pub fn looks_like_release_artifact() -> bool {
     let Ok(exe) = env::current_exe() else {
         return false;
@@ -75,11 +65,11 @@ pub fn looks_like_release_artifact() -> bool {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    name.starts_with("meta-windows")
+    name.starts_with("nur-windows")
         || name.starts_with("meta-linux")
         || name.starts_with("meta-macos")
         || name.starts_with("meta-darwin")
-        || name.contains("meta-windows-x86_64")
+        || name.contains("nur-windows-x86_64")
 }
 
 pub fn is_running_from_install() -> bool {
@@ -119,15 +109,15 @@ fn bootstrap_complete() -> bool {
 }
 
 /// Interactive TUI launch should run a full one-stop install first when:
-/// - user double-clicked a **release artifact** (`meta-windows-*.exe`), or
+/// - user double-clicked a **release artifact** (`nur-windows-*.exe`), or
 /// - there is **no** installed `~/.local/bin/meta` yet (first-time cargo binary), or
 /// - `META_FORCE_BOOTSTRAP=1`
 ///
-/// Already-installed `meta` on PATH must **never** re-enter one-stop install on
+/// Already-installed `nur` on PATH must **never** re-enter one-stop install on
 /// every open — that used to rename the running EXE to `meta.old` and brick PATH.
 ///
 /// Skip with `META_SKIP_BOOTSTRAP=1` (dev / re-exec after install).
-/// Force anytime: `meta install`.
+/// Force anytime: `nur install`.
 pub fn should_bootstrap_on_launch() -> bool {
     if env_truthy("META_SKIP_BOOTSTRAP") {
         return false;
@@ -164,7 +154,7 @@ pub fn run_full_install() -> Result<()> {
     let _ = config::ensure_dirs();
 
     println!();
-    theme::print_info("Meta CLI — one-stop install");
+    theme::print_info("NurCLI — one-stop install");
     theme::print_info("same stack as the one-liner · no TUI until this finishes");
     println!();
 
@@ -174,32 +164,29 @@ pub fn run_full_install() -> Result<()> {
     fs::create_dir_all(&dest_dir)?;
     let src = env::current_exe().map_err(MuseError::Io)?;
     let dest = install_binary_path();
-    let alias = muse_alias_path();
 
     if same_file(&src, &dest) {
         theme::print_ok(&format!("Already at {}", dest.display()));
-        // Ensure muse alias exists even when we're already the install path.
-        if !alias.is_file() || !same_file(&src, &alias) {
-            let _ = install_binary_safe(&src, &alias);
-        }
     } else {
         install_binary_safe(&src, &dest)?;
-        let _ = install_binary_safe(&src, &alias);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(0o755));
-            let _ = fs::set_permissions(&alias, fs::Permissions::from_mode(0o755));
         }
         if let Some(hash) = file_sha256(&dest) {
             let record = format!(
                 "{hash}  {}",
-                dest.file_name().and_then(|s| s.to_str()).unwrap_or("meta")
+                dest.file_name().and_then(|s| s.to_str()).unwrap_or("nur")
             );
-            let _ = fs::write(dest_dir.join("meta.sha256"), format!("{record}\n"));
+            let _ = fs::write(dest_dir.join("nur.sha256"), format!("{record}\n"));
             theme::print_ok(&format!("SHA-256 {hash}"));
         }
         theme::print_ok(&format!("Installed {}", dest.display()));
+    }
+    // Drop legacy product binaries (meta / muse).
+    for legacy in ["muse.exe", "muse", "meta.exe", "meta"] {
+        let _ = fs::remove_file(dest_dir.join(legacy));
     }
 
     // Prefer the install dir for everything that follows in this process.
@@ -248,7 +235,7 @@ pub fn run_full_install() -> Result<()> {
         theme::print_info("partial ecosystem — missing pieces noted above (Node/uv help)");
     } else {
         theme::print_info(
-            "ecosystem packs need Node.js 20+ and uv — install those, then: meta install",
+            "ecosystem packs need Node.js 20+ and uv — install those, then: nur install",
         );
     }
 
@@ -268,9 +255,9 @@ pub fn run_full_install() -> Result<()> {
 
     // ── 7. Auth from env (never print the key) ────────────────────────────
     if let Some(key) = env_api_key() {
-        step("API key found in environment — saving to ~/.meta/auth.json…");
+        step("API key found in environment — saving to ~/.nur/auth.json…");
         match crate::auth::save_api_key(&key) {
-            Ok(()) => theme::print_ok("Auth stored under ~/.meta/ (never committed to git)"),
+            Ok(()) => theme::print_ok("Auth stored under ~/.nur/ (never committed to git)"),
             Err(e) => theme::print_info(&format!("auth save failed: {e}")),
         }
     } else {
@@ -297,25 +284,25 @@ pub fn run_full_install() -> Result<()> {
     theme::print_ok("Done. Full stack is on this machine.");
     theme::print_info(&format!("Binary:  {}", dest.display()));
     theme::print_info("Run:     meta");
-    theme::print_info("Auth:    meta auth login   (or /login in the TUI)");
-    theme::print_info("Doctor:  meta doctor");
-    theme::print_info("Update:  meta update");
+    theme::print_info("Auth:    nur auth login   (or /login in the TUI)");
+    theme::print_info("Doctor:  nur doctor");
+    theme::print_info("Update:  nur update");
     println!();
 
     Ok(())
 }
 
-/// `meta update` — pull the git checkout, rebuild release, reinstall full stack.
+/// `nur update` — pull the git checkout, rebuild release, reinstall full stack.
 pub fn run_update() -> Result<()> {
     println!();
-    theme::print_info("Meta CLI — update");
+    theme::print_info("NurCLI — update");
     theme::print_info("git pull · cargo build --release · reinstall stack");
     println!();
 
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    let mut repo = home.join("laboratory").join("meta-cli");
+    let mut repo = home.join("laboratory").join("nur-cli");
     if !repo.join("Cargo.toml").is_file() {
-        let alt = home.join("Laboratory").join("meta-cli");
+        let alt = home.join("Laboratory").join("nur-cli");
         if alt.join("Cargo.toml").is_file() {
             repo = alt;
         }
@@ -343,9 +330,9 @@ pub fn run_update() -> Result<()> {
         }
         theme::print_ok("cargo build --release ok");
         #[cfg(windows)]
-        let built = repo.join("target").join("release").join("meta.exe");
+        let built = repo.join("target").join("release").join("nur.exe");
         #[cfg(not(windows))]
-        let built = repo.join("target").join("release").join("meta");
+        let built = repo.join("target").join("release").join("nur");
         if !built.is_file() {
             return Err(MuseError::Other(format!(
                 "missing built binary at {}",
@@ -356,9 +343,12 @@ pub fn run_update() -> Result<()> {
         let dest_dir = install_dir();
         fs::create_dir_all(&dest_dir)?;
         let dest = install_binary_path();
-        let alias = muse_alias_path();
         install_binary_safe(&built, &dest)?;
-        let _ = install_binary_safe(&built, &alias);
+        // Remove legacy product aliases if present.
+        for legacy in ["muse.exe", "muse", "meta.exe", "meta"] {
+            let p = dest_dir.join(legacy);
+            let _ = fs::remove_file(p);
+        }
         theme::print_ok(&format!("Installed {}", dest.display()));
         prepend_path(&dest_dir);
         let _ = ensure_user_path(&dest_dir);
@@ -395,7 +385,7 @@ pub fn run_update() -> Result<()> {
     Ok(())
 }
 
-/// After installing from a release artifact, re-exec the installed `meta`
+/// After installing from a release artifact, re-exec the installed `nur`
 /// so the user lands in the real binary (and PATH-friendly name).
 pub fn reexec_installed_tui() -> Result<()> {
     let dest = install_binary_path();
@@ -433,7 +423,7 @@ fn now_secs() -> u64 {
 }
 
 fn env_api_key() -> Option<String> {
-    for k in ["META_API_KEY", "MODEL_API_KEY", "MUSE_API_KEY"] {
+    for k in ["NUR_API_KEY", "META_API_KEY", "MODEL_API_KEY", "MUSE_API_KEY"] {
         if let Ok(v) = env::var(k) {
             let t = v.trim().to_string();
             if !t.is_empty() {
@@ -491,7 +481,7 @@ fn install_binary_safe(src: &Path, target: &Path) -> Result<()> {
             if target.exists() {
                 fs::rename(target, &bak).map_err(|e| {
                     MuseError::Other(format!(
-                        "could not replace {} (close other meta sessions): {e}",
+                        "could not replace {} (close other nur sessions): {e}",
                         target.display()
                     ))
                 })?;
@@ -516,7 +506,7 @@ fn install_binary_safe(src: &Path, target: &Path) -> Result<()> {
                         let _ = fs::rename(&bak, target);
                     }
                     Err(MuseError::Other(format!(
-                        "could not install {} (is meta still running?): {e}",
+                        "could not install {} (is nur still running?): {e}",
                         target.display()
                     )))
                 }
@@ -605,7 +595,7 @@ fn ensure_user_path(dir: &Path) -> std::result::Result<bool, String> {
                 .append(true)
                 .open(&rc)
                 .map_err(|e| e.to_string())?;
-            writeln!(f, "\n# meta-cli\n{line}").map_err(|e| e.to_string())?;
+            writeln!(f, "\n# nur-cli\n{line}").map_err(|e| e.to_string())?;
             return Ok(true);
         }
         // No rc file — create .profile
@@ -616,7 +606,7 @@ fn ensure_user_path(dir: &Path) -> std::result::Result<bool, String> {
             .append(true)
             .open(&rc)
             .map_err(|e| e.to_string())?;
-        writeln!(f, "\n# meta-cli\n{line}").map_err(|e| e.to_string())?;
+        writeln!(f, "\n# nur-cli\n{line}").map_err(|e| e.to_string())?;
         Ok(true)
     }
 }
@@ -749,7 +739,7 @@ fn stage_browser_quiet() -> Result<String> {
             dir.display()
         )),
         None => Ok(format!(
-            "browser · {} · extension not staged yet (run meta browser setup after Node is available)",
+            "browser · {} · extension not staged yet (run nur browser setup after Node is available)",
             browser.label()
         )),
     }

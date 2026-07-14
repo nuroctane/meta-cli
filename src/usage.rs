@@ -1,8 +1,8 @@
 //! Token usage tracking for host panels (Orca ADE, etc.) and local dashboards.
 //!
 //! Writes:
-//! - `~/.meta/status.json` — current session snapshot
-//! - `~/.meta/usage.jsonl` — append-only per-request log
+//! - `~/.nur/status.json` — current session snapshot
+//! - `~/.nur/usage.jsonl` — append-only per-request log
 //!
 //! Also mirrors into env-friendly fields so host tools can read the last write.
 

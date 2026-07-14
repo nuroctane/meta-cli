@@ -1,4 +1,4 @@
-//! Cross-session memory — simple markdown journal under ~/.meta/memory.md
+//! Cross-session memory — simple markdown journal under ~/.nur/memory.md
 
 use crate::config::meta_home;
 use std::fs;
@@ -31,5 +31,5 @@ pub fn memory_prompt_excerpt(max_chars: usize) -> String {
         return String::new();
     }
     let excerpt: String = m.chars().rev().take(max_chars).collect::<String>().chars().rev().collect();
-    format!("\n# Persistent memory (excerpt from ~/.meta/memory.md)\n{excerpt}\n")
+    format!("\n# Persistent memory (excerpt from ~/.nur/memory.md)\n{excerpt}\n")
 }

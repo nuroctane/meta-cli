@@ -1,6 +1,6 @@
 //! OpenAI **Chat Completions** adapter.
 //!
-//! meta-cli's agent loop is written against the Responses API. To reach the
+//! nur-cli's agent loop is written against the Responses API. To reach the
 //! wider world (OpenRouter, Groq, Together, local servers, …) we translate a
 //! [`ResponseRequest`] into a `/chat/completions` body, and translate the
 //! response — content + tool calls + usage — back into an [`ApiResponse`] by

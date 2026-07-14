@@ -1,12 +1,12 @@
 # Authentication
 
-Meta CLI can talk to **many providers** — not only the Meta Model API. Sign-in is
+NurCLI can talk to **many providers** — not only the Meta Model API. Sign-in is
 usually: pick a provider, then enter its API key (local servers can skip the key).
 For selected providers you can also **sign in with a browser** (device code / SSO),
 same idea as `hf auth login`, `az login`, or `aws sso login`.
 
 The active provider, endpoint, and default model are stored in
-`~/.meta/config.toml`; secrets live only in `~/.meta/auth.json`.
+`~/.nur/config.toml`; secrets live only in `~/.nur/auth.json`.
 
 ## Get a key (or browser session)
 
@@ -57,11 +57,11 @@ No key on launch → the login modal opens automatically.
 CLI login still targets a **Meta Model API** key path (prompt / `--key`):
 
 ```bash
-meta auth login
-meta auth login --key YOUR_KEY   # avoid on shared machines
+nur auth login
+nur auth login --key YOUR_KEY   # avoid on shared machines
 ```
 
-Key is written to `~/.meta/auth.json` and never printed.
+Key is written to `~/.nur/auth.json` and never printed.
 
 To use a non-Meta provider end-to-end, prefer **`/login`** in the TUI so the
 provider catalog, endpoint, model, and API style all switch together.
@@ -74,7 +74,7 @@ export META_API_KEY="your-key-here"
 export MODEL_API_KEY="your-key-here"
 ```
 
-If a key is found in the environment, Meta CLI can save it to `~/.meta/auth.json`
+If a key is found in the environment, NurCLI can save it to `~/.nur/auth.json`
 automatically. Many catalog entries also document a vendor-specific env name
 (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) — use those with your shell when
 you prefer not to store a key via `/login`.
@@ -91,15 +91,15 @@ export META_BASE_URL="http://localhost:11434/v1"   # overrides config base_url
     `MUSE_API_KEY` is also accepted for backwards compatibility.
 
 !!! warning "Plaintext secrets on disk"
-    `~/.meta/auth.json` stores API keys and OAuth access/refresh tokens in
+    `~/.nur/auth.json` stores API keys and OAuth access/refresh tokens in
     **plaintext JSON**. On Unix Meta sets mode `0600`. On Windows the file lives
     under your user profile (default NTFS ACLs — not a portable 0600). Never commit
-    or share `~/.meta/`. OS keychain storage is a future option, not the default.
+    or share `~/.nur/`. OS keychain storage is a future option, not the default.
 
 ## Check auth status
 
 ```bash
-meta auth status
+nur auth status
 ```
 
 Shows whether credentials are set, plus:
@@ -115,11 +115,11 @@ If `auth.provider` does not match the active config provider, status warns
 ## Log out
 
 ```bash
-meta auth logout
-meta auth logout --revoke   # local delete + best-effort revoke notes (az/aws/gcloud)
+nur auth logout
+nur auth logout --revoke   # local delete + best-effort revoke notes (az/aws/gcloud)
 ```
 
-Removes the stored key from `~/.meta/auth.json` (and any migrated key under
+Removes the stored key from `~/.nur/auth.json` (and any migrated key under
 legacy `~/.muse/`). Same effect as TUI `/logout` for the key file. `--revoke`
 does not call undocumented token revoke APIs for every vendor; for Azure/AWS/Google
 it points you at `az logout` / `aws sso logout` / `gcloud auth revoke`.
@@ -146,7 +146,7 @@ Each entry declares:
 - **API style**: **Responses** (`POST /responses`) or **Chat Completions**
   (`POST /chat/completions`)
 
-Meta CLI’s agent always speaks an internal Responses-shaped protocol. For Chat
+NurCLI’s agent always speaks an internal Responses-shaped protocol. For Chat
 Completions providers, a built-in adapter (`src/api/chat.rs`) translates
 requests and replies (including streamed tool-call fragments) so tools and
 streaming keep working.
@@ -157,13 +157,13 @@ streaming keep working.
 
 API key resolution order:
 
-1. `~/.meta/auth.json` (from `meta auth login` or successful `/login`)
+1. `~/.nur/auth.json` (from `nur auth login` or successful `/login`)
 2. `META_API_KEY`
 3. `MODEL_API_KEY`
 4. `MUSE_API_KEY` (legacy)
 5. Interactive TUI prompt (opens `/login` when no key is found)
 
-Active **provider id / base URL / model** come from `~/.meta/config.toml`
+Active **provider id / base URL / model** come from `~/.nur/config.toml`
 (written by `/login`).
 
 ---
@@ -172,13 +172,13 @@ Active **provider id / base URL / model** come from `~/.meta/config.toml`
 
 | Location | Contents |
 |----------|----------|
-| `~/.meta/auth.json` | API key **or** OAuth access/refresh tokens (**plaintext**) |
-| `~/.meta/config.toml` | `provider`, `base_url`, `model`, … (no secret) |
+| `~/.nur/auth.json` | API key **or** OAuth access/refresh tokens (**plaintext**) |
+| `~/.nur/config.toml` | `provider`, `base_url`, `model`, … (no secret) |
 | Env `META_API_KEY` / `MODEL_API_KEY` | Optional override (never printed in logs) |
 | Env `META_BASE_URL` | Optional API base override (self-hosted) |
-| `~/.meta/sessions/` | Session metadata (no key) |
-| `~/.meta/status.json` | Live token usage (no key) |
-| `~/.meta/usage.jsonl` | Per-request usage log (no key) |
+| `~/.nur/sessions/` | Session metadata (no key) |
+| `~/.nur/status.json` | Live token usage (no key) |
+| `~/.nur/usage.jsonl` | Per-request usage log (no key) |
 
 !!! warning "Never commit"
-    Never commit `~/.meta/`, `.env` files with keys, or session dumps containing base64 media.
+    Never commit `~/.nur/`, `.env` files with keys, or session dumps containing base64 media.

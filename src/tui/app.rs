@@ -49,7 +49,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/manual", "switch to manual mode (approve tools)"),
     ("/auto", "switch to auto-approve mode"),
     ("/todos", "show session task list"),
-    ("/memory", "show ~/.meta/memory.md excerpt"),
+    ("/memory", "show ~/.nur/memory.md excerpt"),
     ("/skills", "list installed skills"),
     ("/graphify", "knowledge graph: status | query | path | explain | extract"),
     ("/plur", "shared engram memory: status | learn | recall | inject"),
@@ -958,7 +958,7 @@ pub async fn run_tui(
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         return Err(crate::error::MuseError::Other(
             "meta needs an interactive terminal (stdin is not a TTY).\n\
-             Run `meta` from a normal shell window, not a redirected pipe."
+             Run `nur` from a normal shell window, not a redirected pipe."
                 .into(),
         ));
     }
@@ -2820,7 +2820,7 @@ impl App {
             self.push_error("wait for the current turn to finish".into());
             return;
         }
-        // Lightweight summaries (no input_items) from ~/.meta + legacy ~/.muse.
+        // Lightweight summaries (no input_items) from ~/.nur + legacy ~/.muse.
         let sessions = match crate::agent::session::list_session_summaries() {
             Ok(s) => s,
             Err(e) => {
@@ -2865,7 +2865,7 @@ impl App {
             self.push_note(
                 Tone::Session,
                 "no past sessions yet — keep chatting, then /sessions to jump back\n\
-                 (searched ~/.meta/sessions and legacy ~/.muse/sessions)"
+                 (searched ~/.nur/sessions and legacy ~/.muse/sessions)"
                     .into(),
             );
             return;
@@ -3506,7 +3506,7 @@ impl App {
             return;
         }
         // Claude-Code-style quick memory: a line starting with `#` (but not a
-        // `##` markdown heading) is saved to ~/.meta/memory.md without a turn.
+        // `##` markdown heading) is saved to ~/.nur/memory.md without a turn.
         if let Some(rest) = text.strip_prefix('#') {
             if !rest.starts_with('#') {
                 let note = rest.trim();

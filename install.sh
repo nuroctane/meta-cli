@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-# One-shot install of Meta CLI (unofficial) — builds the `meta` binary (muse alias).
+# One-shot install of NurCLI (unofficial) — builds the `nur` binary.
 #
 # From a clone:
 #   ./install.sh
 #
 # Remote one-shot:
-#   curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
 #
-# Secrets are NEVER written into the repo. Keys live only in ~/.meta/auth.json
+# Secrets are NEVER written into the repo. Keys live only in ~/.nur/auth.json
 # or env META_API_KEY / MODEL_API_KEY (legacy: MUSE_API_KEY).
 
 set -euo pipefail
 
-REPO_URL="https://github.com/nuroctane/meta-cli.git"
+REPO_URL="https://github.com/nuroctane/nur-cli.git"
 BRANCH="main"
-REPO_DIR="${META_CLI_DIR:-$HOME/laboratory/meta-cli}"
+REPO_DIR="${NUR_CLI_DIR:-$HOME/laboratory/nur-cli}"
 SKIP_HOOK="${SKIP_HOOK:-0}"
 
 step() { printf '  → %s\n' "$*"; }
@@ -22,13 +22,13 @@ ok()   { printf '  ✓ %s\n' "$*"; }
 warn() { printf '  ! %s\n' "$*"; }
 
 echo ""
-echo "  Meta CLI (unofficial) installer"
-echo "  command: meta  ·  Meta Model API agent · not affiliated with Meta"
+echo "  NurCLI (unofficial) installer"
+echo "  command: nur  ·  Meta Model API agent · not affiliated with Meta"
 echo ""
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || true)"
 IN_REPO=0
-if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/Cargo.toml" ]] && grep -q 'name = "meta-cli"' "${SCRIPT_DIR}/Cargo.toml"; then
+if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/Cargo.toml" ]] && grep -q 'name = "nur-cli"' "${SCRIPT_DIR}/Cargo.toml"; then
   REPO_DIR="${SCRIPT_DIR}"
   IN_REPO=1
 fi
@@ -120,16 +120,16 @@ else
   BUILT_HASH=""
   warn "sha256sum/shasum not found — skipping binary integrity hash"
 fi
-cp -f "${BUILT}" "${DEST_DIR}/meta"
+cp -f "${BUILT}" "${DEST_DIR}/nur"
 cp -f "${BUILT}" "${DEST_DIR}/muse"
-chmod +x "${DEST_DIR}/meta" "${DEST_DIR}/muse"
+chmod +x "${DEST_DIR}/nur" "${DEST_DIR}/muse"
 if [[ -n "${BUILT_HASH}" ]]; then
-  INSTALLED_HASH="$( (sha256sum "${DEST_DIR}/meta" 2>/dev/null || shasum -a 256 "${DEST_DIR}/meta") | awk '{print $1}' )"
+  INSTALLED_HASH="$( (sha256sum "${DEST_DIR}/nur" 2>/dev/null || shasum -a 256 "${DEST_DIR}/nur") | awk '{print $1}' )"
   if [[ "${INSTALLED_HASH}" != "${BUILT_HASH}" ]]; then
     echo "Integrity check failed: installed meta hash does not match build" >&2
     exit 1
   fi
-  echo "${BUILT_HASH}  meta" > "${DEST_DIR}/meta.sha256"
+  echo "${BUILT_HASH}  nur" > "${DEST_DIR}/nur.sha256"
   ok "SHA-256 ${BUILT_HASH}"
 fi
 export PATH="${DEST_DIR}:${PATH}"
@@ -142,37 +142,37 @@ for rc in "${HOME}/.zprofile" "${HOME}/.zshrc" "${HOME}/.bash_profile" "${HOME}/
   fi
 done
 
-ok "Installed ${DEST_DIR}/meta ($("${DEST_DIR}/meta" --version))"
+ok "Installed ${DEST_DIR}/nur ($("${DEST_DIR}/nur" --version))"
 
 # ── Ecosystem: Graphify · PLUR · Ruflo · omp · browser (blocking) ─────────
 step "Provisioning agent ecosystem (graphify · plur · ruflo · omp · browser)…"
-"${DEST_DIR}/meta" ecosystem ensure --force || warn "Ecosystem ensure incomplete — re-run: meta install"
+"${DEST_DIR}/nur" ecosystem ensure --force || warn "Ecosystem ensure incomplete — re-run: nur install"
 ok "Ecosystem provisioned"
 
 # ── Browser tool: stage extension + target the default browser ────────────
 # Usable immediately; the one-time "load unpacked" click is a Chromium
 # security step we surface but can't automate.
-"${DEST_DIR}/meta" browser setup 2>/dev/null || warn "Browser setup deferred — run later: meta browser setup"
+"${DEST_DIR}/nur" browser setup 2>/dev/null || warn "Browser setup deferred — run later: nur browser setup"
 
 if [[ "${SKIP_HOOK}" != "1" ]]; then
-  "${DEST_DIR}/meta" install-hook >/dev/null 2>&1 && ok "Orca hook installed (if applicable)" || true
+  "${DEST_DIR}/nur" install-hook >/dev/null 2>&1 && ok "Orca hook installed (if applicable)" || true
 fi
 
-KEY="${META_API_KEY:-${MODEL_API_KEY:-${MUSE_API_KEY:-}}}"
+KEY="${NUR_API_KEY:-${META_API_KEY:-${MODEL_API_KEY:-${MUSE_API_KEY:-}}}}"
 if [[ -n "${KEY}" ]]; then
-  step "API key found in environment — saving to ~/.meta/auth.json (local only)…"
-  "${DEST_DIR}/meta" auth login --key "${KEY}" >/dev/null
-  ok "Auth stored under ~/.meta/ (never committed to git)"
+  step "API key found in environment — saving to ~/.nur/auth.json (local only)…"
+  "${DEST_DIR}/nur" auth login --key "${KEY}" >/dev/null
+  ok "Auth stored under ~/.nur/ (never committed to git)"
 else
-  warn "No API key in env yet. After install:  meta auth login"
+  warn "No API key in env yet. After install:  nur auth login"
   warn "Get a key: https://dev.meta.ai/"
 fi
 
 echo ""
 echo "  Done."
-echo "  Run:   meta"
-echo "  Auth:  meta auth login     (key stays in ~/.meta only)"
+echo "  Run:   nur"
+echo "  Auth:  nur auth login     (key stays in ~/.nur only)"
 echo "  Stack: graphify + plur + ruflo installed during this run"
-echo "  Orca:  orca terminal create --command meta"
-echo "  Docs:  https://github.com/nuroctane/meta-cli"
+echo "  Orca:  orca terminal create --command nur"
+echo "  Docs:  https://github.com/nuroctane/nur-cli"
 echo ""

@@ -1,4 +1,4 @@
-# Meta CLI (unofficial)
+# NurCLI (unofficial)
 
 <div align="center">
 
@@ -10,15 +10,15 @@ Meta’s harness is built to burn fewer tokens — less waste, more work per dol
 </div>
 
 <p align="center">
-  <img src="docs/assets/muse-demo-obfuscated.gif" alt="Meta CLI demo" width="600">
+  <img src="docs/assets/muse-demo-obfuscated.gif" alt="NurCLI demo" width="600">
 </p>
 
-**FULLY LOADED coding agent** for [Meta Model API](https://dev.meta.ai/) — not a thin wrapper. Custom Rust harness, dense Meta-blue TUI, **native vision**, tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config.
+**FULLY LOADED coding agent** for [Meta Model API](https://dev.meta.ai/) — not a thin wrapper. Custom Rust harness, dense Nur-gold TUI, **native vision**, tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config.
 
-> Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
+> Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/nur-cli](https://github.com/nuroctane/nur-cli)
 
 ```text
-meta          # primary — Meta-blue interactive TUI
+meta          # primary — Nur-gold interactive TUI
 muse          # legacy alias (same binary)
 ```
 
@@ -26,47 +26,47 @@ muse          # legacy alias (same binary)
 
 ## Install — dead simple
 
-One shot. That’s it. The **one-liner** (builds from source) or the **Windows EXE** (prebuilt) each drop `meta` on your PATH, pull in every runtime dependency they can, and wire the full agent stack **before** the TUI opens.
+One shot. That’s it. The **one-liner** (builds from source) or the **Windows EXE** (prebuilt) each drop `nur` on your PATH, pull in every runtime dependency they can, and wire the full agent stack **before** the TUI opens.
 
 ### <img alt="Windows (PowerShell) — recommended" src="https://img.shields.io/badge/Windows_(PowerShell)_—_recommended-a855f7?style=for-the-badge">
 
 ```powershell
-irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
 ```
 
 ### <img alt="macOS / Linux" src="https://img.shields.io/badge/macOS_/_Linux-a855f7?style=for-the-badge">
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
 ```
 
 ### After install (30 seconds)
 
 ```text
-meta auth login      # Meta Model API key → ~/.meta/auth.json
+nur auth login      # Meta Model API key → ~/.nur/auth.json
 meta                 # open the TUI
-meta doctor          # health check
+nur doctor          # health check
 ```
 
-Or run `meta` and use **`/login`** in the TUI: pick any of **45+ providers**
+Or run `nur` and use **`/login`** in the TUI: pick any of **45+ providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, …).
 For **Grok, Claude, Antigravity, Hugging Face, Azure, and AWS Bedrock** you can **sign in with the browser** (URL + code / SSO — same idea as `hf auth login`, `az login`, `aws sso login`) **or** paste an API key. Endpoint + default model swap with the provider. No key on launch → login opens automatically.
 
 ### Update (do this later)
 
 ```bash
-meta update
+nur update
 ```
 
-**That’s how you upgrade.** Pulls latest `main` when a Laboratory checkout exists (`~/laboratory/meta-cli` or `~/Laboratory/meta-cli`), runs `cargo build --release`, reinstalls `meta` on PATH, and re-provisions the ecosystem stack. No checkout? It falls back to `meta install` (self-repair).
+**That’s how you upgrade.** Pulls latest `main` when a Laboratory checkout exists (`~/laboratory/nur-cli` or `~/Laboratory/nur-cli`), runs `cargo build --release`, reinstalls `nur` on PATH, and re-provisions the ecosystem stack. No checkout? It falls back to `nur install` (self-repair).
 
 | Also fine | |
 |-----------|--|
 | Re-run the **one-liner** above | Full rebuild from GitHub |
 | Re-download + double‑click **Windows EXE** | Prebuilt path |
-| `meta install` | Reinstall *this* binary + stack (no git pull) |
+| `nur install` | Reinstall *this* binary + stack (no git pull) |
 
-Verify: `meta --version` · `meta doctor`. Full write-up: [docs/setup.md → Update](./docs/setup.md#update-keep-meta-current).
+Verify: `nur --version` · `nur doctor`. Full write-up: [docs/setup.md → Update](./docs/setup.md#update-keep-meta-current).
 
 ### Other ways to install
 
@@ -82,18 +82,18 @@ Verify: `meta --version` · `meta doctor`. Full write-up: [docs/setup.md → Upd
 
 Same full stack as the one-liner (no compile).
 
-1. Open **[Releases → latest](https://github.com/nuroctane/meta-cli/releases/latest)**
-2. Download **`meta-windows-x86_64.exe`**
-3. **Double‑click it** (or `.\meta-windows-x86_64.exe` in a terminal)
+1. Open **[Releases → latest](https://github.com/nuroctane/nur-cli/releases/latest)**
+2. Download **`nur-windows-x86_64.exe`**
+3. **Double‑click it** (or `.\nur-windows-x86_64.exe` in a terminal)
 
-The EXE is a **one-stop installer**: copies itself to `~\.local\bin\meta.exe`, adds PATH, pulls prereqs it can (node · bun · uv · rg · ffmpeg), runs **ecosystem ensure** + **browser setup**, then opens Meta. No hand-rolled PATH. No “open TUI while packs install later.”
+The EXE is a **one-stop installer**: copies itself to `~\.local\bin\nur.exe`, adds PATH, pulls prereqs it can (node · bun · uv · rg · ffmpeg), runs **ecosystem ensure** + **browser setup**, then opens Meta. No hand-rolled PATH. No “open TUI while packs install later.”
 
-Sign in when prompted (`/login`, or `meta auth login`). **To upgrade day-to-day: `meta update`.** Or re-download + re-run the release EXE anytime.
+Sign in when prompted (`/login`, or `nur auth login`). **To upgrade day-to-day: `nur update`.** Or re-download + re-run the release EXE anytime.
 
 **③ Already cloned**
 
 ```powershell
-cd meta-cli
+cd nur-cli
 .\install.ps1          # Windows
 # ./install.sh         # macOS / Linux
 ```
@@ -101,12 +101,12 @@ cd meta-cli
 **④ Manual cargo build** (power users)
 
 ```bash
-git clone https://github.com/nuroctane/meta-cli.git
-cd meta-cli
+git clone https://github.com/nuroctane/nur-cli.git
+cd nur-cli
 cargo build --release
 # one-stop from the binary you just built:
-./target/release/meta install   # Windows: .\target\release\meta.exe install
-meta auth login
+./target/release/nur install   # Windows: .\target\release\nur.exe install
+nur auth login
 ```
 
 ---
@@ -127,27 +127,27 @@ Everything below is **local to your machine**. Nothing secrets-related is writte
 | **ripgrep (`rg`)** | system | Fast `grep` / `glob` (native fallback if absent) |
 | **ffmpeg** | system | `extract_frames` / design-from-video |
 
-#### B. Meta CLI itself
+#### B. NurCLI itself
 
 | Piece | Path |
 |-------|------|
-| **`meta` binary** | `~/.local/bin/meta` (Windows: `meta.exe`) |
+| **`nur` binary** | `~/.local/bin/meta` (Windows: `nur.exe`) |
 | **`muse` alias** | same dir — identical binary, legacy name |
-| **SHA-256 record** | `~/.local/bin/meta.sha256` |
-| **Source checkout** (one-liner) | `~/laboratory/meta-cli` (override with `RepoDir` / `META_CLI_DIR`) |
+| **SHA-256 record** | `~/.local/bin/nur.sha256` |
+| **Source checkout** (one-liner) | `~/laboratory/nur-cli` (override with `RepoDir` / `NUR_CLI_DIR`) |
 | **User PATH** | `~/.local/bin` appended (Windows User PATH · shell rc on Unix) |
 
-#### C. Agent data home — `~/.meta/` (created on first use / auth)
+#### C. Agent data home — `~/.nur/` (created on first use / auth)
 
 | Path | Purpose |
 |------|---------|
 | `auth.json` | API key after login (**only place keys live**) |
 | `config.toml` | Model, effort, budgets, compact, poor mode, … |
-| `bootstrap.json` | One-stop install marker (EXE / `meta install`) |
+| `bootstrap.json` | One-stop install marker (EXE / `nur install`) |
 | `ecosystem.json` | Ecosystem ensure marker |
 | `permissions.toml` | Optional allow/deny/ask rules |
 | `hooks.toml` | Optional pre/post tool hooks |
-| `meta.log` | Tracing (not painted into the TUI) |
+| `nur.log` | Tracing (not painted into the TUI) |
 | `status.json` · `usage.jsonl` · `ade.json` | Live usage + ADE / Orca panels |
 | `memory.md` · `history.jsonl` | Cross-session notes + prompt history |
 | `sessions/` | Chat sessions (`*.json`, `*.json.bak`, `*.precompact.bak`) |
@@ -155,7 +155,7 @@ Everything below is **local to your machine**. Nothing secrets-related is writte
 | `browser-extension/` | Staged `tmwd_cdp_bridge` for the browser tool |
 | `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory store |
 
-#### D. Ecosystem packs (one-liner · EXE · `meta install` / `ecosystem ensure`)
+#### D. Ecosystem packs (one-liner · EXE · `nur install` / `ecosystem ensure`)
 
 Installed as **external CLIs / skill trees** when Node/uv/Bun are available — not baked into the binary:
 
@@ -163,27 +163,27 @@ Installed as **external CLIs / skill trees** when Node/uv/Bun are available — 
 |-----------|----------------|
 | **Graphify** | Code knowledge graph CLI (`uv` / Python) |
 | **PLUR** | Shared engram memory |
-| **Ruflo** | Vector memory / swarm helpers under `~/.meta/ruflo/` |
+| **Ruflo** | Vector memory / swarm helpers under `~/.nur/ruflo/` |
 | **Executor** | MCP / OpenAPI gateway tooling |
 | **omp** | Oh My Pi headless coding backend (needs Bun) |
 | **agent-browser-cli** | Real-browser bridge (npm) |
-| **Skills + AKM** | Progressive skill packs under `~/.meta/skills` / agents skills dirs |
+| **Skills + AKM** | Progressive skill packs under `~/.nur/skills` / agents skills dirs |
 | **Browser setup** | Stages extension; opens `chrome://extensions` once for Load unpacked |
 
 #### E. Optional host integration
 
 | Piece | Notes |
 |-------|--------|
-| **Orca hook** | Best-effort `meta install-hook` if Orca is present |
-| **Auth from env** | If `META_API_KEY` / `MODEL_API_KEY` is set, saved to `~/.meta/auth.json` only |
+| **Orca hook** | Best-effort `nur install-hook` if Orca is present |
+| **Auth from env** | If `META_API_KEY` / `MODEL_API_KEY` is set, saved to `~/.nur/auth.json` only |
 
 **That’s the full stack** — binary + PATH + runtimes + knowledge/browser packs + local data home. One-liner first run may spend a few minutes on `cargo build`; the EXE skips compile but still runs ecosystem install **up front**. Later sessions open fast; `ecosystem_auto_ensure` only does light **background repair** when packs drift.
 
-Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** · Setup detail: [docs/setup.md](./docs/setup.md)
+Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** · Setup detail: [docs/setup.md](./docs/setup.md)
 
 ---
 
-**v0.10.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/meta-cli/)**
+**v0.10.0** — Production-minded agent harness, end to end: **[Docs](https://nuroctane.github.io/nur-cli/)**
 
 | Surface | What ships |
 |---------|------------|
@@ -192,24 +192,24 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 | **Vision** | **`look`** (images / short video) · **`extract_frames`** (ffmpeg keyframes) · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** (real default browser: Arc/Chrome/Edge/…) · git · knowledge stack · agent — **all first-class** (no deferred demotion) |
 | **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** — installed at setup; later open = TTL **repair** (`ecosystem_auto_ensure`) |
-| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · **session `.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `meta doctor` |
+| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.nur` IO · **session `.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `nur doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
 ---
 
-## Why Meta CLI
+## Why NurCLI
 
 | | |
 |--|--|
 | **Real agent, not a wrapper** | Custom Rust harness: modes, tools, sandbox, streaming, cancel, subagents, auto-compact |
 | **Sees media** | Muse multimodal via Responses `input_image` / `input_video` — sparse frames, not frame-by-frame spam |
 | **One-shot install** | One-liner **or** Windows EXE · PATH · ecosystem · browser · Orca hook · optional auth |
-| **Easy updates** | **`meta update`** — pull · rebuild · reinstall stack (or re-run one-liner / EXE) |
+| **Easy updates** | **`nur update`** — pull · rebuild · reinstall stack (or re-run one-liner / EXE) |
 | **Install first, then TUI** | Full stack runs **before** the UI; later sessions only do light background repair |
 | **Knowledge stack** | Code graph · shared engrams · vector memory · MCP gateway · skill packs |
-| **Resume other agents** | Skills: `resume-claude` · `resume-codex` · `resume-cursor` · `resume-meta` · **`resume-grok`** (shared reader: `~/.meta/skills/resume-session/`) |
+| **Resume other agents** | Skills: `resume-claude` · `resume-codex` · `resume-cursor` · `resume-nur` · **`resume-grok`** (shared reader: `~/.nur/skills/resume-session/`) |
 | **Simple input** | Drag-select · scrollbar · **Ctrl+A / C / V / X** — no mouse “mode” toggle |
-| **Secrets stay local** | API key only in `~/.meta/auth.json` |
+| **Secrets stay local** | API key only in `~/.nur/auth.json` |
 
 ---
 
@@ -222,12 +222,12 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 - Tool loop with fail-closed capability flags (read-only / parallel / destructive), approval gates, Esc cancel
 - **Subagents**, todos, plan mode (`submit_plan`)
 - **Session budgets** — hard stop on `$` and/or tokens (`/budget`, `max_session_cost_usd` / `max_session_tokens`)
-- **Tool-result spill** — oversized tool output → `~/.meta/tool-results/` + short model preview
+- **Tool-result spill** — oversized tool output → `~/.nur/tool-results/` + short model preview
 - **Smarter auto-compact** — thins old tool bodies, keeps recent turns, writes `.precompact.bak`
 - Optional **`permissions.toml`** allow/deny/ask patterns; optional **`hooks.toml`** pre/post tool
 - **`/poor`** — cost-saver prompt (skip PLUR inject / skills catalog / long memory; tools stay full)
 - Project instructions: `META.md` · `AGENTS.md` · `CLAUDE.md` (legacy `MUSE.md` still loaded)
-- Session resume (`-c`, `-r`, `/sessions`) — defaults to **all** workspaces; dual `~/.meta` / `~/.muse` prefers richer copy
+- Session resume (`-c`, `-r`, `/sessions`) — defaults to **all** workspaces; dual `~/.nur` / `~/.muse` prefers richer copy
 - **Prompt cache key** per session (helps surface `cached_tokens`)
 
 ### Tools (native)
@@ -239,7 +239,7 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 | shell | `bash` (hardened denylist + timeout) |
 | **vision** | **`look`** · **`extract_frames`** |
 | web | `web_search` `web_fetch` (text only; SSRF / private-IP blocks) |
-| browser | `browser` — the user's **real default browser** (Arc/Chrome/Edge/Brave/…) via agent-browser-cli: tabs · snapshot (@e refs) · click/fill/keys · JS · screenshots (pair with `look`); setup via `meta browser setup` |
+| browser | `browser` — the user's **real default browser** (Arc/Chrome/Edge/Brave/…) via agent-browser-cli: tabs · snapshot (@e refs) · click/fill/keys · JS · screenshots (pair with `look`); setup via `nur browser setup` |
 | git | `git_status` `git_diff` |
 | knowledge | `graphify` `plur` `ruflo` `executor` `skill` `memory` |
 | delegate | `agent` `omp` — omp.sh coding-agent backend (LSP renames, DAP debugging, AST rewrites) |
@@ -247,12 +247,12 @@ Docs: **[nuroctane.github.io/meta-cli](https://nuroctane.github.io/meta-cli/)** 
 
 ### Vision (design / multimodal)
 
-Muse Spark accepts multimodal input on the Responses API. Meta CLI wires that in:
+Muse Spark accepts multimodal input on the Responses API. NurCLI wires that in:
 
 | Tool | What it does |
 |------|----------------|
 | **`look`** | Attach workspace **image(s)** (png/jpg/webp/gif) or a **short video** (mp4/webm/mov, ~20MB cap) so the model *sees* them on the next turn |
-| **`extract_frames`** | Sparse **keyframes** via **ffmpeg** (default ~1 fps, max ~8) → `.meta/frames/<name>/` and auto-queues `look` |
+| **`extract_frames`** | Sparse **keyframes** via **ffmpeg** (default ~1 fps, max ~8) → `.nur/frames/<name>/` and auto-queues `look` |
 
 **Efficient design-from-video (e.g. 10s reference clip):**
 
@@ -277,7 +277,7 @@ Or: `extract_frames` → model inspects stills → implement with **design-eng**
 | **Skills** | Progressive packs (design-eng, clone-website, cybersecurity, …) via `skill` |
 | **AKM** | Agent knowledge package manager (when Node available) |
 
-### TUI (Meta-blue)
+### TUI (Nur-gold)
 - Streaming assistant · violet **thought** cards · colour-coded **tool** cards  
 - **Duration chips** · cards collapsed by default · click-to-peek · **↓ End**  
 - **Drag text to select** (auto-copy) · **drag scrollbar** always on  
@@ -286,12 +286,12 @@ Or: `extract_frames` → model inspects stills → implement with **design-eng**
 - Splash shows the **active model title** only there; rest of chrome is model-agnostic  
 
 ### Reliability & safety
-- Atomic writes under **`~/.meta/`** (auth, sessions, status, history)  
+- Atomic writes under **`~/.nur/`** (auth, sessions, status, history)  
 - Session saves write **`*.json.bak`** first; compaction writes **`*.precompact.bak`**  
-- API **retries** · process timeouts · config validation · `meta doctor`  
+- API **retries** · process timeouts · config validation · `nur doctor`  
 - Install scripts verify **SHA-256** of the binary  
 - Gap-fill migrate from legacy `~/.muse/` (never overwrites existing `.meta` files)  
-- Logs to **`~/.meta/meta.log`** (never paints stderr over the TUI)
+- Logs to **`~/.nur/nur.log`** (never paints stderr over the TUI)
 
 ---
 
@@ -299,31 +299,31 @@ Or: `extract_frames` → model inspects stills → implement with **design-eng**
 
 | On GitHub | On your PC only |
 |-----------|-----------------|
-| Source, README, install scripts | `~/.meta/auth.json` (API key) |
-| No keys, no `.env`, no sessions | `~/.meta/sessions/`, usage logs, frames under workspace `.meta/frames/` |
+| Source, README, install scripts | `~/.nur/auth.json` (API key) |
+| No keys, no `.env`, no sessions | `~/.nur/sessions/`, usage logs, frames under workspace `.nur/frames/` |
 
 See [SECURITY.md](./SECURITY.md). **Never commit your Meta API key.**
 
-Upgrading from older builds: gap-fill copy from `~/.muse/` → `~/.meta/` for any missing files (auth, sessions, ruflo, skills, …). `meta auth logout` clears **both** homes.
+Upgrading from older builds: gap-fill copy from `~/.muse/` → `~/.nur/` for any missing files (auth, sessions, ruflo, skills, …). `nur auth logout` clears **both** homes.
 
 ---
 
 ## Quick use
 
 ```text
-meta                         # interactive Meta-blue TUI
+meta                         # interactive Nur-gold TUI
 meta "fix the bug"          # start with a prompt
 meta "design from ref.mp4"   # vision: auto-attach media if path exists
 meta -c                      # continue last session in this directory
 meta -r <session-id>         # resume a session
-meta --mode plan "…"         # plan mode (explore + shell freely; no edits/commits)
-meta run "…" -y              # headless + auto-approve
-meta sessions
+nur --mode plan "…"         # plan mode (explore + shell freely; no edits/commits)
+nur run "…" -y              # headless + auto-approve
+nur sessions
 meta usage
-meta auth status
-meta ecosystem status
-meta ecosystem ensure --force
-meta doctor                  # auth · config · ecosystem · PATH · ffmpeg · sha256
+nur auth status
+nur ecosystem status
+nur ecosystem ensure --force
+nur doctor                  # auth · config · ecosystem · PATH · ffmpeg · sha256
 ```
 
 Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last session / Laboratory).
@@ -388,7 +388,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 
 ### Quick memory
 
-Type `#` followed by a note to save it directly to `~/.meta/memory.md` without starting a turn — persisted and recalled across sessions.
+Type `#` followed by a note to save it directly to `~/.nur/memory.md` without starting a turn — persisted and recalled across sessions.
 
 ### Colour system
 
@@ -408,12 +408,12 @@ Type `#` followed by a note to save it directly to `~/.meta/memory.md` without s
 
 | Path | Role |
 |------|------|
-| `~/.meta/status.json` | Live tokens · cost · model · state |
-| `~/.meta/usage.jsonl` | Per-request log |
-| `~/.meta/ade.json` | Discovery manifest |
+| `~/.nur/status.json` | Live tokens · cost · model · state |
+| `~/.nur/usage.jsonl` | Per-request log |
+| `~/.nur/ade.json` | Discovery manifest |
 
 ```text
-meta install-hook
+nur install-hook
 orca terminal create --command meta
 ```
 
@@ -421,7 +421,7 @@ orca terminal create --command meta
 
 ## Config
 
-`~/.meta/config.toml` (created on first run):
+`~/.nur/config.toml` (created on first run):
 
 ```toml
 model = "muse-spark-1.1"   # any Meta Model API model id
@@ -443,10 +443,10 @@ Optional files:
 
 | Path | Purpose |
 |------|---------|
-| `~/.meta/permissions.toml` | `allow` / `deny` / `ask` patterns (`bash:git *`, …) |
-| `~/.meta/hooks.toml` | `pre_tool` / `post_tool` shell hooks |
-| `~/.meta/tool-results/` | Spilled large tool outputs |
-| `~/.meta/meta.log` | Tracing (not the terminal) |
+| `~/.nur/permissions.toml` | `allow` / `deny` / `ask` patterns (`bash:git *`, …) |
+| `~/.nur/hooks.toml` | `pre_tool` / `post_tool` shell hooks |
+| `~/.nur/tool-results/` | Spilled large tool outputs |
+| `~/.nur/nur.log` | Tracing (not the terminal) |
 
 Override home with `META_HOME` (legacy `MUSE_HOME` still honored). Env: `META_API_KEY` / `MODEL_API_KEY` / `META_MODEL`.
 
@@ -458,12 +458,12 @@ The whole terminal UI — every card, border, animation, and the drag-select /
 scrollbar plumbing — is built on **[Ratatui](https://ratatui.rs/)**
 ([github.com/ratatui/ratatui](https://github.com/ratatui/ratatui)), the
 Rust TUI library, with **[crossterm](https://github.com/crossterm-rs/crossterm)**
-underneath for input and rendering. Meta CLI's dense Meta-blue interface simply
+underneath for input and rendering. NurCLI's dense Nur-gold interface simply
 wouldn't exist without the Ratatui folks — huge thanks to them. 💙
 
 Assistant markdown in the transcript is parsed by joshka's
 **[tui-markdown](https://github.com/joshka/tui-markdown)** — we re-tint its
-output to the Meta-blue palette on top. Long peek dialogues scroll via
+output to the Nur-gold palette on top. Long peek dialogues scroll via
 **[tui-scrollview](https://crates.io/crates/tui-scrollview)**, inline image
 peeks render through **[ratatui-image](https://crates.io/crates/ratatui-image)**
 (sixel / kitty / iTerm2, halfblocks fallback), and the smooth fractional
@@ -480,7 +480,7 @@ Edge, Brave, or any Chromium browser — through
 (browser bridge lineage from
 [GenericAgent](https://github.com/lsdefine/GenericAgent)) — login state stays
 in the browser, cookies are never exposed to the model. Install auto-detects
-your default browser and stages the extension; `meta browser setup` finishes
+your default browser and stages the extension; `nur browser setup` finishes
 the one-time load.
 
 Also built on: [tokio](https://tokio.rs), [reqwest](https://github.com/seanmonstar/reqwest),

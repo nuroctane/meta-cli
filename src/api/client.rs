@@ -29,7 +29,7 @@ pub enum StreamEvent {
 impl MetaClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
         let http = Client::builder()
-            .user_agent(format!("meta-cli/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(300))
             .build()?;
         Ok(Self {

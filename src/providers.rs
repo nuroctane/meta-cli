@@ -1,6 +1,6 @@
-//! Provider catalog — every place you can point meta-cli at a model.
+//! Provider catalog — every place you can point nur-cli at a model.
 //!
-//! meta-cli speaks two request shapes: the OpenAI/Meta **Responses** API
+//! nur-cli speaks two request shapes: the OpenAI/Meta **Responses** API
 //! (`/responses`) and the ubiquitous **Chat Completions** API
 //! (`/chat/completions`). Each catalog entry declares which one it uses, its
 //! base URL, a sensible default model, and the env var its key is usually
@@ -43,10 +43,10 @@ pub struct Provider {
 
 use ApiStyle::{ChatCompletions as CC, Responses as R};
 
-/// The full catalog. First entry (`meta`) is the default.
+/// The full catalog. First entry (`meta` = Meta Model API vendor) is the default.
 pub const PROVIDERS: &[Provider] = &[
-    // ── default ──────────────────────────────────────────────────────────
-    Provider { id: "meta", name: "Meta Model API", base_url: "https://api.meta.ai/v1", default_model: "muse-spark-1.1", env_key: "META_API_KEY", style: R, note: "muse · the default", key_optional: false, browser_auth: false },
+    // ── default vendor (Meta company API — not the NurCLI product name) ──
+    Provider { id: "meta", name: "Meta Model API", base_url: "https://api.meta.ai/v1", default_model: "muse-spark-1.1", env_key: "META_API_KEY", style: R, note: "muse-spark · Meta vendor default", key_optional: false, browser_auth: false },
 
     // ── frontier direct APIs ─────────────────────────────────────────────
     Provider { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", default_model: "gpt-5.5", env_key: "OPENAI_API_KEY", style: R, note: "GPT · Responses API", key_optional: false, browser_auth: false },

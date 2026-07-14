@@ -1288,42 +1288,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "meta-cli"
-version = "0.10.0"
-dependencies = [
- "anyhow",
- "arboard",
- "base64 0.22.1",
- "chrono",
- "clap",
- "colored",
- "crossterm",
- "dirs",
- "futures-util",
- "ignore",
- "image",
- "ratatui",
- "ratatui-image",
- "regex",
- "reqwest",
- "rpassword",
- "serde",
- "serde_json",
- "sha2",
- "thiserror 1.0.69",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "tracing-subscriber",
- "tui-markdown",
- "tui-scrollview",
- "unicode-width 0.2.0",
- "uuid",
- "walkdir",
-]
-
-[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1393,6 +1357,42 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "nur-cli"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "colored",
+ "crossterm",
+ "dirs",
+ "futures-util",
+ "ignore",
+ "image",
+ "ratatui",
+ "ratatui-image",
+ "regex",
+ "reqwest",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "tui-markdown",
+ "tui-scrollview",
+ "unicode-width 0.2.0",
+ "uuid",
+ "walkdir",
 ]
 
 [[package]]

@@ -1,14 +1,14 @@
-# Meta CLI
+# NurCLI
 
 **Fully loaded terminal coding agent** for [Meta Model API](https://dev.meta.ai/) — not a thin wrapper.
 
-Custom Rust harness, dense Meta-blue TUI, **native vision**, tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config.
+Custom Rust harness, dense Nur-gold TUI, **native vision**, tools, knowledge stack, hardened sandbox. Any model id via `--model` / `/model` / config.
 
 !!! info "Unofficial"
-    Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli)
+    Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/nur-cli](https://github.com/nuroctane/nur-cli)
 
 ```text
-meta          # primary — Meta-blue interactive TUI
+meta          # primary — Nur-gold interactive TUI
 muse          # legacy alias (same binary)
 ```
 
@@ -19,26 +19,26 @@ muse          # legacy alias (same binary)
 === "<span class='install-hot'>Windows (PowerShell)</span>"
 
     ```powershell
-    irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
     ```
 
 === "<span class='install-hot'>macOS / Linux</span>"
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
     ```
 
-Then: `meta auth login` → `meta`.
+Then: `nur auth login` → `nur`.
 
-**<span class="install-hot">Windows EXE:</span>** download `meta-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/meta-cli/releases/latest) → double‑click → **full install** (PATH + ecosystem + browser) then TUI. Same stack as the one-liner, no compile. Details: **[Setup](setup.md)**.
+**<span class="install-hot">Windows EXE:</span>** download `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) → double‑click → **full install** (PATH + ecosystem + browser) then TUI. Same stack as the one-liner, no compile. Details: **[Setup](setup.md)**.
 
 ### Update
 
 ```bash
-meta update
+nur update
 ```
 
-That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout, reinstalls `meta` + ecosystem. Or re-run the one-liner / re-download the EXE. Full detail: **[Setup → Update](setup.md#update-keep-meta-current)**.
+That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout, reinstalls `nur` + ecosystem. Or re-run the one-liner / re-download the EXE. Full detail: **[Setup → Update](setup.md#update-keep-meta-current)**.
 
 ---
 
@@ -51,7 +51,7 @@ That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkou
 | **Vision** | `look` (images / short video) · `extract_frames` (ffmpeg keyframes) · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** · git · knowledge stack · agent — **all first-class** |
 | **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** — full install at setup; later open = TTL repair (`ecosystem_auto_ensure`) |
-| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.meta` IO · session **`.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `meta doctor` |
+| **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.nur` IO · session **`.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `nur doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
 **Current version: v0.10.0**
@@ -69,7 +69,7 @@ That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkou
 - **[Ecosystem](ecosystem.md)** — Graphify, PLUR, Ruflo, skills, AKM
 - **[Configuration](configuration.md)** — `config.toml`, environment variables, settings
 - **[Security](security.md)** — Where secrets live, sandbox, reporting
-- **[Troubleshooting](troubleshooting.md)** — `meta doctor`, common issues
+- **[Troubleshooting](troubleshooting.md)** — `nur doctor`, common issues
 
 ---
 

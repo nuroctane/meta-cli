@@ -11,14 +11,14 @@ pub struct Skill {
 }
 
 /// Discover skills from (first match wins per name):
-/// - `$META_HOME/skills` (or `~/.meta/skills`) — primary
+/// - `$META_HOME/skills` (or `~/.nur/skills`) — primary
 /// - legacy `~/.muse/skills`
 /// - `~/.agents/skills` (Agent Skills / graphify install --platform agents)
 /// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills`
 pub fn load_skills(cwd: &Path) -> Vec<Skill> {
     let mut out = Vec::new();
     let mut dirs = Vec::new();
-    // Honor META_HOME / MUSE_HOME via meta_home() — not a hard-coded ~/.meta.
+    // Honor META_HOME / MUSE_HOME via meta_home() — not a hard-coded ~/.nur.
     dirs.push(crate::config::meta_home().join("skills"));
     dirs.push(crate::config::legacy_muse_home().join("skills"));
     if let Some(home) = dirs::home_dir() {

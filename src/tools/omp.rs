@@ -4,7 +4,7 @@
 //! core: LSP-wired edits, a real debugger (DAP), AST rewrites, hashline
 //! patches, and 25-provider web search. We integrate the *backend* entry
 //! point — headless one-shot runs (`omp -p …`) in the workspace — not the
-//! IDE/ACP surface. The CLI is auto-provisioned by `meta ecosystem ensure`
+//! IDE/ACP surface. The CLI is auto-provisioned by `nur ecosystem ensure`
 //! when Bun is available.
 
 use super::{arg_str, Tool, ToolContext};
@@ -62,7 +62,7 @@ impl Tool for OmpTool {
     fn execute(&self, args: &Value, ctx: &ToolContext) -> Result<String> {
         let bin = ecosystem::find_bin("omp").ok_or_else(|| {
             MuseError::Tool(
-                "omp CLI not found. Install Bun (bun.sh) then `meta ecosystem ensure`, \
+                "omp CLI not found. Install Bun (bun.sh) then `nur ecosystem ensure`, \
                  or install directly: bun install -g @oh-my-pi/pi-coding-agent \
                  (Windows: irm https://omp.sh/install.ps1 | iex)"
                     .into(),

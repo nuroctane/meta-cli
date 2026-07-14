@@ -46,7 +46,7 @@ impl Tool for WebFetch {
             // connect cannot redirect the request to a private address.
             let mut builder = reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(30))
-                .user_agent(format!("meta-cli/{}", env!("CARGO_PKG_VERSION")))
+                .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))
                 // Redirects are followed manually below so each hop is re-checked.
                 .redirect(reqwest::redirect::Policy::none());
             if let Some((host, addr)) = &pin {

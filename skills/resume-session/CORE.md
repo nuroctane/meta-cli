@@ -7,7 +7,7 @@ The wrapper sets `TOOL` to one of:
 | `claude` | Claude Code |
 | `codex` | Codex CLI / VS Code |
 | `cursor` | Cursor CLI / Desktop |
-| `meta` | Meta CLI |
+| `nur` | NurCLI |
 | `grok` | Grok Build / Grok CLI |
 
 and sets `SHARED_DIR` to the directory containing this file.

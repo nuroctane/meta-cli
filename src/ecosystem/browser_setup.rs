@@ -225,7 +225,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// A short, honest summary of the browser setup state for `meta doctor` / the
+/// A short, honest summary of the browser setup state for `nur doctor` / the
 /// `browser` tool `status` action.
 pub fn setup_summary() -> String {
     let browser = detect_default_browser();
@@ -235,7 +235,7 @@ pub fn setup_summary() -> String {
     if have_ext {
         s.push_str(&format!("extension staged: {}\n", staged.display()));
     } else {
-        s.push_str("extension: not staged yet — run `meta ecosystem ensure`\n");
+        s.push_str("extension: not staged yet — run `nur ecosystem ensure`\n");
     }
     if browser.is_chromium() {
         s.push_str(&format!(

@@ -3,9 +3,9 @@
 System requirements, **every install path**, what lands on your PC, updates, and uninstallation.
 
 !!! tip "It's one line"
-    **<span class="install-hot">Windows:</span>** `irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex`  
-    **<span class="install-hot">macOS / Linux:</span>** `curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash`  
-    Then: `meta auth login` → `meta`. Full detail below.
+    **<span class="install-hot">Windows:</span>** `irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex`  
+    **<span class="install-hot">macOS / Linux:</span>** `curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash`  
+    Then: `nur auth login` → `nur`. Full detail below.
 
 ---
 
@@ -30,47 +30,47 @@ Does **everything**: Rust if needed, prereqs, build, PATH, ecosystem packs, brow
 === "<span class='install-hot'>Windows (PowerShell)</span>"
 
     ```powershell
-    irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
     ```
 
 === "<span class='install-hot'>macOS / Linux</span>"
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
     ```
 
 ### 2. <span class="install-hot">Prebuilt Windows EXE</span> (no local compile)
 
 **Same job as the one-liner** — download, run, full stack. The EXE *is* the installer.
 
-1. Open [**Releases → latest**](https://github.com/nuroctane/meta-cli/releases/latest)
-2. Download **`meta-windows-x86_64.exe`**
-3. **Double‑click it** (or `.\meta-windows-x86_64.exe`)
+1. Open [**Releases → latest**](https://github.com/nuroctane/nur-cli/releases/latest)
+2. Download **`nur-windows-x86_64.exe`**
+3. **Double‑click it** (or `.\nur-windows-x86_64.exe`)
 
 What it does **before** any TUI (console progress):
 
 | Step | Action |
 |------|--------|
-| Binary | Copies itself → `%USERPROFILE%\.local\bin\meta.exe` (+ `muse.exe` alias) |
+| Binary | Copies itself → `%USERPROFILE%\.local\bin\nur.exe` (+ `muse.exe` alias) |
 | PATH | Adds `~\.local\bin` to User PATH |
 | Prereqs | Best-effort: node · bun · uv · rg · ffmpeg |
 | Ecosystem | `ecosystem ensure --force` (graphify · plur · ruflo · omp · browser · skills) |
 | Browser | Stages Chromium extension for your default browser |
 | Hook | Orca hook if present |
 | Auth | Saves `META_API_KEY` / `MODEL_API_KEY` if set in the environment |
-| Launch | Opens the installed `meta` TUI |
+| Launch | Opens the installed `nur` TUI |
 
-Re-download + re-run the release EXE to upgrade. Force again anytime: `meta install`.
+Re-download + re-run the release EXE to upgrade. Force again anytime: `nur install`.
 
 !!! tip "When auto-install runs"
-    **Release EXE** (`meta-windows-*.exe`) and **first** run with no `~\.local\bin\meta` → full one-stop install.  
-    Already-installed `meta` on PATH opens the TUI immediately (no reinstall).  
-    Force again: `meta install`. Dev skip: `META_SKIP_BOOTSTRAP=1`.
+    **Release EXE** (`nur-windows-*.exe`) and **first** run with no `~\.local\bin\meta` → full one-stop install.  
+    Already-installed `nur` on PATH opens the TUI immediately (no reinstall).  
+    Force again: `nur install`. Dev skip: `META_SKIP_BOOTSTRAP=1`.
 
 ### 3. From a local clone
 
 ```bash
-cd meta-cli
+cd nur-cli
 ./install.ps1    # Windows PowerShell: .\install.ps1
 # ./install.sh   # macOS / Linux
 ```
@@ -80,78 +80,78 @@ Same steps as the remote one-liner, using the checkout you already have.
 ### 4. Manual `cargo` build
 
 ```bash
-git clone https://github.com/nuroctane/meta-cli.git && cd meta-cli
+git clone https://github.com/nuroctane/nur-cli.git && cd nur-cli
 cargo build --release
-./target/release/meta install   # Windows: .\target\release\meta.exe install
-meta auth login
+./target/release/nur install   # Windows: .\target\release\nur.exe install
+nur auth login
 ```
 
-`meta install` is the same one-stop path the release EXE runs (binary → PATH → ecosystem → browser).
+`nur install` is the same one-stop path the release EXE runs (binary → PATH → ecosystem → browser).
 
 ### Update (keep Meta current)
 
 **Default — one command:**
 
 ```bash
-meta update
+nur update
 ```
 
 That is the supported upgrade path after any install. Same spirit as the one-liner: refresh source if present, rebuild, reinstall binary + ecosystem + browser stage.
 
-| What `meta update` does | Detail |
+| What `nur update` does | Detail |
 |-------------------------|--------|
-| 1. Find source | `~/laboratory/meta-cli` or `~/Laboratory/meta-cli` (Windows `%USERPROFILE%\…`) |
+| 1. Find source | `~/laboratory/nur-cli` or `~/Laboratory/nur-cli` (Windows `%USERPROFILE%\…`) |
 | 2. Pull | `git pull --ff-only origin main` when a checkout exists |
 | 3. Build | `cargo build --release` in that tree |
 | 4. Install binary | Copy → `~/.local/bin/meta` (+ `muse` alias) |
 | 5. Stack | `ecosystem ensure --force` · `browser setup` · Orca hook |
-| No source tree? | Falls back to **`meta install`** (self-repair from the running binary) |
+| No source tree? | Falls back to **`nur install`** (self-repair from the running binary) |
 
 Then verify:
 
 ```bash
-meta --version
-meta doctor
+nur --version
+nur doctor
 ```
 
 !!! tip "Remember this"
-    After install, the CLI prints: **`Update: meta update`**.  
+    After install, the CLI prints: **`Update: nur update`**.  
     Bookmark it. Re-run anytime you want the latest main + stack repair.
 
 #### Other upgrade options
 
 | Method | When to use |
 |--------|-------------|
-| **`meta update`** | **Preferred** — always try this first |
+| **`nur update`** | **Preferred** — always try this first |
 | **Re-run the one-liner** | Same as first install; rebuilds from GitHub main |
-| **Re-download + double‑click** `meta-windows-x86_64.exe` | Windows prebuilt path (no local compile) |
-| **`meta install`** | Re-copy *this* binary + full stack (no `git pull` / rebuild) |
-| **Manual** | `cd` checkout → `git pull` → `cargo build --release` → `.\target\release\meta.exe install` |
+| **Re-download + double‑click** `nur-windows-x86_64.exe` | Windows prebuilt path (no local compile) |
+| **`nur install`** | Re-copy *this* binary + full stack (no `git pull` / rebuild) |
+| **Manual** | `cd` checkout → `git pull` → `cargo build --release` → `.\target\release\nur.exe install` |
 
 === "Windows (PowerShell)"
 
     ```powershell
-    meta update
+    nur update
     # or reinstall from network:
-    irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
     # or re-download EXE from Releases and double-click
     ```
 
 === "macOS / Linux"
 
     ```bash
-    meta update
+    nur update
     # or:
-    curl -fsSL https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.sh | bash
+    curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
     ```
 
-Disable automatic background repair (not the same as `meta update`): set `DISABLE_AUTOUPDATER=1` / `DISABLE_UPDATES=1` or `ecosystem_auto_ensure = false` in config — see [Configuration](configuration.md).
+Disable automatic background repair (not the same as `nur update`): set `DISABLE_AUTOUPDATER=1` / `DISABLE_UPDATES=1` or `ecosystem_auto_ensure = false` in config — see [Configuration](configuration.md).
 
 ### Verify
 
 ```bash
-meta --version
-meta doctor
+nur --version
+nur doctor
 ```
 
 ---
@@ -164,7 +164,7 @@ Everything is **on your machine only**. Secrets never go into the git checkout. 
 
 | Piece | Typical location | Used for |
 |-------|------------------|----------|
-| **Rust / cargo** (rustup) | `~/.cargo/` | Compiling Meta CLI (**one-liner / cargo only** — not the release EXE) |
+| **Rust / cargo** (rustup) | `~/.cargo/` | Compiling NurCLI (**one-liner / cargo only** — not the release EXE) |
 | **Git** | system | Clone / update source (**one-liner / clone only**) |
 | **Node.js 20+** | system / winget / brew / apt | PLUR, Ruflo, Executor, skills, browser CLI, AKM |
 | **Bun** | `~/.bun/` | **omp** (Oh My Pi) |
@@ -172,17 +172,17 @@ Everything is **on your machine only**. Secrets never go into the git checkout. 
 | **ripgrep** | system | Fast `grep` / `glob` |
 | **ffmpeg** | system | `extract_frames` / design-from-video |
 
-### Meta CLI binary
+### NurCLI binary
 
 | Piece | Path |
 |-------|------|
-| **`meta`** | `~/.local/bin/meta` · Windows `meta.exe` |
+| **`nur`** | `~/.local/bin/meta` · Windows `nur.exe` |
 | **`muse`** | Same binary, legacy alias |
-| **Integrity** | `~/.local/bin/meta.sha256` |
-| **Source tree** (one-liner) | `~/laboratory/meta-cli` (Windows: `%USERPROFILE%\laboratory\meta-cli`) |
+| **Integrity** | `~/.local/bin/nur.sha256` |
+| **Source tree** (one-liner) | `~/laboratory/nur-cli` (Windows: `%USERPROFILE%\laboratory\nur-cli`) |
 | **PATH** | `~/.local/bin` added to User PATH (Windows) or a shell rc (Unix) |
 
-### Data home — `~/.meta/`
+### Data home — `~/.nur/`
 
 Created on first auth / first run:
 
@@ -190,11 +190,11 @@ Created on first auth / first run:
 |------|---------|
 | `auth.json` | API key |
 | `config.toml` | Model, effort, budgets, compact, `poor_mode`, `ecosystem_auto_ensure`, … |
-| `bootstrap.json` | One-stop install marker (`meta install` / release EXE) |
+| `bootstrap.json` | One-stop install marker (`nur install` / release EXE) |
 | `ecosystem.json` | Ecosystem ensure marker / component snapshot |
 | `permissions.toml` | Optional allow/deny/ask rules |
 | `hooks.toml` | Optional pre/post tool hooks |
-| `meta.log` | Tracing (not drawn into the TUI) |
+| `nur.log` | Tracing (not drawn into the TUI) |
 | `status.json` / `usage.jsonl` / `ade.json` | Live usage + host panels |
 | `memory.md` / `history.jsonl` | Notes + prompt history |
 | `sessions/` | Sessions + `.json.bak` / `.precompact.bak` |
@@ -202,9 +202,9 @@ Created on first auth / first run:
 | `browser-extension/` | Staged Chromium extension for `browser` |
 | `skills/` · `skill-packs/` · `ruflo/` | Skills + vector memory |
 
-### Ecosystem (installed during one-liner / EXE / `meta install`)
+### Ecosystem (installed during one-liner / EXE / `nur install`)
 
-External CLIs / packs (not inside the `meta` binary):
+External CLIs / packs (not inside the `nur` binary):
 
 | Component | Role |
 |-----------|------|
@@ -221,8 +221,8 @@ External CLIs / packs (not inside the `meta` binary):
 
 | Piece | Notes |
 |-------|--------|
-| Orca hook | `meta install-hook` when Orca is present |
-| Env-based auth | `META_API_KEY` / `MODEL_API_KEY` → saved under `~/.meta/auth.json` only |
+| Orca hook | `nur install-hook` when Orca is present |
+| Env-based auth | `META_API_KEY` / `MODEL_API_KEY` → saved under `~/.nur/auth.json` only |
 
 ---
 
@@ -231,7 +231,7 @@ External CLIs / packs (not inside the `meta` binary):
 Get a key from [dev.meta.ai](https://dev.meta.ai/) → API keys.
 
 ```bash
-meta auth login
+nur auth login
 ```
 
 Or inside the TUI: **`/login`** (provider picker + masked key) · **`/logout`**.
@@ -248,21 +248,21 @@ Any of:
 
 ```bash
 # one-liner again
-irm https://raw.githubusercontent.com/nuroctane/meta-cli/main/install.ps1 | iex   # Windows
+irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex   # Windows
 # curl -fsSL …/install.sh | bash                                                 # macOS / Linux
 
 # from a clone
 git pull && ./install.ps1   # or install.sh
 
 # already have meta on PATH
-meta install
+nur install
 
-# prebuilt: download newer meta-windows-x86_64.exe from Releases and double-click
-# (self-installs over ~/.local/bin/meta.exe — no hand PATH surgery)
+# prebuilt: download newer nur-windows-x86_64.exe from Releases and double-click
+# (self-installs over ~/.local/bin/nur.exe — no hand PATH surgery)
 ```
 
 ```bash
-meta doctor   # confirm version + sha256
+nur doctor   # confirm version + sha256
 ```
 
 ---
@@ -274,13 +274,13 @@ meta doctor   # confirm version + sha256
 === "Windows"
 
     ```powershell
-    Remove-Item -Force "$env:USERPROFILE\.local\bin\meta.exe","$env:USERPROFILE\.local\bin\muse.exe","$env:USERPROFILE\.local\bin\meta.sha256" -ErrorAction SilentlyContinue
+    Remove-Item -Force "$env:USERPROFILE\.local\bin\nur.exe","$env:USERPROFILE\.local\bin\muse.exe","$env:USERPROFILE\.local\bin\nur.sha256" -ErrorAction SilentlyContinue
     ```
 
 === "macOS / Linux"
 
     ```bash
-    rm -f ~/.local/bin/meta ~/.local/bin/muse ~/.local/bin/meta.sha256
+    rm -f ~/.local/bin/meta ~/.local/bin/muse ~/.local/bin/nur.sha256
     ```
 
 ### Config, sessions, usage (destructive)
@@ -288,13 +288,13 @@ meta doctor   # confirm version + sha256
 === "Windows"
 
     ```powershell
-    Remove-Item -Recurse -Force "$env:USERPROFILE\.meta"
+    Remove-Item -Recurse -Force "$env:USERPROFILE\.nur"
     ```
 
 === "macOS / Linux"
 
     ```bash
-    rm -rf ~/.meta
+    rm -rf ~/.nur
     ```
 
 ### Legacy home
@@ -303,6 +303,6 @@ Older builds used `~/.muse/` — remove the same way if you no longer need it.
 
 ### Build cache / source (optional)
 
-- Source checkout: `~/laboratory/meta-cli` (or your clone path)
+- Source checkout: `~/laboratory/nur-cli` (or your clone path)
 - Rust target artifacts: inside that repo’s `target/`
 - rustup / node / bun / uv / ffmpeg: uninstall with your OS package manager if you installed them only for Meta and don’t need them elsewhere

@@ -1,4 +1,4 @@
-//! Rendering for the Meta CLI TUI — Meta-blue surfaces, motion, cursors.
+//! Rendering for the NurCLI TUI — Nur-gold surfaces, motion, cursors.
 
 use super::app::{fmt_num, line_to_plain, App, Cell, TextRange};
 use super::{ansi, markdown, scrollbar::ScrollMetrics, wrap};
@@ -478,7 +478,7 @@ fn draw_login_key(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::raw("  ".to_string()),
             Span::styled(format!("{} chars", m.buf.chars().count()), theme::style_faint()),
-            Span::styled("   ·   stored only in ~/.meta/auth.json".to_string(), theme::style_faint()),
+            Span::styled("   ·   stored only in ~/.nur/auth.json".to_string(), theme::style_faint()),
         ]),
         Line::from(vec![
             Span::raw("  ".to_string()),
@@ -1163,7 +1163,7 @@ fn draw_sticky_banner(f: &mut Frame, prompt: &str, area: Rect) {
     let bar = Style::default().bg(theme::META_BLUE);
     let surface = Style::default().bg(theme::SURFACE);
 
-    // Row 0: solid Meta-blue title bar.
+    // Row 0: solid Nur-gold title bar.
     let title = Rect {
         x: area.x,
         y: area.y,
@@ -1725,7 +1725,7 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
     }
 }
 
-/// User prompt as a bordered card — a rounded Meta-blue frame with a padding
+/// User prompt as a bordered card — a rounded Nur-gold frame with a padding
 /// row above/below and inner margins, so prompts read as distinct blocks in
 /// the transcript. Every border/padding row belongs to the prompt cell, which
 /// also makes the right-click / double-click context-menu hitbox much larger
@@ -1788,7 +1788,7 @@ fn user_prompt_card(text: &str, width: usize, out: &mut Vec<Line<'static>>) {
     )));
 }
 
-/// Highlight drag-selected characters with a Meta-blue selection wash.
+/// Highlight drag-selected characters with a Nur-gold selection wash.
 fn apply_selection_style(line: Line<'static>, line_idx: usize, range: TextRange) -> Line<'static> {
     let (a, b) = range.normalized();
     if line_idx < a.line || line_idx > b.line {
@@ -2132,13 +2132,14 @@ fn turn_separator(width: usize, elapsed: Duration) -> Line<'static> {
 }
 
 fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
+    // NUR logotype — same motion (diagonal shimmer + aurora underline) as before.
     let logo = [
-        r#"███╗   ███╗██╗   ██╗███████╗███████╗"#,
-        r#"████╗ ████║██║   ██║██╔════╝██╔════╝"#,
-        r#"██╔████╔██║██║   ██║███████╗█████╗  "#,
-        r#"██║╚██╔╝██║██║   ██║╚════██║██╔══╝  "#,
-        r#"██║ ╚═╝ ██║╚██████╔╝███████║███████╗"#,
-        r#"╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝"#,
+        r#"███╗   ██╗██╗   ██╗██████╗ "#,
+        r#"████╗  ██║██║   ██║██╔══██╗"#,
+        r#"██╔██╗ ██║██║   ██║██████╔╝"#,
+        r#"██║╚██╗██║██║   ██║██╔══██╗"#,
+        r#"██║ ╚████║╚██████╔╝██║  ██║"#,
+        r#"╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝"#,
     ];
     let elapsed = app.spinner_epoch.elapsed();
     out.push(Line::default());

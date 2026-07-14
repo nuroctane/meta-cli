@@ -244,12 +244,12 @@ pub fn ensure_browser_cli(node_ok: bool) -> ComponentStatus {
         let browser = super::browser_setup::detect_default_browser();
         c.detail = if staged {
             format!(
-                "real-Chrome bridge ready · default {} · extension staged (load once: `meta browser setup`)",
+                "real-Chrome bridge ready · default {} · extension staged (load once: `nur browser setup`)",
                 browser.label()
             )
         } else {
             format!(
-                "real-Chrome bridge ready · default {} · run `meta browser setup` to finish",
+                "real-Chrome bridge ready · default {} · run `nur browser setup` to finish",
                 browser.label()
             )
         };
@@ -318,7 +318,7 @@ pub fn install_skill_packs(skills_cli: &ComponentStatus) -> (Vec<String>, Vec<St
                         out.chars().take(500).collect::<String>()
                     ),
                 );
-                // Mirror into ~/.meta/skills for dual discovery
+                // Mirror into ~/.nur/skills for dual discovery
                 mirror_agents_to_muse();
                 ok.push((*label).into());
             }

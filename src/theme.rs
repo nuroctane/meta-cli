@@ -1,25 +1,27 @@
-//! Meta-inspired visual system for Meta CLI (unofficial).
+//! NurCLI visual system — gold-led chrome, purple + deep teal accents.
 //!
 //! Single source of truth for colors + text styles used by both the TUI
 //! (ratatui) and plain stdout printing (colored).
-//!
-//! Brand anchors (community approximation of Meta blue):
-//!   #0082FB  Meta Azure  ·  #0064E0  Meta Science Blue
 
 use colored::Colorize;
 use ratatui::style::{Color, Modifier, Style};
 use std::time::Duration;
 
 // ── Palette ────────────────────────────────────────────────────────────────
-/// Meta Azure Radiance (#0082FB) — primary interactive / focus.
-pub const META_BLUE: Color = Color::Rgb(0, 130, 251);
-/// Alias for call sites that used the bright name.
-pub const META_BLUE_BRIGHT: Color = META_BLUE;
-/// Meta Science Blue (#0064E0) — secondary / pressed.
+/// Primary interactive gold (#E8B923).
+pub const NUR_GOLD: Color = Color::Rgb(232, 185, 35);
+/// Bright gold focus.
+pub const NUR_GOLD_BRIGHT: Color = Color::Rgb(255, 214, 90);
+/// Deep mustard / pressed gold.
+pub const NUR_GOLD_DEEP: Color = Color::Rgb(184, 134, 11);
+/// Soft champagne accent for secondary labels.
+pub const NUR_GOLD_SKY: Color = Color::Rgb(255, 224, 140);
+/// Legacy name used across the TUI — now gold (not Meta blue).
+pub const META_BLUE: Color = NUR_GOLD;
+pub const META_BLUE_BRIGHT: Color = NUR_GOLD_BRIGHT;
 #[allow(dead_code)]
-pub const META_BLUE_DEEP: Color = Color::Rgb(0, 100, 224);
-/// Soft sky accent for gradients & secondary labels.
-pub const META_BLUE_SKY: Color = Color::Rgb(90, 175, 255);
+pub const META_BLUE_DEEP: Color = NUR_GOLD_DEEP;
+pub const META_BLUE_SKY: Color = NUR_GOLD_SKY;
 /// Near-black canvas (terminal fill).
 pub const BG: Color = Color::Rgb(11, 14, 18);
 /// Raised surface (input well, modals).
@@ -27,17 +29,17 @@ pub const SURFACE: Color = Color::Rgb(18, 22, 28);
 /// Elevated surface (palette, hover).
 pub const SURFACE_2: Color = Color::Rgb(26, 31, 40);
 /// Near-white foreground.
-pub const FG: Color = Color::Rgb(232, 235, 240);
+pub const FG: Color = Color::Rgb(245, 242, 232);
 /// Dimmed foreground.
-pub const MUTED: Color = Color::Rgb(138, 146, 158);
+pub const MUTED: Color = Color::Rgb(148, 142, 128);
 /// Extra-dim (hints, separators).
-pub const FAINT: Color = Color::Rgb(86, 94, 106);
+pub const FAINT: Color = Color::Rgb(96, 90, 78);
 /// Hairline / border idle.
-pub const BORDER: Color = Color::Rgb(42, 48, 58);
+pub const BORDER: Color = Color::Rgb(48, 44, 36);
 /// Code / block background.
-pub const CODE_BG: Color = Color::Rgb(16, 20, 26);
-/// Inline code foreground.
-pub const CODE_FG: Color = Color::Rgb(148, 199, 255);
+pub const CODE_BG: Color = Color::Rgb(16, 18, 14);
+/// Inline code foreground (warm parchment).
+pub const CODE_FG: Color = Color::Rgb(232, 210, 150);
 pub const SUCCESS: Color = Color::Rgb(52, 199, 123);
 pub const WARN: Color = Color::Rgb(255, 186, 73);
 pub const ERROR: Color = Color::Rgb(255, 99, 99);
@@ -46,61 +48,57 @@ pub const DIFF_ADD_FG: Color = Color::Rgb(126, 231, 166);
 pub const DIFF_ADD_BG: Color = Color::Rgb(18, 42, 30);
 pub const DIFF_DEL_FG: Color = Color::Rgb(255, 138, 148);
 pub const DIFF_DEL_BG: Color = Color::Rgb(46, 24, 28);
-/// Diff hunk header / meta line.
-pub const DIFF_META: Color = Color::Rgb(120, 190, 255);
+/// Diff hunk header.
+pub const DIFF_META: Color = Color::Rgb(212, 175, 80);
 /// User message accent (crisp white).
 pub const USER: Color = Color::Rgb(255, 255, 255);
 
-/// Banner gradient (top → bottom rows of the logotype).
+/// Banner gradient (top → bottom rows of the NUR logotype) — yellow spectrum.
 pub const GRADIENT: [(u8, u8, u8); 6] = [
-    (90, 175, 255),
-    (40, 150, 253),
-    (0, 130, 251),
-    (0, 115, 240),
-    (0, 100, 224),
-    (0, 85, 200),
+    (255, 248, 180), // pale lemon
+    (255, 230, 120), // canary
+    (255, 200, 60),  // bright gold
+    (232, 185, 35),  // nur gold
+    (200, 150, 20),  // mustard
+    (160, 110, 15),  // bronze
 ];
 
-// ── Standardized hue ramp ──────────────────────────────────────────────────
-// Every accent below sits at a similar lightness/saturation so the UI reads as
-// one system: a blue spine with hues fanning out around it. Assignment is by
-// *meaning*, never ad hoc — see `tool_color` and `Tone`.
+// ── Gold spine + accents ───────────────────────────────────────────────────
+// Primary chrome is gold; purple + deep teal remain for tool families.
 
-/// Blue ramp, light → deep. The spine of the UI.
-pub const BLUE_100: Color = Color::Rgb(168, 212, 255);
-pub const BLUE_200: Color = Color::Rgb(120, 190, 255);
-pub const BLUE_300: Color = Color::Rgb(90, 175, 255); // == META_BLUE_SKY
-pub const BLUE_400: Color = Color::Rgb(0, 130, 251); // == META_BLUE
-pub const BLUE_500: Color = Color::Rgb(0, 100, 224);
+/// Gold ramp, light → deep (replaces old blue spine).
+pub const BLUE_100: Color = Color::Rgb(255, 242, 190);
+pub const BLUE_200: Color = Color::Rgb(255, 224, 140);
+pub const BLUE_300: Color = Color::Rgb(255, 208, 90);
+pub const BLUE_400: Color = Color::Rgb(232, 185, 35); // == NUR_GOLD
+pub const BLUE_500: Color = Color::Rgb(184, 134, 11);
 #[allow(dead_code)]
-pub const BLUE_600: Color = Color::Rgb(0, 82, 190);
+pub const BLUE_600: Color = Color::Rgb(140, 100, 10);
 
-/// Finer blue steps so borders/separators can shade rather than jump.
-pub const BLUE_050: Color = Color::Rgb(210, 232, 255);
-pub const BLUE_150: Color = Color::Rgb(144, 201, 255);
-pub const BLUE_250: Color = Color::Rgb(104, 182, 255);
+pub const BLUE_050: Color = Color::Rgb(255, 250, 220);
+pub const BLUE_150: Color = Color::Rgb(255, 236, 160);
+pub const BLUE_250: Color = Color::Rgb(255, 216, 100);
 
-/// Accents, ordered around the wheel from the blue spine.
-pub const INDIGO: Color = Color::Rgb(139, 152, 255); // structure: skills, todos
-pub const PERIWINKLE: Color = Color::Rgb(158, 168, 255); // soft indigo tint
+/// Accents: purple family + deep teal (kept per brand brief).
+pub const INDIGO: Color = Color::Rgb(139, 120, 220); // structure: skills, todos
+pub const PERIWINKLE: Color = Color::Rgb(168, 150, 230);
 pub const VIOLET: Color = Color::Rgb(178, 148, 255); // thought & authored change
-pub const LAVENDER: Color = Color::Rgb(202, 180, 255); // violet tint
-pub const MAGENTA: Color = Color::Rgb(226, 130, 240); // rare highlight
-pub const PINK: Color = Color::Rgb(240, 133, 197); // delegation (subagents)
+pub const LAVENDER: Color = Color::Rgb(202, 180, 255);
+pub const MAGENTA: Color = Color::Rgb(200, 120, 200);
+pub const PINK: Color = Color::Rgb(220, 140, 180);
 #[allow(dead_code)]
-pub const ROSE: Color = Color::Rgb(255, 143, 168); // warm alert tint (library)
+pub const ROSE: Color = Color::Rgb(255, 143, 168);
 #[allow(dead_code)]
-pub const CORAL: Color = Color::Rgb(255, 138, 120); // warm accent (library)
-pub const AMBER: Color = Color::Rgb(255, 186, 73); // execution (shell) == WARN
+pub const CORAL: Color = Color::Rgb(255, 138, 120);
+pub const AMBER: Color = Color::Rgb(255, 186, 73); // shell == WARN
+pub const GOLD: Color = Color::Rgb(255, 208, 110);
+pub const ORANGE: Color = Color::Rgb(255, 150, 89); // memory
 #[allow(dead_code)]
-pub const GOLD: Color = Color::Rgb(255, 208, 110); // amber tint (library)
-pub const ORANGE: Color = Color::Rgb(255, 150, 89); // durable state (memory)
-#[allow(dead_code)]
-pub const LIME: Color = Color::Rgb(160, 224, 122); // fresh success tint (library)
-pub const MINT: Color = Color::Rgb(120, 226, 178); // teal/green bridge
-pub const SEAFOAM: Color = Color::Rgb(96, 224, 210); // teal tint
-pub const TEAL: Color = Color::Rgb(64, 214, 196); // the network
-pub const CYAN: Color = Color::Rgb(80, 196, 255); // version control
+pub const LIME: Color = Color::Rgb(160, 224, 122);
+pub const MINT: Color = Color::Rgb(80, 190, 170); // deep-teal bridge
+pub const SEAFOAM: Color = Color::Rgb(56, 170, 160);
+pub const TEAL: Color = Color::Rgb(32, 150, 148); // deep teal — network
+pub const CYAN: Color = Color::Rgb(64, 170, 160); // git (teal-shifted, not Meta sky)
 // Green lives in SUCCESS — status, not a family hue.
 
 // ── Color math + animated gradients ─────────────────────────────────────────
@@ -129,12 +127,21 @@ pub fn dim(c: Color, t: f64) -> Color {
     lerp(c, BG, t)
 }
 
-/// On-brand shimmer ring: sky → cyan → teal → mint → azure → periwinkle →
-/// indigo → violet → lavender → magenta → back. Related hues only, so animated
-/// borders/rules feel alive rather than garish.
+/// Gold shimmer ring — full yellow spectrum (lemon → canary → gold → mustard →
+/// honey → bronze → champagne) with a touch of amber/honey for motion.
 pub const AURORA: &[Color] = &[
-    BLUE_250, CYAN, SEAFOAM, TEAL, MINT, BLUE_400, PERIWINKLE, INDIGO, VIOLET, LAVENDER, MAGENTA,
-    BLUE_150,
+    Color::Rgb(255, 252, 200), // pale lemon
+    Color::Rgb(255, 245, 160), // light canary
+    Color::Rgb(255, 230, 100), // canary
+    Color::Rgb(255, 214, 70),  // bright gold
+    Color::Rgb(232, 185, 35),  // nur gold
+    Color::Rgb(212, 160, 25),  // honey
+    Color::Rgb(190, 140, 20),  // mustard
+    Color::Rgb(170, 120, 18),  // deep mustard
+    Color::Rgb(200, 150, 40),  // antique gold
+    Color::Rgb(230, 190, 90),  // champagne
+    Color::Rgb(255, 220, 120), // pale gold
+    Color::Rgb(255, 200, 80),  // sunflower
 ];
 
 /// Sample the aurora ring at `phase` (any f64; wraps) with smooth interpolation.
@@ -163,9 +170,8 @@ pub fn aurora_cell(elapsed: Duration, pos: usize, span: usize, period_ms: u128) 
     aurora_at(t + spatial)
 }
 
-/// Colour a tool by *family*, so a glance tells you what kind of thing ran:
-/// read (sky) · write (violet) · shell (amber) · net (teal) · git (cyan) ·
-/// delegate (pink) · knowledge (indigo/orange).
+/// Colour a tool by *family*: read (gold) · write (violet) · shell (amber) ·
+/// net (deep teal) · git (teal) · delegate (pink) · knowledge (indigo/orange).
 pub fn tool_color(name: &str) -> Color {
     match name {
         "read_file" | "list_dir" | "grep" | "glob" => BLUE_300,
@@ -257,7 +263,7 @@ impl Tone {
 //   · UI feedback < 300ms; no motion on high-frequency keyboard actions
 //   · Only "animate" glyphs/opacity in TUI — never layout thrash
 
-/// Braille spinner — smooth, dense, Meta-blue tinted in UI.
+/// Braille spinner — smooth, dense, Nur-gold tinted in UI.
 pub const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 /// Orbiting-dot spinner for secondary busy accents (statusline, chips).
 #[allow(dead_code)]
@@ -468,28 +474,28 @@ pub fn style_surface() -> Style {
     Style::default().bg(SURFACE).fg(FG)
 }
 
-/// Input caret / stream caret: reverse Meta blue block.
+/// Input caret / stream caret: reverse gold block.
 pub fn style_cursor_on() -> Style {
     Style::default()
         .fg(BG)
-        .bg(META_BLUE)
+        .bg(NUR_GOLD)
         .add_modifier(Modifier::BOLD)
 }
 
 pub fn style_cursor_off() -> Style {
-    Style::default().fg(META_BLUE)
+    Style::default().fg(NUR_GOLD)
 }
 
 // ── stdout helpers (headless / subcommands) ────────────────────────────────
 #[allow(dead_code)]
 pub fn banner() {
     let rows = [
-        r#" ███╗   ███╗██╗   ██╗███████╗███████╗"#,
-        r#" ████╗ ████║██║   ██║██╔════╝██╔════╝"#,
-        r#" ██╔████╔██║██║   ██║███████╗█████╗  "#,
-        r#" ██║╚██╔╝██║██║   ██║╚════██║██╔══╝  "#,
-        r#" ██║ ╚═╝ ██║╚██████╔╝███████║███████╗"#,
-        r#" ╚═╝     ╚═╝ ╚═════╝ ╚══════╝╚══════╝"#,
+        r#" ███╗   ██╗██╗   ██╗██████╗ "#,
+        r#" ████╗  ██║██║   ██║██╔══██╗"#,
+        r#" ██╔██╗ ██║██║   ██║██████╔╝"#,
+        r#" ██║╚██╗██║██║   ██║██╔══██╗"#,
+        r#" ██║ ╚████║╚██████╔╝██║  ██║"#,
+        r#" ╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝"#,
     ];
     println!();
     for (i, row) in rows.iter().enumerate() {
@@ -498,20 +504,20 @@ pub fn banner() {
     }
     println!(
         "  {}  {}  {}   {}",
-        "Meta CLI".truecolor(0, 130, 251).bold(),
-        "·".truecolor(138, 146, 158),
-        "Meta Model API".truecolor(180, 190, 200),
-        format!("v{}", env!("CARGO_PKG_VERSION")).truecolor(86, 94, 106)
+        "NurCLI".truecolor(232, 185, 35).bold(),
+        "·".truecolor(148, 142, 128),
+        "multi-provider coding agent".truecolor(200, 190, 170),
+        format!("v{}", env!("CARGO_PKG_VERSION")).truecolor(96, 90, 78)
     );
     println!(
         "  {}\n",
-        "fully loaded agent  ·  TUI · tools · Graphify/PLUR/Ruflo · 800+ skills  ·  unofficial"
-            .truecolor(100, 108, 118)
+        "fully loaded  ·  TUI · tools · Graphify/PLUR/Ruflo · 800+ skills"
+            .truecolor(120, 112, 96)
     );
 }
 
 pub fn print_info(msg: &str) {
-    println!("{} {}", "●".truecolor(0, 130, 251), msg);
+    println!("{} {}", "●".truecolor(232, 185, 35), msg);
 }
 
 pub fn print_ok(msg: &str) {
@@ -525,8 +531,8 @@ pub fn print_err(msg: &str) {
 pub fn print_tool(name: &str, detail: &str) {
     println!(
         "{} {} {}",
-        "●".truecolor(0, 130, 251),
-        name.truecolor(0, 130, 251).bold(),
-        detail.truecolor(138, 146, 158)
+        "●".truecolor(232, 185, 35),
+        name.truecolor(232, 185, 35).bold(),
+        detail.truecolor(148, 142, 128)
     );
 }

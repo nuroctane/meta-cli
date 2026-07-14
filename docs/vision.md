@@ -4,7 +4,7 @@ Native multimodal support — send images and short video to the model.
 
 ## Overview
 
-Meta CLI supports the Meta Model API Responses API multimodal input via `input_image` / `input_video`. The model can **see** workspace images and short video clips directly.
+NurCLI supports the Meta Model API Responses API multimodal input via `input_image` / `input_video`. The model can **see** workspace images and short video clips directly.
 
 ---
 
@@ -32,7 +32,7 @@ Extract sparse **keyframes** from video via **ffmpeg**.
 |---------|---------|
 | Frame rate | ~1 fps |
 | Max frames | ~8 |
-| Output | `.meta/frames/<name>/` |
+| Output | `.nur/frames/<name>/` |
 
 After extraction, `look` is auto-queued with the extracted frames.
 
@@ -69,7 +69,7 @@ A typical workflow for extracting design tokens from a reference clip:
 !!! tip "Best practices"
     - Prefer sparse frames over frame-by-frame
     - Longer / huge videos: extract frames first; don't `look` a giant file
-    - `extract_frames` requires ffmpeg on PATH (check with `meta doctor`)
+    - `extract_frames` requires ffmpeg on PATH (check with `nur doctor`)
     - `look` still works on short videos and images without ffmpeg
 
 ---
@@ -84,7 +84,7 @@ A typical workflow for extracting design tokens from a reference clip:
 Check vision readiness:
 
 ```bash
-meta doctor
+nur doctor
 # should show: vision  look · extract_frames (input_image / input_video)
 ```
 

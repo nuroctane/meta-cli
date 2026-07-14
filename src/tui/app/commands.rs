@@ -64,7 +64,7 @@ impl App {
                 if skills.is_empty() {
                     self.push_note(
                         Tone::Skill,
-                        "no skills found — add ~/.meta/skills/<name>/SKILL.md\n\
+                        "no skills found — add ~/.nur/skills/<name>/SKILL.md\n\
                          or ~/.agents/skills/<name>/SKILL.md  (graphify install --platform agents)\n\
                          the agent can also load them itself via the `skill` tool"
                             .into(),
@@ -124,7 +124,7 @@ impl App {
             "/bug" => self.push_note(
                 Tone::Neutral,
                 "report an issue (unofficial community project)\n  \
-                 https://github.com/nuroctane/meta-cli/issues\n  \
+                 https://github.com/nuroctane/nur-cli/issues\n  \
                  or use  /feedback <what happened>  to file one from here".into(),
             ),
             other => self.push_error(format!("unknown command: {other} — try /help")),
@@ -765,7 +765,7 @@ impl App {
         );
     }
 
-    /// Inline health check — the interactive cousin of `meta doctor`.
+    /// Inline health check — the interactive cousin of `nur doctor`.
     fn cmd_doctor(&mut self) {
         let sh = crate::tools::shell_backend();
         let auth = if self.authed { "signed in" } else { "no key — /login" };
@@ -966,7 +966,7 @@ impl App {
             self.push_info("usage: /feedback <what happened / what you'd like>".into());
             return;
         }
-        const REPO: &str = "nuroctane/meta-cli";
+        const REPO: &str = "nuroctane/nur-cli";
         let title: String = arg.lines().next().unwrap_or(arg).chars().take(80).collect();
         let body = format!(
             "{arg}\n\n---\nmeta v{}  ·  {}  ·  model {}",
@@ -1042,7 +1042,7 @@ impl App {
                 ),
             ),
             Err(e) => self.push_error(format!(
-                "{e}\n  MCP is provided by the Executor gateway — `meta ecosystem ensure` installs it"
+                "{e}\n  MCP is provided by the Executor gateway — `nur ecosystem ensure` installs it"
             )),
         }
     }

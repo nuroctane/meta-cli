@@ -38,7 +38,7 @@ async fn main() {
     }
 }
 
-/// Log to `~/.meta/meta.log` (never stderr) so ratatui's alternate screen is not
+/// Log to `~/.nur/nur.log` (never stderr) so ratatui's alternate screen is not
 /// painted over by `syntect` / `tui-markdown` WARN noise — that was showing up
 /// as garbled text in the input box on a fresh session.
 fn init_tracing() {
@@ -50,8 +50,8 @@ fn init_tracing() {
         tracing_subscriber::EnvFilter::new("warn,syntect=error,tui_markdown=error")
     });
 
-    let log_path = config::muse_home().join("meta.log");
-    let _ = std::fs::create_dir_all(config::muse_home());
+    let log_path = config::nur_home().join("nur.log");
+    let _ = std::fs::create_dir_all(config::nur_home());
     match OpenOptions::new().create(true).append(true).open(&log_path) {
         Ok(file) => {
             let _ = tracing_subscriber::fmt()
@@ -89,10 +89,10 @@ async fn real_main() -> Result<()> {
                     logout(*revoke)?;
                     if *revoke {
                         theme::print_ok(
-                            "logged out (local ~/.meta/auth.json removed; see revoke notes above)",
+                            "logged out (local ~/.nur/auth.json removed; see revoke notes above)",
                         );
                     } else {
-                        theme::print_ok("logged out (removed ~/.meta/auth.json)");
+                        theme::print_ok("logged out (removed ~/.nur/auth.json)");
                     }
                 }
             }
@@ -134,7 +134,7 @@ async fn real_main() -> Result<()> {
                         // exit 1 only when everything failed.
                         if !st.graphify.available && !st.plur.available && !st.ruflo.available {
                             return Err(error::MuseError::Other(
-                                "ecosystem ensure failed — install Node.js 20+ and uv, then re-run meta ecosystem ensure"
+                                "ecosystem ensure failed — install Node.js 20+ and uv, then re-run nur ecosystem ensure"
                                     .into(),
                             ));
                         }
@@ -159,7 +159,7 @@ async fn real_main() -> Result<()> {
                         theme::print_ok("agent-browser-cli present");
                     } else {
                         theme::print_info(
-                            "agent-browser-cli not on PATH — run `meta ecosystem ensure`",
+                            "agent-browser-cli not on PATH — run `nur ecosystem ensure`",
                         );
                     }
                 }
@@ -172,7 +172,7 @@ async fn real_main() -> Result<()> {
             // installing in the background for a first-time machine.
             if bootstrap::should_bootstrap_on_launch() {
                 bootstrap::run_full_install()?;
-                // Release artifact → re-exec the installed `meta` for a clean TUI.
+                // Release artifact → re-exec the installed `nur` for a clean TUI.
                 if bootstrap::looks_like_release_artifact()
                     && !bootstrap::is_running_from_install()
                 {
@@ -187,7 +187,10 @@ async fn real_main() -> Result<()> {
     let mut cfg = load_config()?;
     if let Some(m) = &cli.model {
         cfg.model = m.clone();
-    } else if let Ok(m) = std::env::var("META_MODEL").or_else(|_| std::env::var("MUSE_MODEL")) {
+    } else if let Ok(m) = std::env::var("NUR_MODEL")
+        .or_else(|_| std::env::var("META_MODEL"))
+        .or_else(|_| std::env::var("MUSE_MODEL"))
+    {
         if !m.trim().is_empty() {
             cfg.model = m;
         }
@@ -207,7 +210,8 @@ async fn real_main() -> Result<()> {
     let api_key = match auth::resolve_api_key_for(Some(cfg.provider.as_str())) {
         Ok(k) => k,
         Err(error::MuseError::NotAuthenticated) => {
-            let env_key = std::env::var("META_API_KEY")
+            let env_key = std::env::var("NUR_API_KEY")
+                .or_else(|_| std::env::var("META_API_KEY"))
                 .or_else(|_| std::env::var("MODEL_API_KEY"))
                 .or_else(|_| std::env::var("MUSE_API_KEY"))
                 .ok()
@@ -288,22 +292,43 @@ async fn real_main() -> Result<()> {
         usage.seed_session(session.usage.clone());
     }
 
-    let home_s = config::meta_home().display().to_string();
+    let home_s = config::nur_home().display().to_string();
     let status_s = config::status_path().display().to_string();
     let usage_s = config::usage_log_path().display().to_string();
-    // Prefer META_* env; keep MUSE_* aliases for older ADE hooks.
-    for (meta_k, muse_k, val) in [
-        ("META_STATUS_PATH", "MUSE_STATUS_PATH", status_s.as_str()),
-        ("META_USAGE_LOG_PATH", "MUSE_USAGE_LOG_PATH", usage_s.as_str()),
-        ("META_SESSION_ID", "MUSE_SESSION_ID", session.id.as_str()),
-        ("META_MODEL", "MUSE_MODEL", cfg.model.as_str()),
-        ("META_PROVIDER", "MUSE_PROVIDER", "meta"),
-        ("META_HOME", "MUSE_HOME", home_s.as_str()),
+    // Prefer NUR_*; keep META_* / MUSE_* aliases so host hooks don't brick.
+    for (nur_k, meta_k, muse_k, val) in [
+        (
+            "NUR_STATUS_PATH",
+            "META_STATUS_PATH",
+            "MUSE_STATUS_PATH",
+            status_s.as_str(),
+        ),
+        (
+            "NUR_USAGE_LOG_PATH",
+            "META_USAGE_LOG_PATH",
+            "MUSE_USAGE_LOG_PATH",
+            usage_s.as_str(),
+        ),
+        (
+            "NUR_SESSION_ID",
+            "META_SESSION_ID",
+            "MUSE_SESSION_ID",
+            session.id.as_str(),
+        ),
+        ("NUR_MODEL", "META_MODEL", "MUSE_MODEL", cfg.model.as_str()),
+        (
+            "NUR_PROVIDER",
+            "META_PROVIDER",
+            "MUSE_PROVIDER",
+            cfg.provider.as_str(),
+        ),
+        ("NUR_HOME", "META_HOME", "MUSE_HOME", home_s.as_str()),
     ] {
+        std::env::set_var(nur_k, val);
         std::env::set_var(meta_k, val);
         std::env::set_var(muse_k, val);
     }
-    // Ruflo global memory (so child CLIs share Meta's store without polluting projects).
+    // Ruflo global memory (shared store under nur home).
     std::env::set_var(
         "CLAUDE_FLOW_DB_PATH",
         ecosystem::ruflo_db_path().display().to_string(),
@@ -424,7 +449,7 @@ fn run_browser_setup(open: bool) -> Result<()> {
     match &staged {
         Some(dir) => theme::print_ok(&format!("extension staged · {}", dir.display())),
         None => theme::print_err(
-            "could not stage the extension — run `meta ecosystem ensure` first, \
+            "could not stage the extension — run `nur ecosystem ensure` first, \
              or load it from the agent-browser-cli release zip",
         ),
     }
@@ -486,7 +511,7 @@ fn open_url(url: &str) -> std::io::Result<()> {
 
 /// Headless health check for install, auth, config, and ecosystem.
 fn run_doctor() -> Result<()> {
-    theme::print_info(&format!("meta doctor · v{}", env!("CARGO_PKG_VERSION")));
+    theme::print_info(&format!("nur doctor · v{}", env!("CARGO_PKG_VERSION")));
     println!();
 
     // Binary / PATH
@@ -525,7 +550,7 @@ fn run_doctor() -> Result<()> {
             let tip: String = k.chars().rev().take(4).collect::<String>().chars().rev().collect();
             theme::print_ok(&format!("auth    key set (…{tip})"));
         }
-        Err(_) => theme::print_err("auth    not set — run: meta auth login"),
+        Err(_) => theme::print_err("auth    not set — run: nur auth login"),
     }
 
     // Paths
@@ -565,7 +590,7 @@ fn run_doctor() -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".local")
         .join("bin")
-        .join("meta.sha256");
+        .join("nur.sha256");
     if hash_path.is_file() {
         if let (Ok(expected_line), Ok(exe)) = (
             std::fs::read_to_string(&hash_path),
@@ -590,7 +615,7 @@ fn run_doctor() -> Result<()> {
             }
         }
     } else {
-        theme::print_info("sha256  no meta.sha256 next to install (optional integrity record)");
+        theme::print_info("sha256  no nur.sha256 next to install (optional integrity record)");
     }
 
     println!();

@@ -1,28 +1,28 @@
 # Security
 
-Meta CLI is **unofficial** community software. It is not affiliated with Meta Platforms, Inc.
+NurCLI is **unofficial** community software. It is not affiliated with Meta Platforms, Inc.
 
 ## Where secrets live
 
 | Location | Contents |
 |----------|----------|
-| `~/.meta/auth.json` | Meta Model API key after `meta auth login` |
+| `~/.nur/auth.json` | Meta Model API key after `nur auth login` |
 | Env `META_API_KEY` / `MODEL_API_KEY` | Optional override (never printed in logs) |
-| `~/.meta/sessions/` | Session files + `.json.bak` / `.precompact.bak` (no key) |
-| `~/.meta/tool-results/` | Spilled large tool outputs (may include workspace text) |
-| `~/.meta/meta.log` | Tracing log (not the terminal; may include paths) |
-| `~/.meta/status.json` | Live token usage (no key) |
-| `~/.meta/usage.jsonl` | Per-request usage log (no key) |
-| Workspace `.meta/frames/` | Extracted video keyframes (local; may be large) |
+| `~/.nur/sessions/` | Session files + `.json.bak` / `.precompact.bak` (no key) |
+| `~/.nur/tool-results/` | Spilled large tool outputs (may include workspace text) |
+| `~/.nur/nur.log` | Tracing log (not the terminal; may include paths) |
+| `~/.nur/status.json` | Live token usage (no key) |
+| `~/.nur/usage.jsonl` | Per-request usage log (no key) |
+| Workspace `.nur/frames/` | Extracted video keyframes (local; may be large) |
 
 ---
 
 ## What is never committed
 
-- `~/.meta/` directory
+- `~/.nur/` directory
 - `.env` files with keys
 - Session dumps
-- Workspace `.meta/frames/` dumps of sensitive UI
+- Workspace `.nur/frames/` dumps of sensitive UI
 
 !!! warning "Session sensitivity"
     Session `input_items` may include base64 media when vision (`look` / auto-attach) is used — treat session files as potentially sensitive.
@@ -31,12 +31,12 @@ Meta CLI is **unofficial** community software. It is not affiliated with Meta Pl
 
 ## Sandbox
 
-Meta CLI hardens shell execution by default:
+NurCLI hardens shell execution by default:
 
 - **Bash denylist** — blocks dangerous commands
 - **Timeout** — long-running commands are killed
 - **SSRF blocks** — web tools reject private-IP targets
-- **Atomic IO** — all writes to `~/.meta/` use atomic file operations (write-to-temp, rename)
+- **Atomic IO** — all writes to `~/.nur/` use atomic file operations (write-to-temp, rename)
 - **Session bak** — each session save copies the previous file to `*.json.bak` first
 - **Optional rules** — `permissions.toml` deny/ask/allow; plan mode still blocks code authoring / VCS
 - **Optional hooks** — `hooks.toml` pre/post tool shell (local only; you control the script)
@@ -53,9 +53,9 @@ Meta CLI hardens shell execution by default:
 
 ## Install safety
 
-`install.ps1` / `install.sh` / release **EXE** (`meta install`):
+`install.ps1` / `install.sh` / release **EXE** (`nur install`):
 
-- May **read** a key already present in your environment and store it under `~/.meta/` on your machine
+- May **read** a key already present in your environment and store it under `~/.nur/` on your machine
 - Do **not** write keys into the git checkout or GitHub
 - Write the binary to `~/.local/bin` and verify **SHA-256** of the installed binary
 - Best-effort prereq installs (Node, uv, …) are local to your machine
@@ -64,10 +64,10 @@ Meta CLI hardens shell execution by default:
 
 ## Binary integrity
 
-Each release includes a SHA-256 hash written next to the binary by the installer (one-liner or EXE). `meta doctor` verifies this:
+Each release includes a SHA-256 hash written next to the binary by the installer (one-liner or EXE). `nur doctor` verifies this:
 
 ```bash
-meta doctor
+nur doctor
 # should show: sha256  <hash>  (matches install record)
 ```
 
@@ -75,4 +75,4 @@ meta doctor
 
 ## Reporting vulnerabilities
 
-Open a private report or issue on [nuroctane/meta-cli](https://github.com/nuroctane/meta-cli) if you find a vulnerability in this client.
+Open a private report or issue on [nuroctane/nur-cli](https://github.com/nuroctane/nur-cli) if you find a vulnerability in this client.

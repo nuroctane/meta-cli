@@ -33,7 +33,7 @@ impl Tool for WebSearch {
 
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(20))
-            .user_agent(format!("meta-cli/{}", env!("CARGO_PKG_VERSION")))
+            .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| MuseError::Tool(e.to_string()))?;
 
