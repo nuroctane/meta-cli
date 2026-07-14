@@ -539,6 +539,12 @@ impl InputState {
         self.buffer.iter().filter(|c| is_paste_sentinel(**c)).count()
     }
 
+    /// True if any live chip already holds this exact body (dedupe re-commits).
+    pub fn has_paste_content(&self, s: &str) -> bool {
+        let normalized = normalize_paste(s);
+        self.pastes.values().any(|p| p.content == normalized)
+    }
+
     /// Legacy helper used by tests / stream catcher.
     pub fn insert_paste_ex(&mut self, s: &str, force_chip: bool) {
         let normalized = normalize_paste(s);
