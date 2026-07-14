@@ -395,7 +395,7 @@ pub fn reexec_installed_tui() -> Result<()> {
             dest.display()
         )));
     }
-    theme::print_info("Opening Meta…");
+    theme::print_info("Opening NurCLI…");
     let status = Command::new(&dest)
         .env("META_SKIP_BOOTSTRAP", "1")
         .status()

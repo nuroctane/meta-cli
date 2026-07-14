@@ -23,9 +23,9 @@ pub fn copy_to_clipboard(text: &str) -> bool {
     }
 }
 
-/// Preferred session tab title: blue-dot emoji · meta · abbreviated first prompt.
+/// Preferred session tab title: moon · nur · abbreviated first prompt.
 ///
-/// Example: `🔵 meta · fix the login hang…`
+/// Example: `🌕 nur · fix the login hang…`
 pub fn session_window_title(prompt: &str) -> String {
     title_with_marker(crate::theme::TITLE_IDLE, prompt)
 }
@@ -41,9 +41,9 @@ pub fn running_window_title(elapsed: std::time::Duration, prompt: &str) -> Strin
 fn title_with_marker(marker: &str, prompt: &str) -> String {
     let abbr = abbreviate_for_title(prompt, 48);
     if abbr.is_empty() || abbr == "ready" {
-        format!("{marker} meta")
+        format!("{marker} nur")
     } else {
-        format!("{marker} meta · {abbr}")
+        format!("{marker} nur · {abbr}")
     }
 }
 
@@ -77,7 +77,7 @@ pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &Toke
     let _ = crate::config::ensure_dirs();
     let body = json!({
         "schema_version": 1,
-        "agent": "meta",
+        "agent": "nur",
         "provider": "meta",
         "product": "NurCLI",
         "model": model,

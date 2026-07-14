@@ -13,8 +13,8 @@ What you get:\n\
   · Real agent harness — manual/plan/auto modes, tools, subagents, todos\n\
   · Ecosystem — Graphify · PLUR · Ruflo · Executor · 800+ skills · AKM\n\
   · Hardened by default — sandbox, denylist, SSRF blocks, atomic ~/.nur IO\n\n\
-Providers include Meta Model API (muse-spark), OpenAI, Anthropic, local Ollama, …\n\
-Secrets stay in ~/.nur/ only.  Not affiliated with Meta Platforms, Inc.\n\
+Providers: OpenAI, Anthropic, xAI, Gemini, Meta Model API, OpenRouter, local Ollama, …\n\
+Secrets stay in ~/.nur/ only.\n\
 Repo: github.com/nuroctane/nur-cli  ·  Invoke as: nur"
 )]
 pub struct Cli {

@@ -275,11 +275,10 @@ pub const SPINNER_DOTS: &[&str] = &["∙", "•", "●", "◉", "●", "•"];
 pub const SPARKLE: &[&str] = &["✶", "✸", "✹", "✷", "✵", "✧"];
 /// Soft pulse dots for quieter states (thinking complete, idle accent).
 pub const PULSE: &[&str] = &["·", "•", "●", "•"];
-/// Window-title animation while inference runs — a rotating orb reads clearly
-/// as "working" in a tab bar, and keeps the blue-orb identity in motion.
+/// Window-title animation while inference runs — moon phases read as "working".
 pub const TITLE_FRAMES: &[&str] = &["🌑", "🌒", "🌓", "🌔", "🌕", "🌖", "🌗", "🌘"];
-/// Idle title marker (static blue orb).
-pub const TITLE_IDLE: &str = "🔵";
+/// Idle title marker — full moon (product is Nur, not Meta blue).
+pub const TITLE_IDLE: &str = "🌕";
 
 /// Pick a frame from any set by elapsed time at `ms` per frame.
 pub fn frame_at(set: &[&'static str], elapsed: Duration, ms: u128) -> &'static str {
