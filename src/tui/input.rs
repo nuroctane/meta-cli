@@ -420,18 +420,40 @@ impl InputState {
     /// Paste from clipboard / bracketed paste / unbracketed key-flood.
     /// Multi-line or long blobs become a **single chip** in the composer; full
     /// text is stored and expanded on submit (Claude Code behaviour).
+    ///
+    /// Consecutive paste chunks (Windows drips text across many idle gaps) **merge**
+    /// into the chip under the caret — never a thousand `[pasted 1-1 lines]` chips.
     pub fn insert_paste(&mut self, s: &str) {
+        self.insert_paste_ex(s, false);
+    }
+
+    /// Like `insert_paste`, but `force_chip` starts/continues a chip even for a
+    /// short chunk (used by the cross-frame key catcher mid-stream).
+    pub fn insert_paste_ex(&mut self, s: &str, force_chip: bool) {
         let normalized = normalize_paste(s);
         if normalized.is_empty() {
             return;
         }
-        if !should_chip(&normalized) {
+        self.delete_selection();
+
+        // Merge into the chip immediately before the caret (paste stream continuation).
+        if self.cursor > 0 {
+            if let Some(id) = paste_id_of(self.buffer[self.cursor - 1]) {
+                if let Some(p) = self.pastes.get_mut(&id) {
+                    p.content.push_str(&normalized);
+                    self.selection_anchor = None;
+                    return;
+                }
+            }
+        }
+
+        // Small snippet and not forcing a chip → normal text.
+        if !force_chip && !should_chip(&normalized) {
             self.insert_str(&normalized);
             return;
         }
-        self.delete_selection();
+
         let Some(id) = self.alloc_paste(normalized) else {
-            // Slot exhaustion — still avoid slow per-char typing; dump as one splice.
             self.insert_str(s);
             return;
         };
@@ -1032,6 +1054,23 @@ mod tests {
         assert!(i.text_expanded().starts_with("line 1"));
         assert!(i.text_expanded().contains("line 50"));
         assert_eq!(i.chip_label_at(0).as_deref(), Some("[pasted 1-50 lines]"));
+    }
+
+    #[test]
+    fn drip_paste_chunks_merge_into_one_chip() {
+        // Simulates Windows delivering paste in many short flushes.
+        let mut i = InputState::empty_for_test();
+        i.insert_paste_ex("line one of many\n", true);
+        i.insert_paste_ex("line two of many\n", true);
+        i.insert_paste_ex("line three of many\n", true);
+        i.insert_paste_ex(&"x".repeat(50), true);
+        assert_eq!(i.buffer.len(), 1, "must be ONE chip, not one per drip");
+        let expanded = i.text_expanded();
+        assert!(expanded.contains("line one"));
+        assert!(expanded.contains("line three"));
+        assert!(expanded.contains(&"x".repeat(50)));
+        let label = i.chip_label_at(0).unwrap();
+        assert_eq!(label, format!("[pasted 1-{} lines]", expanded.lines().count()));
     }
 
     #[test]

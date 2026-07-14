@@ -1110,11 +1110,11 @@ pub async fn run_tui(
         }
 
         // Flush buffered keystrokes after a short idle.
-        // Single typed char: ~18ms (snappy). Multi-char paste stream: wait until
-        // the flood pauses (~45ms) so the whole wall becomes one chip.
+        // Single typed char: ~18ms. Multi-char paste stream: longer idle so we
+        // merge fewer partial flushes (merge-into-chip also glues leftovers).
         if let Some(last) = app.key_pending_last {
             let n = app.key_pending.chars().count();
-            let idle_ms = if n <= 1 { 18 } else { 45 };
+            let idle_ms = if n <= 1 { 18 } else { 200 };
             if last.elapsed() >= Duration::from_millis(idle_ms) {
                 if app.flush_key_pending() {
                     dirty = true;
@@ -3527,8 +3527,8 @@ fn apply_composer_paste(app: &mut App, s: &str) {
 }
 
 impl App {
-    /// Commit buffered plain keystrokes: multi-char / multi-line → paste chip;
-    /// a single character → normal typing (palette, etc.).
+    /// Commit buffered plain keystrokes: multi-char stream → paste chip
+    /// (merged with any chip already under the caret); single char → typing.
     fn flush_key_pending(&mut self) -> bool {
         if self.key_pending.is_empty() {
             self.key_pending_last = None;
@@ -3548,16 +3548,25 @@ impl App {
 
         let nchars = s.chars().count();
         let multiline = s.contains('\n');
-        // More than one character, any newline, or a long token → chip path.
         if nchars > 1 || multiline {
-            self.input.insert_paste(&s);
+            // force_chip: even a short drip starts/continues ONE chip (merge).
+            self.input.insert_paste_ex(&s, true);
             self.ensure_input_caret_visible();
             self.palette_idx = 0;
             self.palette_scroll = 0;
             return true;
         }
-        // Single character — same as a normal keypress side-effects.
         if let Some(c) = s.chars().next() {
+            // If a paste chip is open under the caret, keep growing it (mid-stream
+            // single-char drips between longer bursts).
+            if self.input.cursor_index() > 0 {
+                let prev = self.input.char_at(self.input.cursor_index() - 1);
+                if prev.is_some_and(crate::tui::input::is_paste_sentinel) {
+                    self.input.insert_paste_ex(&s, true);
+                    self.ensure_input_caret_visible();
+                    return true;
+                }
+            }
             self.input.insert_char(c);
             self.ensure_input_caret_visible();
             self.palette_idx = 0;
