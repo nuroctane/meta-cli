@@ -68,9 +68,15 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
     ("/init", "generate a META.md project guide"),
-    ("/login", "enter / replace your Meta API key"),
+    ("/goal", "set a standing session goal (context on every turn)"),
+    ("/btw", "add a one-off note to your next message"),
+    ("/codesearch", "fast ripgrep over the workspace  (/cs)"),
+    ("/mc", "manage MCP servers via the executor gateway  (/mcp)"),
+    ("/login", "choose a provider + enter an API key"),
     ("/logout", "clear the stored API key"),
     ("/config", "show config + data paths"),
+    ("/feedback", "file a GitHub issue from here"),
+    ("/tips", "mouse + keyboard interaction tips"),
     ("/bug", "how to report an issue"),
     ("/exit", "quit"),
 ];
@@ -636,6 +642,11 @@ pub struct App {
     /// keystroke is never mistaken for a paste. See `flush_paste_accum`.
     paste_accum: String,
     paste_accum_at: Option<Instant>,
+    /// Standing session goal (`/goal`), prepended to every model turn as context
+    /// without appearing in the transcript. Cleared with `/goal clear`.
+    session_goal: Option<String>,
+    /// One-off side notes (`/btw`) folded into the next turn only.
+    pending_btw: Vec<String>,
     /// Transcript body area (excluding sticky banner) for scrollbar hit-testing.
     pub transcript_body: ratatui::layout::Rect,
     /// Right-edge scrollbar track (1 column).
@@ -881,6 +892,8 @@ pub async fn run_tui(
         input_drag_origin: None,
         paste_accum: String::new(),
         paste_accum_at: None,
+        session_goal: None,
+        pending_btw: Vec::new(),
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
         jump_chip: ratatui::layout::Rect::default(),
@@ -953,16 +966,18 @@ pub async fn run_tui(
     if let Some(note) = workspace_note {
         app.push_note(Tone::Session, note);
     }
-    app.push_info(format!(
-        "mode · {mode_label}  ·  Shift+Tab cycles  manual → plan → auto  ·  /mode"
-    ));
-    app.push_note(
-        Tone::Mode,
-        "drag text to select (auto-copies)  ·  drag right scrollbar to scroll  ·  /help".into(),
-    );
+    // Ecosystem (purple) then mode — the tail of the opening intro. Core
+    // always-on capabilities (sandbox · subagents · tools) ride the ecosystem
+    // line so the banner above stays lean. Deeper tips live behind /tips.
     if !ecosystem_summary.is_empty() {
-        app.push_note(Tone::Skill, ecosystem_summary);
+        app.push_note(
+            Tone::Skill,
+            format!("{ecosystem_summary}  ·  sandbox · subagents · tools"),
+        );
     }
+    app.push_info(format!(
+        "mode · {mode_label}  ·  Shift+Tab cycles  manual → plan → auto  ·  /mode  ·  /tips"
+    ));
 
     // Started without any API key → sign-in required before the first turn.
     if crate::auth::resolve_api_key().is_err() {
@@ -2889,11 +2904,21 @@ impl App {
         let cancel = CancellationToken::new();
         self.cancel = Some(cancel.clone());
         let runner = Arc::new(self.make_runner());
+        // The model sees the standing goal + any one-off `/btw` notes prepended
+        // as context; the transcript above shows only the plain prompt.
+        let mut effective = String::new();
+        if let Some(g) = &self.session_goal {
+            effective.push_str(&format!("[session goal] {g}\n\n"));
+        }
+        for note in self.pending_btw.drain(..) {
+            effective.push_str(&format!("[note] {note}\n\n"));
+        }
+        effective.push_str(prompt);
         agent::spawn_turn(
             runner,
             *session,
             *usage,
-            prompt.to_string(),
+            effective,
             self.tx.clone(),
             cancel,
         );

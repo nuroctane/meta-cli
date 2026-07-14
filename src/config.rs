@@ -48,6 +48,10 @@ pub const PRICE_OUTPUT_PER_MTOK: f64 = 4.25;
 pub struct Config {
     #[serde(default = "default_model")]
     pub model: String,
+    /// Active provider id from the catalog (`crate::providers`). `/login` sets
+    /// this along with `base_url`/`model`. Defaults to Meta.
+    #[serde(default = "default_provider_id")]
+    pub provider: String,
     #[serde(default = "default_base_url")]
     pub base_url: String,
     #[serde(default = "default_reasoning")]
@@ -91,6 +95,17 @@ pub struct Config {
 fn default_model() -> String {
     DEFAULT_MODEL.to_string()
 }
+fn default_provider_id() -> String {
+    "meta".to_string()
+}
+
+/// Display name of the active provider for the banner / status. Falls back to
+/// the catalog default (Meta Model API) when the id is unknown.
+pub fn active_provider_label(cfg: &Config) -> String {
+    crate::providers::by_id(&cfg.provider)
+        .map(|p| p.name.to_string())
+        .unwrap_or_else(|| crate::providers::default_provider().name.to_string())
+}
 fn default_base_url() -> String {
     DEFAULT_BASE_URL.to_string()
 }
@@ -114,6 +129,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             model: default_model(),
+            provider: default_provider_id(),
             base_url: default_base_url(),
             reasoning_effort: default_reasoning(),
             max_turns: default_max_turns(),

@@ -115,11 +115,17 @@ impl App {
             }
             "/login" => self.open_login(),
             "/logout" => self.cmd_logout(),
+            "/goal" => self.cmd_goal(&arg),
+            "/btw" => self.cmd_btw(&arg),
+            "/codesearch" | "/cs" => self.cmd_codesearch(&arg),
+            "/feedback" => self.cmd_feedback(&arg),
+            "/mc" | "/mcp" => self.cmd_mc(&arg),
+            "/tips" => self.cmd_tips(),
             "/bug" => self.push_note(
                 Tone::Neutral,
                 "report an issue (unofficial community project)\n  \
                  https://github.com/nuroctane/meta-cli/issues\n  \
-                 include: meta --version, OS, and steps to reproduce".into(),
+                 or use  /feedback <what happened>  to file one from here".into(),
             ),
             other => self.push_error(format!("unknown command: {other} — try /help")),
         }
@@ -886,4 +892,202 @@ impl App {
             crate::config::sessions_dir().display(),
         ));
     }
+
+    /// Standing session goal, prepended to every turn as context (invisible in
+    /// the transcript). `/goal` shows it; `/goal clear` removes it.
+    fn cmd_goal(&mut self, arg: &str) {
+        let arg = arg.trim();
+        match arg {
+            "" => match &self.session_goal {
+                Some(g) => self.push_note(Tone::Plan, format!("goal · {g}\n  /goal clear to drop it")),
+                None => self.push_info(
+                    "no session goal set  ·  /goal <what you're trying to achieve>".into(),
+                ),
+            },
+            "clear" | "none" | "off" => {
+                self.session_goal = None;
+                self.push_info("session goal cleared".into());
+            }
+            _ => {
+                self.session_goal = Some(arg.to_string());
+                self.push_note(
+                    Tone::Plan,
+                    format!("goal set · {arg}\n  every turn now carries this as context"),
+                );
+            }
+        }
+    }
+
+    /// One-off "by the way" note folded into the *next* turn only.
+    fn cmd_btw(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.push_info("usage: /btw <a note to add to your next message>".into());
+            return;
+        }
+        self.pending_btw.push(arg.to_string());
+        self.push_note(
+            Tone::Neutral,
+            format!("noted · will ride along with your next message ({})", self.pending_btw.len()),
+        );
+    }
+
+    /// Fast code search over the workspace (ripgrep via the `grep` tool).
+    fn cmd_codesearch(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.push_info("usage: /codesearch <regex or text>  (alias /cs)".into());
+            return;
+        }
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        let args = serde_json::json!({ "pattern": arg }).to_string();
+        match host.dispatch("grep", &args, &ctx) {
+            Ok(s) => {
+                let body = if s.trim().is_empty() {
+                    format!("no matches for `{arg}`")
+                } else {
+                    format!("codesearch · {arg}\n{s}")
+                };
+                self.push_note(Tone::Neutral, body);
+            }
+            Err(e) => self.push_error(e.to_string()),
+        }
+    }
+
+    /// File a GitHub issue from the TUI. Uses `gh` when available (creates the
+    /// issue and returns its URL); otherwise opens a prefilled new-issue page.
+    fn cmd_feedback(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.push_info("usage: /feedback <what happened / what you'd like>".into());
+            return;
+        }
+        const REPO: &str = "nuroctane/meta-cli";
+        let title: String = arg.lines().next().unwrap_or(arg).chars().take(80).collect();
+        let body = format!(
+            "{arg}\n\n---\nmeta v{}  ·  {}  ·  model {}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::consts::OS,
+            self.cfg.model,
+        );
+        if crate::ecosystem::find_bin("gh").is_some() {
+            let out = std::process::Command::new("gh")
+                .args(["issue", "create", "--repo", REPO, "--title", &title, "--body", &body])
+                .output();
+            match out {
+                Ok(o) if o.status.success() => {
+                    let url = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    self.push_note(Tone::Session, format!("feedback filed · {url}"));
+                    return;
+                }
+                Ok(o) => {
+                    let err = String::from_utf8_lossy(&o.stderr);
+                    // gh present but not authed/failed → fall through to browser.
+                    self.push_info(format!("gh couldn't file it ({}); opening the browser…", err.trim()));
+                }
+                Err(_) => {}
+            }
+        }
+        // Browser fallback: prefilled new-issue page.
+        let url = format!(
+            "https://github.com/{REPO}/issues/new?title={}&body={}",
+            urlencode(&title),
+            urlencode(&body)
+        );
+        if open_in_browser(&url) {
+            self.push_note(Tone::Session, "opened a prefilled issue in your browser".into());
+        } else {
+            self.push_info(format!("file it here:\n  {url}"));
+        }
+    }
+
+    /// Manage MCP servers via the Executor gateway (executor.sh).
+    fn cmd_mc(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let action = if arg.is_empty() { "sources" } else { arg };
+        let json = match action {
+            "sources" | "list" | "ls" => r#"{"action":"sources"}"#.to_string(),
+            "status" => r#"{"action":"status"}"#.to_string(),
+            "search" | "find" => {
+                self.push_error("usage: /mc search <query>  — use the executor tool for calls".into());
+                return;
+            }
+            _ if action.starts_with("search ") => {
+                let q = action.trim_start_matches("search ").trim();
+                serde_json::json!({"action":"search","query":q}).to_string()
+            }
+            other => {
+                self.push_error(format!(
+                    "unknown /mc action '{other}' — try: sources · status · search <q>"
+                ));
+                return;
+            }
+        };
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        match host.dispatch("executor", &json, &ctx) {
+            Ok(s) => self.push_note(
+                Tone::Skill,
+                format!(
+                    "mcp servers (via executor gateway)\n{s}\n\n\
+                     add one:  executor tool → action=call, or `executor install`\n\
+                     the agent uses the `executor` tool for OpenAPI/GraphQL/MCP calls"
+                ),
+            ),
+            Err(e) => self.push_error(format!(
+                "{e}\n  MCP is provided by the Executor gateway — `meta ecosystem ensure` installs it"
+            )),
+        }
+    }
+
+    /// The interaction tips that used to clutter the opening banner.
+    fn cmd_tips(&mut self) {
+        self.push_note(
+            Tone::Mode,
+            "tips\n  \
+             drag text            select + auto-copy\n  \
+             drag the scrollbar   scrub history (right edge)\n  \
+             click a card  ·  ▸   peek  ·  expand\n  \
+             right/2×-click prompt  fork · revert · copy\n  \
+             ↓ End                jump to latest\n  \
+             Shift+Tab            cycle manual → plan → auto\n  \
+             Ctrl+A/C/V/X         select-all · copy · paste · cut\n  \
+             paste a big block    collapses into a [pasted N lines] chip\n  \
+             Esc                  close peek → cancel turn → clear input\n  \
+             /help                full command + key reference"
+                .into(),
+        );
+    }
+}
+
+/// Minimal percent-encoding for GitHub issue query params (no extra dep).
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Open a URL in the OS default browser (best-effort).
+fn open_in_browser(url: &str) -> bool {
+    #[cfg(windows)]
+    let r = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn();
+    #[cfg(target_os = "macos")]
+    let r = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let r = std::process::Command::new("xdg-open").arg(url).spawn();
+    r.is_ok()
 }

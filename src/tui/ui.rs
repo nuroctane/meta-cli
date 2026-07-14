@@ -1827,8 +1827,10 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
     }
     // Shimmering underline beneath the logotype.
     out.push(aurora_rule(40, elapsed, '─', 2200));
-    // Model-agnostic title row + feature-loaded subtitle (not model-tied).
-    let model_label = crate::config::model_display_name(&app.cfg.model);
+
+    // Row 1: "<active provider API> loaded  ·  v<cli>". The provider name tracks
+    // whatever `/login` selected (Meta Model API by default).
+    let provider = crate::config::active_provider_label(&app.cfg);
     let sparkle = theme::frame_at(theme::SPARKLE, elapsed, 200);
     let mut title_row = vec![
         Span::raw("  ".to_string()),
@@ -1837,58 +1839,26 @@ fn banner_lines(app: &App, out: &mut Vec<Line<'static>>) {
             Style::default().fg(theme::aurora_cell(elapsed, 0, 1, 1500)),
         ),
     ];
-    title_row.extend(shimmer_spans(&model_label, elapsed, 0, 2000));
-    title_row.extend(vec![
-        Span::styled("  ·  ".to_string(), theme::style_faint()),
-        Span::styled("Meta Model API".to_string(), theme::style_status()),
-        Span::styled("  ·  ".to_string(), theme::style_faint()),
-        Span::styled(
-            format!("v{}", env!("CARGO_PKG_VERSION")),
-            theme::style_faint(),
-        ),
-    ]);
+    title_row.extend(shimmer_spans(&format!("{provider} loaded"), elapsed, 0, 2000));
+    title_row.push(Span::styled("   ·   ".to_string(), theme::style_faint()));
+    title_row.push(Span::styled(
+        format!("v{}", env!("CARGO_PKG_VERSION")),
+        theme::style_faint(),
+    ));
     out.push(Line::from(title_row));
-    out.push(Line::from(vec![
-        Span::raw("  ".to_string()),
-        Span::styled(
-            "fully loaded  ·  streaming TUI · tools · sandbox · subagents".to_string(),
-            theme::style_faint(),
-        ),
-    ]));
-    out.push(Line::from(vec![
-        Span::raw("  ".to_string()),
-        Span::styled(
-            "Graphify · PLUR · Ruflo · Executor · 800+ skills  ·  unofficial"
-                .to_string(),
-            theme::style_faint(),
-        ),
-    ]));
+
     out.push(Line::default());
+
+    // Row 2: model  ·  cwd  ·  session hash.
+    let session8 = &app.session_id[..8.min(app.session_id.len())];
     out.push(Line::from(vec![
         Span::raw("  ".to_string()),
         Span::styled("model  ".to_string(), theme::style_faint()),
         Span::styled(app.cfg.model.clone(), Style::default().fg(theme::META_BLUE_SKY)),
         Span::styled("    cwd  ".to_string(), theme::style_faint()),
         Span::styled(app.cwd.display().to_string(), theme::style_status()),
-    ]));
-    out.push(Line::from(vec![
-        Span::raw("  ".to_string()),
-        Span::styled(
-            "/help  ·  drag-select  ·  scrollbar  ·  peek cards  ·  timers  ·  Shift+Tab  ·  Esc"
-                .to_string(),
-            theme::style_faint(),
-        ),
-    ]));
-    out.push(Line::from(vec![
-        Span::raw("  ".to_string()),
-        Span::styled(
-            format!(
-                "mode  {}  —  {}",
-                app.permission_mode.get().badge(),
-                app.permission_mode.get().description()
-            ),
-            Style::default().fg(theme::META_BLUE_SKY),
-        ),
+        Span::styled("    ·  ".to_string(), theme::style_faint()),
+        Span::styled(session8.to_string(), theme::style_faint()),
     ]));
     out.push(Line::default());
 }
