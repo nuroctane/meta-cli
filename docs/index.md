@@ -2,7 +2,7 @@
 
 **Fully loaded multi-provider terminal coding agent.** Not a thin wrapper.
 
-Custom Rust harness, dense gold TUI, **native vision**, tools, knowledge stack, hardened sandbox. Pick any of **60+ providers** with `/login`. Any model via `--model` / `/model` / config.
+Custom Rust harness, dense gold TUI, **native vision**, tools, knowledge stack, hardened sandbox. Pick any of **60+ providers** with `/login`. Any model via `--model` / `/model`. Install marketplace plugins with `/plugins` (same picker UX as providers).
 
 ```text
 nur           # gold interactive TUI
@@ -44,15 +44,15 @@ That's the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout,
 
 | Surface | Details |
 |---------|---------|
-| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **green/red transcript diffs** · **prompt menu (fork · revert · copy)** · drag-select · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · lean banner · **`/login` (60+ providers)** · **`/model` (live model list)** · **`/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips`** · **`/budget` `/poor` `/permissions` `/hooks` `/cd` `/doctor`** |
+| **TUI** | Streaming · duration chips · expandable thought/tool cards · click-to-peek · **green/red transcript diffs** · **prompt menu (fork · revert · copy)** · drag-select · always-on scrollbar · ↓ End · sticky prompt · sessions browser · approval mini-diff · lean banner · **`/login` (60+ providers)** · **`/model` (live model list)** · **`/plugins` marketplace** · **`/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips`** · **`/budget` `/poor` `/permissions` `/hooks` `/cd` `/doctor`** |
 | **Agent** | Manual / plan / auto · tool loop · subagents · todos · **smarter auto-compact** · **session $ / token budgets** · **tool-result spill** · Esc cancel · Shift+Tab mid-turn · prompt-cache keys · **Chat Completions adapter** for non-Responses providers |
 | **Vision** | `look` (images / short video) · `extract_frames` (ffmpeg keyframes) · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** · git · knowledge stack · agent (all first-class) |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills**. Full install at setup; later open = TTL repair (`ecosystem_auto_ensure`) |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · **omp** · **browser** · AKM · **800+ skills** · **plugin marketplace** (`~/.nur/plugins`). Full install at setup; later open = TTL repair (`ecosystem_auto_ensure`) |
 | **Hardening** | Sandbox · bash denylist · SSRF blocks · atomic `~/.nur` IO · session **`.json.bak`** · **permissions.toml** · optional **hooks.toml** · API retries · install SHA-256 · `nur doctor` |
 | **Host panels** | Live `status.json` / `usage.jsonl` · Orca hook when present |
 
-**Current version: v0.11.0**
+**Current version: v0.12.0**
 
 ---
 
@@ -64,7 +64,7 @@ That's the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout,
 - **[TUI](tui.md)** - Keyboard shortcuts, slash commands, colour system
 - **[Tools](tools.md)** - All native tools (read, edit, shell, web, git, knowledge, agent)
 - **[Vision](vision.md)** - Images, video, `look`, `extract_frames`
-- **[Ecosystem](ecosystem.md)** - Graphify, PLUR, Ruflo, skills, AKM
+- **[Ecosystem](ecosystem.md)** - Graphify, PLUR, Ruflo, skills, AKM, **plugin marketplace**
 - **[Configuration](configuration.md)** - `config.toml`, environment variables, settings
 - **[Security](security.md)** - Where secrets live, sandbox, reporting
 - **[Troubleshooting](troubleshooting.md)** - `nur doctor`, common issues

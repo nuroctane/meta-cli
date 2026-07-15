@@ -105,11 +105,22 @@ Pulls latest main (when a Laboratory checkout exists), rebuilds, reinstalls the 
 
 ---
 
+## Plugins (optional)
+
+```text
+/plugins                 # marketplace picker (same UX as /login)
+```
+
+Or from the shell: `nur plugins install superpowers`. Skills land under `~/.nur/plugins` and mirror into `~/.nur/skills`. Details: **[Ecosystem → Plugin marketplace](ecosystem.md#plugin-marketplace)**.
+
+---
+
 ## Next steps
 
 - **[Setup](setup.md)** - Install paths, **how to update**, uninstall
-- **[Commands](commands.md)** - Full CLI reference (`nur update`, `nur doctor`, …)
+- **[Commands](commands.md)** - Full CLI reference (`nur update`, `nur doctor`, `nur plugins`, …)
 - **[TUI](tui.md)** - Keyboard shortcuts, slash commands
 - **[Tools](tools.md)** - What the agent can do
 - **[Vision](vision.md)** - Send images and video to the model
+- **[Ecosystem](ecosystem.md)** - Graphify, PLUR, plugins marketplace
 - **[Configuration](configuration.md)** - Customise model, effort, context window

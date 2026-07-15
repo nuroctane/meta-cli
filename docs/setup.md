@@ -197,6 +197,7 @@ Created on first auth / first run:
 | `nur.log` | Tracing (not drawn into the TUI) |
 | `status.json` / `usage.jsonl` / `ade.json` | Live usage + host panels |
 | `memory.md` / `history.jsonl` | Notes + prompt history |
+| `plugins/` | Marketplace clones + `registry.json` (`/plugins`) |
 | `sessions/` | Sessions + `.json.bak` / `.precompact.bak` |
 | `tool-results/` | Spilled large tool outputs |
 | `browser-extension/` | Staged Chromium extension for `browser` |

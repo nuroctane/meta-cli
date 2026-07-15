@@ -8,6 +8,7 @@ NurCLI is community software. Keys and sessions stay on your machine.
 |----------|----------|
 | `~/.nur/auth.json` | Provider API key / tokens after `/login` or `nur auth login` |
 | Env `NUR_API_KEY` / vendor keys | Optional override (never printed in logs) |
+| `~/.nur/plugins/` | Marketplace skill packs (local clones; no secrets) |
 | `~/.nur/sessions/` | Session files + `.json.bak` / `.precompact.bak` (no key) |
 | `~/.nur/tool-results/` | Spilled large tool outputs (may include workspace text) |
 | `~/.nur/nur.log` | Tracing log (not the terminal; may include paths) |

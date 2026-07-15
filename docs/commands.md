@@ -171,9 +171,24 @@ Full paths and alternatives (one-liner / EXE / `nur install`): **[Setup → Upda
 
 ---
 
+### `nur plugins`
+
+Marketplace plugins (install into `~/.nur/plugins`, skills mirrored to `~/.nur/skills`).
+
+```bash
+nur plugins                 # list catalog + install state
+nur plugins list
+nur plugins install <id>    # e.g. superpowers, vercel, firecrawl
+nur plugins enable <id>
+nur plugins disable <id>
+nur plugins uninstall <id>
+```
+
+In the TUI, bare **`/plugins`** opens the full marketplace picker (provider-picker UX).
+
 ### `nur doctor`
 
-Diagnose install, auth, config, and ecosystem readiness.
+Diagnose install, auth, config, ecosystem, and plugin marketplace readiness.
 
 ```bash
 nur doctor

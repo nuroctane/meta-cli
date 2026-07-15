@@ -141,6 +141,7 @@ Everything is **local**. Secrets never go into the git repo.
 | `auth.json` | API key after login |
 | `config.toml` | Model, effort, budgets, etc. |
 | `sessions/` | Chat sessions |
+| `plugins/` · `plugins/registry.json` | Marketplace installs (`/plugins`, `nur plugins`) |
 | `skills/` · `ruflo/` · `tool-results/` | Skills, vector memory, spilled tool output |
 | `status.json` · `usage.jsonl` · `ade.json` | Live usage + host panels |
 | `nur.log` | Tracing (not painted into the TUI) |
@@ -155,15 +156,15 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 
 ---
 
-**v0.11.0**: Full harness. **[Docs](https://nuroctane.github.io/nur-cli/)**
+**v0.12.0**: Full harness. **[Docs](https://nuroctane.github.io/nur-cli/)**
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · thought/tool cards · peek · drag-select · scrollbar · sessions · multi-provider `/login` · `/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips` · budgets · doctor |
+| **TUI** | Streaming · duration chips · thought/tool cards · peek · drag-select · scrollbar · sessions · multi-provider `/login` · **`/model` picker** · **`/plugins` marketplace** · `/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips` · budgets · doctor |
 | **Agent** | Manual / plan / auto · tools · subagents · todos · auto-compact · session $ / token budgets · Esc cancel · Shift+Tab mid-turn |
 | **Vision** | `look` · `extract_frames` · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** · git · knowledge · agent |
-| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · omp · browser · AKM · 800+ skills |
+| **Ecosystem** | Graphify · PLUR · Ruflo · Executor · omp · browser · AKM · 800+ skills · **plugin marketplace** (`~/.nur/plugins`) |
 | **Hardening** | Sandbox · denylist · SSRF blocks · atomic `~/.nur` IO · permissions/hooks · SHA-256 install · `nur doctor` |
 
 ---
@@ -177,6 +178,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 | **One-shot install** | One-liner or Windows EXE · PATH · ecosystem · browser |
 | **Easy updates** | `nur update` |
 | **Knowledge stack** | Graph · engrams · vector memory · MCP · skills |
+| **Plugin marketplace** | `/plugins` picker (same UX as `/login`) · install Superpowers, Vercel, Firecrawl, … into `~/.nur/plugins` |
 | **Resume other agents** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-nur` · `resume-grok` |
 | **Secrets stay local** | Keys only in `~/.nur/auth.json` (or env) |
 
