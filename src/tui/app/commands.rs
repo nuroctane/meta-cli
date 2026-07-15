@@ -81,6 +81,7 @@ impl App {
             "/budget" => self.cmd_budget(&arg),
             "/poor" => self.cmd_poor(),
             "/undo" => self.cmd_undo(),
+            "/failover" => self.open_failover(),
             "/permissions" => self.cmd_permissions(&arg),
             "/hooks" => self.push_note(
                 Tone::Skill,

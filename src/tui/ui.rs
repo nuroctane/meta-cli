@@ -306,16 +306,18 @@ fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let phase = modal_phase(app);
 
     let total = app.login.as_ref().map(|m| m.count()).unwrap_or(0);
-    let title = format!(" 🔑 choose a provider  ·  {total} ");
-    draw_modal_frame(
-        f,
-        rect,
-        phase,
-        theme::INDIGO,
-        &title,
-        None,
-        " ↑↓/wheel  ·  ↵ pick  ·  type to filter  ·  esc/✕  ",
-    );
+    let manage = app.login.as_ref().map(|m| m.manage_failover).unwrap_or(false);
+    let title = if manage {
+        format!(" ↻ manage failover  ·  {} in chain ", app.cfg.fallback_providers.len())
+    } else {
+        format!(" 🔑 choose a provider  ·  {total} ")
+    };
+    let hint = if manage {
+        " ↑↓  ·  space/↵ toggle failover  ·  type to filter  ·  esc done  "
+    } else {
+        " ↑↓/wheel  ·  ↵ pick  ·  space failover  ·  type filter  ·  esc  "
+    };
+    draw_modal_frame(f, rect, phase, theme::INDIGO, &title, None, hint);
     let inner = modal_inner(rect);
 
     let close = Rect {
@@ -407,7 +409,14 @@ fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
             theme::style_faint()
         };
         let badge = if p.browser_auth { "  🌐" } else { "" };
-        let text = format!("{marker}{:<22}{}{badge}", p.name, p.note);
+        let fb = app
+            .cfg
+            .fallback_providers
+            .iter()
+            .position(|x| x == p.id)
+            .map(|i| format!("  ↻#{}", i + 1))
+            .unwrap_or_default();
+        let text = format!("{marker}{:<22}{}{badge}{fb}", p.name, p.note);
         let style = if selected { name_style } else { note_style };
         lines.push(Line::from(Span::styled(truncate(&text, col), style)));
 
@@ -801,12 +810,17 @@ fn draw_login_key(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
+    let title = if m.fallback_key {
+        format!(" ↻ {} · failover key ", provider.name)
+    } else {
+        format!(" 🔑 {} ", provider.name)
+    };
     draw_modal_frame(
         f,
         rect,
         phase,
         theme::INDIGO,
-        &format!(" 🔑 {} ", provider.name),
+        &title,
         None,
         "  ↵ save  ·  ctrl+v paste  ·  ctrl+u clear  ·  esc back  ",
     );
@@ -837,7 +851,14 @@ fn draw_login_key(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::raw("  ".to_string()),
             Span::styled(format!("{} chars", m.buf.chars().count()), theme::style_faint()),
-            Span::styled("   ·   stored only in ~/.nur/auth.json".to_string(), theme::style_faint()),
+            Span::styled(
+                if m.fallback_key {
+                    "   ·   stored in ~/.nur/provider_keys.json".to_string()
+                } else {
+                    "   ·   stored only in ~/.nur/auth.json".to_string()
+                },
+                theme::style_faint(),
+            ),
         ]),
         Line::from(vec![
             Span::raw("  ".to_string()),

@@ -60,6 +60,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/budget", "session spend ceiling: /budget [cost <usd>|tokens <n>|clear|save]"),
     ("/poor", "toggle cost-saver: skip PLUR inject + skills catalog + long memory in prompt"),
     ("/undo", "revert the last file edit (write/edit/multi_edit) made this session"),
+    ("/failover", "set up cross-provider failover in the provider picker (space toggles)"),
     ("/context", "context-window utilization for this session"),
     ("/status", "session snapshot: model · mode · cwd · tokens"),
     ("/doctor", "health check: version · auth · ecosystem · shell"),
@@ -452,6 +453,13 @@ pub struct LoginModal {
     /// Progress from the background OAuth thread.
     pub oauth_rx: Option<std::sync::mpsc::Receiver<crate::oauth::BrowserLoginProgress>>,
     pub oauth_cancel: Option<crate::oauth::CancelFlag>,
+    /// Failover-manage mode (opened via `/failover`): the picker toggles
+    /// providers into `fallback_providers` instead of choosing a new primary,
+    /// and never logs the active provider out.
+    pub manage_failover: bool,
+    /// The Key stage is capturing a per-provider failover key (saved to the
+    /// provider-key store), not an active-provider login.
+    pub fallback_key: bool,
 }
 
 impl LoginModal {
@@ -1454,26 +1462,37 @@ pub async fn run_tui(
             FRAME_IDLE_MS
         };
 
-        // 2) Input FIRST — drain the whole queue every tick.
+        // 2) Input FIRST — drain the whole queue every tick, **keys before mouse**.
         //    Wait up to one frame for the first event when idle; never draw
         //    before handling a pending Down/Drag/Up (that was the post-submit lag).
+        //
+        //    Why keys-first: Windows + mouse-capture liberally emits Moved/Drag.
+        //    A stuck button or trackpad jitter can flood the console input buffer;
+        //    if we process events FIFO and mouse dominates, ↑↓ / typing appear
+        //    dead while the UI still animates (caret blink, status). Users hit
+        //    this in the provider picker and API-key modal after ~seconds.
+        //    Drain everything, handle Key/Paste first, then Mouse/Focus/Resize.
         let wait = if dirty {
             Duration::ZERO
         } else {
             Duration::from_millis(frame_ms)
         };
+        // Modals own the keyboard: never route their keys through paste-chip
+        // coalescing (that path is for the main prompt only).
+        let modal_open = app.login.is_some()
+            || app.model_picker.is_some()
+            || app.plugin_picker.is_some()
+            || app.approval.is_some()
+            || app.picker.is_some()
+            || app.ctx_menu.is_some();
         if event::poll(wait)? {
-            // Drain every event queued this frame.
-            // Paste: bracketed Event::Paste → one chip; key drips coalesce into
-            // paste_accum only when more *text* presses are already queued (not
-            // KeyRelease — Windows always pairs Press+Release, which broke Enter).
-            // Enter is never paste: plain Enter submits, Shift+Enter = newline.
-            let mut deferred: Option<Event> = None;
+            // Phase A — drain every queued event into two buckets.
+            let mut key_events: Vec<KeyEvent> = Vec::new();
+            let mut paste_chunks: Vec<String> = Vec::new();
+            let mut other_events: Vec<Event> = Vec::new();
             let mut first = true;
             loop {
-                let ev = if let Some(e) = deferred.take() {
-                    e
-                } else if first {
+                let ev = if first {
                     first = false;
                     event::read()?
                 } else if event::poll(Duration::ZERO)? {
@@ -1481,104 +1500,137 @@ pub async fn run_tui(
                 } else {
                     break;
                 };
-
                 match ev {
                     Event::Key(key)
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
                     {
-                        // Enter handling is hard-split from paste char drips:
-                        // - Mid unbracketed paste (accum non-empty): '\n' in the burst.
-                        // - Otherwise: on_key — plain Enter submits, Shift+Enter newline.
-                        // Never treat a lone typed Enter as paste (that was the bug:
-                        // Windows KeyRelease made poll look busy → Enter became '\n').
-                        if matches!(key.code, KeyCode::Enter) {
-                            if !app.paste_accum.is_empty() {
-                                app.paste_accum.push('\n');
-                                app.paste_accum_at = Some(Instant::now());
-                            } else if key.kind == KeyEventKind::Press {
-                                app.on_key(key);
+                        key_events.push(key);
+                    }
+                    Event::Paste(s) => paste_chunks.push(s),
+                    // Drop pure hover motion while a modal is open — it is the
+                    // bulk of Windows mouse floods and has no modal use.
+                    Event::Mouse(m)
+                        if modal_open
+                            && matches!(
+                                m.kind,
+                                MouseEventKind::Moved | MouseEventKind::Drag(_)
+                            ) => {}
+                    other => other_events.push(other),
+                }
+                // Hard cap: never let a pathological mouse flood keep us in
+                // the drain forever (keys already collected above).
+                if key_events.len() + paste_chunks.len() + other_events.len() > 512 {
+                    // Keep draining keys only so keyboard stays responsive.
+                    while event::poll(Duration::ZERO)? {
+                        match event::read()? {
+                            Event::Key(key)
+                                if key.kind == KeyEventKind::Press
+                                    || key.kind == KeyEventKind::Repeat =>
+                            {
+                                key_events.push(key);
                             }
-                            dirty = true;
-                            continue;
+                            Event::Paste(s) => paste_chunks.push(s),
+                            _ => {}
                         }
-
-                        if let Some(c) = key_as_paste_burst_char(&key) {
-                            // Drain further paste-text / Event::Paste; skip
-                            // KeyRelease (Windows ConPTY interleaves Press/Release
-                            // for every char — treating Release as a break made
-                            // pastes type out char-by-char and never coalesce).
-                            let mut burst = String::new();
-                            burst.push(c);
-                            loop {
-                                if !event::poll(Duration::ZERO)? {
-                                    break;
-                                }
-                                let next = match event::read() {
-                                    Ok(ev) => ev,
-                                    Err(_) => break,
-                                };
-                                match next {
-                                    Event::Key(k)
-                                        if k.kind == KeyEventKind::Release =>
-                                    {
-                                        // Ignore release — keep draining the burst.
-                                        continue;
-                                    }
-                                    Event::Key(k)
-                                        if key_as_paste_burst_char(&k).is_some() =>
-                                    {
-                                        if let Some(ch) = key_as_paste_burst_char(&k) {
-                                            burst.push(ch);
-                                        }
-                                    }
-                                    Event::Paste(p) => burst.push_str(&p),
-                                    other => {
-                                        deferred = Some(other);
-                                        break;
-                                    }
-                                }
-                            }
-                            // Multi-char burst, or mid-paste drip → accumulate.
-                            // Single isolated char (burst len 1, empty accum) → type.
-                            if burst.chars().count() > 1 || !app.paste_accum.is_empty() {
-                                app.paste_accum.push_str(&burst);
-                                app.paste_accum_at = Some(Instant::now());
-                                dirty = true;
-                                continue;
-                            }
-                            // Lone character: normal typing via on_key.
-                            app.flush_paste_accum();
-                            if key.kind == KeyEventKind::Press {
-                                // Rebuild a Press for the single char we held.
-                                let mut k = key;
-                                k.code = KeyCode::Char(c);
-                                app.on_key(k);
-                            }
-                            dirty = true;
-                            continue;
+                        if key_events.len() > 256 {
+                            break;
                         }
+                    }
+                    break;
+                }
+            }
 
-                        app.flush_paste_accum();
-                        if key.kind == KeyEventKind::Press {
+            // Phase B — keys (+ paste) before mouse/focus.
+            if modal_open {
+                // Modal: flush any stale paste burst, then every key goes to
+                // on_key. Press *and* Repeat so held arrows keep stepping.
+                app.flush_paste_accum();
+                for key in key_events {
+                    // Enter only on Press (avoid multi-submit from auto-repeat).
+                    if matches!(key.code, KeyCode::Enter) && key.kind != KeyEventKind::Press {
+                        continue;
+                    }
+                    app.on_key(key);
+                    dirty = true;
+                    if app.should_quit {
+                        break;
+                    }
+                }
+                for s in paste_chunks {
+                    app.on_paste(&s);
+                    dirty = true;
+                }
+            } else {
+                // Main prompt: paste-chip coalescing for unbracketed drips.
+                // Enter is never paste: plain Enter submits, Shift+Enter = newline.
+                let mut i = 0;
+                while i < key_events.len() {
+                    let key = key_events[i];
+                    i += 1;
+                    if matches!(key.code, KeyCode::Enter) {
+                        if !app.paste_accum.is_empty() {
+                            app.paste_accum.push('\n');
+                            app.paste_accum_at = Some(Instant::now());
+                        } else if key.kind == KeyEventKind::Press {
                             app.on_key(key);
                         }
                         dirty = true;
+                        continue;
                     }
+                    if let Some(c) = key_as_paste_burst_char(&key) {
+                        // Coalesce contiguous paste-text keys already in the
+                        // batch (same frame), plus any Event::Paste chunks.
+                        let mut burst = String::new();
+                        burst.push(c);
+                        while i < key_events.len() {
+                            if let Some(ch) = key_as_paste_burst_char(&key_events[i]) {
+                                burst.push(ch);
+                                i += 1;
+                            } else {
+                                break;
+                            }
+                        }
+                        // Multi-char burst, or mid-paste drip → accumulate.
+                        // Single isolated char (burst len 1, empty accum) → type.
+                        if burst.chars().count() > 1 || !app.paste_accum.is_empty() {
+                            app.paste_accum.push_str(&burst);
+                            app.paste_accum_at = Some(Instant::now());
+                            dirty = true;
+                            continue;
+                        }
+                        app.flush_paste_accum();
+                        // Press + Repeat both type (held key should keep inserting
+                        // on hosts that emit Repeat; Windows auto-repeat is Press).
+                        let mut k = key;
+                        k.code = KeyCode::Char(c);
+                        app.on_key(k);
+                        dirty = true;
+                        continue;
+                    }
+                    app.flush_paste_accum();
+                    // Navigation / shortcuts: Press and Repeat (held ↑↓).
+                    app.on_key(key);
+                    dirty = true;
+                    if app.should_quit {
+                        break;
+                    }
+                }
+                for s in paste_chunks {
+                    // Bracketed paste — coalesce in paste_accum and flush as one
+                    // chip (active_paste_id merge stitches split flushes).
+                    app.paste_accum.push_str(&s);
+                    app.paste_accum_at = Some(Instant::now());
+                    dirty = true;
+                }
+            }
+
+            // Phase C — mouse / focus / resize (never starves keys above).
+            for ev in other_events {
+                match ev {
                     Event::Mouse(m) => {
                         app.flush_paste_accum();
                         app.on_mouse(m);
                         dirty = true;
-                    }
-                    Event::Paste(s) => {
-                        // Bracketed paste (the clean path) — but the terminal may
-                        // split a huge paste into many Event::Paste chunks across
-                        // frames. Coalesce them in paste_accum and flush as ONE chip,
-                        // which then uses the active_paste_id merge window so even
-                        // split flushes become a single chip.
-                        app.paste_accum.push_str(&s);
-                        app.paste_accum_at = Some(Instant::now());
-                        dirty = true;
-                        continue;
                     }
                     Event::Resize(_, _) => dirty = true,
                     Event::FocusLost => {
@@ -1595,9 +1647,6 @@ pub async fn run_tui(
                     _ => {}
                 }
                 if app.should_quit {
-                    break;
-                }
-                if deferred.is_none() && !event::poll(Duration::ZERO)? {
                     break;
                 }
             }
@@ -3393,7 +3442,80 @@ impl App {
             browser_user_code: String::new(),
             oauth_rx: None,
             oauth_cancel: None,
+            manage_failover: false,
+            fallback_key: false,
         });
+    }
+
+    /// Open the provider picker in failover-manage mode. Unlike `/login`, this
+    /// does **not** log the active provider out — it only edits the failover
+    /// chain (`fallback_providers`) and per-provider keys.
+    fn open_failover(&mut self) {
+        self.login = Some(LoginModal {
+            stage: LoginStage::Provider,
+            filter: String::new(),
+            sel: 0,
+            scroll: 0,
+            vis_page: 8,
+            hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            provider_id: self.cfg.provider.clone(),
+            method_sel: 0,
+            can_import: false,
+            buf: String::new(),
+            error: None,
+            browser_status: String::new(),
+            browser_url: String::new(),
+            browser_user_code: String::new(),
+            oauth_rx: None,
+            oauth_cancel: None,
+            manage_failover: true,
+            fallback_key: false,
+        });
+    }
+
+    /// Toggle the currently-selected provider in the failover chain. When newly
+    /// added without a resolvable key, drops into Key entry for it.
+    fn toggle_fallback_selected(&mut self) {
+        let provider = {
+            let Some(m) = &self.login else { return };
+            if m.stage != LoginStage::Provider {
+                return;
+            }
+            let picks = m.filtered();
+            match picks.get(m.sel) {
+                Some(p) => **p,
+                None => return,
+            }
+        };
+        let id = provider.id.to_string();
+        if id == self.cfg.provider {
+            if let Some(m) = &mut self.login {
+                m.error = Some(format!("{} is your active provider", provider.name));
+            }
+            return;
+        }
+        let present = self.cfg.fallback_providers.iter().any(|x| x == &id);
+        if present {
+            self.cfg.fallback_providers.retain(|x| x != &id);
+        } else {
+            self.cfg.fallback_providers.push(id.clone());
+        }
+        let _ = crate::config::save_config(&self.cfg);
+        if let Some(m) = &mut self.login {
+            m.error = None;
+        }
+        // Newly added and no key yet → capture one now so failover can use it.
+        if !present && crate::api::failover::resolve_target_key(&provider).is_none() {
+            if let Some(m) = &mut self.login {
+                m.provider_id = id;
+                m.buf.clear();
+                m.fallback_key = true;
+                m.stage = LoginStage::Key;
+            }
+        }
     }
 
     /// Open the `/model` chooser and kick off a live model-list fetch for the
@@ -4107,6 +4229,7 @@ impl App {
     }
 
     fn on_login_picker_key(&mut self, key: event::KeyEvent, ctrl: bool) {
+        let manage = self.login.as_ref().map(|m| m.manage_failover).unwrap_or(false);
         let Some(m) = &mut self.login else { return };
         match key.code {
             KeyCode::Esc => self.login = None,
@@ -4137,7 +4260,15 @@ impl App {
                     m.clamp_scroll();
                 }
             }
-            KeyCode::Enter => self.login_picker_confirm(),
+            KeyCode::Enter => {
+                if manage {
+                    self.toggle_fallback_selected();
+                } else {
+                    self.login_picker_confirm();
+                }
+            }
+            // Space / Tab toggle the selected provider in the failover chain.
+            KeyCode::Char(' ') | KeyCode::Tab => self.toggle_fallback_selected(),
             KeyCode::Backspace => {
                 m.filter.pop();
                 m.sel = 0;
@@ -4161,16 +4292,21 @@ impl App {
     fn on_login_key_entry(&mut self, key: event::KeyEvent, ctrl: bool) {
         let Some(m) = &mut self.login else { return };
         match key.code {
-            // Esc backs up to method (if browser auth) or provider picker.
+            // Esc backs up to the picker (failover key) / method (browser auth) / provider.
             KeyCode::Esc => {
-                let browser = crate::providers::by_id(&m.provider_id)
-                    .map(|p| p.browser_auth)
-                    .unwrap_or(false);
-                m.stage = if browser {
-                    LoginStage::Method
+                if m.fallback_key {
+                    m.fallback_key = false;
+                    m.stage = LoginStage::Provider;
                 } else {
-                    LoginStage::Provider
-                };
+                    let browser = crate::providers::by_id(&m.provider_id)
+                        .map(|p| p.browser_auth)
+                        .unwrap_or(false);
+                    m.stage = if browser {
+                        LoginStage::Method
+                    } else {
+                        LoginStage::Provider
+                    };
+                }
                 m.buf.clear();
                 m.error = None;
             }
@@ -4190,8 +4326,8 @@ impl App {
     }
 
     fn submit_login(&mut self) {
-        let (provider_id, key) = match &self.login {
-            Some(m) => (m.provider_id.clone(), m.buf.trim().to_string()),
+        let (provider_id, key, is_fallback) = match &self.login {
+            Some(m) => (m.provider_id.clone(), m.buf.trim().to_string(), m.fallback_key),
             None => return,
         };
         let provider = crate::providers::by_id(&provider_id)
@@ -4201,6 +4337,26 @@ impl App {
         if key.is_empty() && !provider.key_optional {
             if let Some(m) = &mut self.login {
                 m.error = Some(format!("{} needs an API key", provider.name));
+            }
+            return;
+        }
+
+        // Failover key: save to the per-provider store and return to the picker
+        // — do NOT switch the active provider.
+        if is_fallback {
+            if !key.is_empty() {
+                if let Err(e) = crate::auth::save_provider_key(&provider_id, &key) {
+                    if let Some(m) = &mut self.login {
+                        m.error = Some(e.to_string());
+                    }
+                    return;
+                }
+            }
+            if let Some(m) = &mut self.login {
+                m.fallback_key = false;
+                m.buf.clear();
+                m.error = None;
+                m.stage = LoginStage::Provider;
             }
             return;
         }
@@ -5013,7 +5169,33 @@ impl App {
             return;
         }
         if let Some(m) = &mut self.login {
-            m.buf.push_str(&text);
+            // Provider stage types into the filter; key / method / browser use buf.
+            if m.stage == LoginStage::Provider {
+                m.filter.push_str(&text);
+                m.sel = 0;
+                m.scroll = 0;
+                m.clamp_scroll();
+            } else {
+                m.buf.push_str(&text);
+            }
+            return;
+        }
+        if self.model_picker.is_some() {
+            if let Some(mp) = &mut self.model_picker {
+                mp.filter.push_str(&text);
+                mp.sel = 0;
+                mp.scroll = 0;
+                mp.clamp_scroll();
+            }
+            return;
+        }
+        if self.plugin_picker.is_some() {
+            if let Some(pp) = &mut self.plugin_picker {
+                pp.filter.push_str(&text);
+                pp.sel = 0;
+                pp.scroll = 0;
+                pp.clamp_scroll();
+            }
             return;
         }
         if self.approval.is_some() || self.picker.is_some() {

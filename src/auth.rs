@@ -1,8 +1,10 @@
 use crate::config::{auth_path, ensure_dirs};
 use crate::error::{MuseError, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -281,6 +283,55 @@ pub fn save_api_key_for(key: &str, provider: Option<&str>) -> Result<()> {
     save_auth(&auth)
 }
 
+// ── Per-provider key store (for cross-provider failover) ─────────────────────
+// A JSON map `{provider_id: key}` at `provider_keys_path()`, separate from the
+// single active `auth.json`. Lets the provider picker stash a key per fallback
+// provider so `failover::resolve_target_key` can find it without env vars.
+
+fn read_keys_at(path: &Path) -> BTreeMap<String, String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_key_at(path: &Path, provider_id: &str, key: &str) -> Result<()> {
+    let trimmed = key.trim();
+    if trimmed.len() < 8 {
+        return Err(MuseError::Other(
+            "API key too short — expected at least 8 characters".into(),
+        ));
+    }
+    if trimmed.contains(' ') || trimmed.contains('\n') {
+        return Err(MuseError::Other("API key contains whitespace".into()));
+    }
+    let mut map = read_keys_at(path);
+    map.insert(provider_id.to_string(), trimmed.to_string());
+    let text = serde_json::to_string_pretty(&map)?;
+    crate::config::atomic_write(path, text.as_bytes())
+        .map_err(|e| MuseError::Other(format!("failed to save provider keys: {e}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+/// A stored per-provider failover key, if one was saved for this provider id.
+pub fn load_provider_key(provider_id: &str) -> Option<String> {
+    read_keys_at(&crate::config::provider_keys_path())
+        .get(provider_id)
+        .cloned()
+        .filter(|k| !k.trim().is_empty())
+}
+
+/// Save a per-provider failover key (validated like a normal API key).
+pub fn save_provider_key(provider_id: &str, key: &str) -> Result<()> {
+    ensure_dirs()?;
+    save_key_at(&crate::config::provider_keys_path(), provider_id, key)
+}
+
 /// Persist an OAuth session (access + optional refresh).
 pub fn save_oauth_session(
     provider: &str,
@@ -516,5 +567,35 @@ mod tests {
         a.provider = "xai".into();
         assert!(!provider_mismatch(&a, "xai"));
         assert!(provider_mismatch(&a, "openai"));
+    }
+
+    #[test]
+    fn provider_key_store_roundtrip() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!(
+            "nur_pk_{nanos}_{}",
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("provider_keys.json");
+
+        assert!(read_keys_at(&path).is_empty());
+        save_key_at(&path, "openai", "sk-abcdefgh").unwrap();
+        save_key_at(&path, "anthropic", "sk-ant-xxxxxxxx").unwrap();
+        assert_eq!(read_keys_at(&path).get("openai").map(String::as_str), Some("sk-abcdefgh"));
+        assert_eq!(read_keys_at(&path).len(), 2);
+        // Re-saving the same provider overwrites, doesn't duplicate.
+        save_key_at(&path, "openai", "sk-newnewnew").unwrap();
+        assert_eq!(read_keys_at(&path).get("openai").map(String::as_str), Some("sk-newnewnew"));
+        assert_eq!(read_keys_at(&path).len(), 2);
+        // Too-short keys are rejected.
+        assert!(save_key_at(&path, "openai", "short").is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

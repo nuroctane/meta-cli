@@ -237,6 +237,12 @@ pub fn auth_path() -> PathBuf {
     nur_home().join("auth.json")
 }
 
+/// Per-provider API keys for cross-provider failover (a JSON map
+/// `{provider_id: key}`), separate from the single active `auth.json`.
+pub fn provider_keys_path() -> PathBuf {
+    nur_home().join("provider_keys.json")
+}
+
 pub fn sessions_dir() -> PathBuf {
     nur_home().join("sessions")
 }
