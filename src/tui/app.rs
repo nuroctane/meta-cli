@@ -1462,16 +1462,14 @@ pub async fn run_tui(
             FRAME_IDLE_MS
         };
 
-        // 2) Input FIRST — drain the whole queue every tick, **keys before mouse**.
+        // 2) Input FIRST — drain the whole queue every tick.
         //    Wait up to one frame for the first event when idle; never draw
         //    before handling a pending Down/Drag/Up (that was the post-submit lag).
         //
-        //    Why keys-first: Windows + mouse-capture liberally emits Moved/Drag.
-        //    A stuck button or trackpad jitter can flood the console input buffer;
-        //    if we process events FIFO and mouse dominates, ↑↓ / typing appear
-        //    dead while the UI still animates (caret blink, status). Users hit
-        //    this in the provider picker and API-key modal after ~seconds.
-        //    Drain everything, handle Key/Paste first, then Mouse/Focus/Resize.
+        //    Keys/Paste before mouse: Windows mouse-capture floods Moved/Drag and
+        //    can starve ↑↓ / typing in modals. We still run the proven main-prompt
+        //    paste-chip coalescer (live poll burst drain) — only the *order*
+        //    relative to mouse changes, not the paste algorithm.
         let wait = if dirty {
             Duration::ZERO
         } else {
@@ -1486,9 +1484,10 @@ pub async fn run_tui(
             || app.picker.is_some()
             || app.ctx_menu.is_some();
         if event::poll(wait)? {
-            // Phase A — drain every queued event into two buckets.
-            let mut key_events: Vec<KeyEvent> = Vec::new();
-            let mut paste_chunks: Vec<String> = Vec::new();
+            // Phase A — drain queue. Preserve Key/Paste relative order; park
+            // mouse/focus/resize for later so floods cannot interleave ahead of
+            // keyboard work.
+            let mut kb_events: Vec<Event> = Vec::new();
             let mut other_events: Vec<Event> = Vec::new();
             let mut first = true;
             loop {
@@ -1504,11 +1503,11 @@ pub async fn run_tui(
                     Event::Key(key)
                         if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat =>
                     {
-                        key_events.push(key);
+                        kb_events.push(Event::Key(key));
                     }
-                    Event::Paste(s) => paste_chunks.push(s),
-                    // Drop pure hover motion while a modal is open — it is the
-                    // bulk of Windows mouse floods and has no modal use.
+                    Event::Paste(s) => kb_events.push(Event::Paste(s)),
+                    // Drop pure hover motion while a modal is open — bulk of
+                    // Windows mouse floods; no modal use.
                     Event::Mouse(m)
                         if modal_open
                             && matches!(
@@ -1517,22 +1516,20 @@ pub async fn run_tui(
                             ) => {}
                     other => other_events.push(other),
                 }
-                // Hard cap: never let a pathological mouse flood keep us in
-                // the drain forever (keys already collected above).
-                if key_events.len() + paste_chunks.len() + other_events.len() > 512 {
-                    // Keep draining keys only so keyboard stays responsive.
+                // Hard cap on mouse/other so a flood cannot keep us draining forever.
+                if kb_events.len() + other_events.len() > 512 {
                     while event::poll(Duration::ZERO)? {
                         match event::read()? {
                             Event::Key(key)
                                 if key.kind == KeyEventKind::Press
                                     || key.kind == KeyEventKind::Repeat =>
                             {
-                                key_events.push(key);
+                                kb_events.push(Event::Key(key));
                             }
-                            Event::Paste(s) => paste_chunks.push(s),
+                            Event::Paste(s) => kb_events.push(Event::Paste(s)),
                             _ => {}
                         }
-                        if key_events.len() > 256 {
+                        if kb_events.len() > 256 {
                             break;
                         }
                     }
@@ -1540,87 +1537,170 @@ pub async fn run_tui(
                 }
             }
 
-            // Phase B — keys (+ paste) before mouse/focus.
+            // Phase B — keyboard / paste (before mouse).
             if modal_open {
-                // Modal: flush any stale paste burst, then every key goes to
-                // on_key. Press *and* Repeat so held arrows keep stepping.
+                // Modal: no chip coalescing. Press + Repeat both drive handlers
+                // (held arrows). Enter is Press-only (no multi-submit).
                 app.flush_paste_accum();
-                for key in key_events {
-                    // Enter only on Press (avoid multi-submit from auto-repeat).
-                    if matches!(key.code, KeyCode::Enter) && key.kind != KeyEventKind::Press {
-                        continue;
+                for ev in kb_events {
+                    match ev {
+                        Event::Key(key) => {
+                            if matches!(key.code, KeyCode::Enter)
+                                && key.kind != KeyEventKind::Press
+                            {
+                                continue;
+                            }
+                            app.on_key(key);
+                            dirty = true;
+                        }
+                        Event::Paste(s) => {
+                            app.on_paste(&s);
+                            dirty = true;
+                        }
+                        _ => {}
                     }
-                    app.on_key(key);
-                    dirty = true;
                     if app.should_quit {
                         break;
                     }
-                }
-                for s in paste_chunks {
-                    app.on_paste(&s);
-                    dirty = true;
                 }
             } else {
-                // Main prompt: paste-chip coalescing for unbracketed drips.
+                // Main prompt: original paste-chip machine.
+                // Paste: bracketed Event::Paste → one chip; key drips coalesce into
+                // paste_accum only when more *text* presses are already queued (not
+                // KeyRelease — Windows always pairs Press+Release, which broke Enter).
                 // Enter is never paste: plain Enter submits, Shift+Enter = newline.
-                let mut i = 0;
-                while i < key_events.len() {
-                    let key = key_events[i];
-                    i += 1;
-                    if matches!(key.code, KeyCode::Enter) {
-                        if !app.paste_accum.is_empty() {
-                            app.paste_accum.push('\n');
-                            app.paste_accum_at = Some(Instant::now());
-                        } else if key.kind == KeyEventKind::Press {
-                            app.on_key(key);
-                        }
-                        dirty = true;
-                        continue;
-                    }
-                    if let Some(c) = key_as_paste_burst_char(&key) {
-                        // Coalesce contiguous paste-text keys already in the
-                        // batch (same frame), plus any Event::Paste chunks.
-                        let mut burst = String::new();
-                        burst.push(c);
-                        while i < key_events.len() {
-                            if let Some(ch) = key_as_paste_burst_char(&key_events[i]) {
-                                burst.push(ch);
-                                i += 1;
-                            } else {
-                                break;
+                // Live poll(ZERO) during a paste-char burst still peeks the PTY for
+                // drips that arrive after Phase A — that is the proven path.
+                let mut deferred: Option<Event> = None;
+                let mut kb_i = 0usize;
+                while kb_i < kb_events.len() || deferred.is_some() {
+                    let ev = if let Some(e) = deferred.take() {
+                        e
+                    } else {
+                        let e = kb_events[kb_i].clone();
+                        kb_i += 1;
+                        e
+                    };
+                    match ev {
+                        Event::Key(key)
+                            if key.kind == KeyEventKind::Press
+                                || key.kind == KeyEventKind::Repeat =>
+                        {
+                            if matches!(key.code, KeyCode::Enter) {
+                                if !app.paste_accum.is_empty() {
+                                    app.paste_accum.push('\n');
+                                    app.paste_accum_at = Some(Instant::now());
+                                } else if key.kind == KeyEventKind::Press {
+                                    app.on_key(key);
+                                }
+                                dirty = true;
+                                continue;
                             }
+
+                            if let Some(c) = key_as_paste_burst_char(&key) {
+                                // Drain further paste-text / Event::Paste; skip
+                                // KeyRelease (Windows ConPTY interleaves Press/Release
+                                // for every char — treating Release as a break made
+                                // pastes type out char-by-char and never coalesce).
+                                let mut burst = String::new();
+                                burst.push(c);
+                                // First absorb paste keys / Event::Paste still in
+                                // the pre-drained keyboard batch (order-preserving).
+                                while kb_i < kb_events.len() {
+                                    match &kb_events[kb_i] {
+                                        Event::Key(k)
+                                            if key_as_paste_burst_char(k).is_some() =>
+                                        {
+                                            if let Some(ch) = key_as_paste_burst_char(k) {
+                                                burst.push(ch);
+                                            }
+                                            kb_i += 1;
+                                        }
+                                        Event::Paste(p) => {
+                                            burst.push_str(p);
+                                            kb_i += 1;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                // Then live-queue peek — same as pre-v0.13.7: PTY
+                                // may still be delivering drip chars this frame.
+                                loop {
+                                    if !event::poll(Duration::ZERO)? {
+                                        break;
+                                    }
+                                    let next = match event::read() {
+                                        Ok(ev) => ev,
+                                        Err(_) => break,
+                                    };
+                                    match next {
+                                        Event::Key(k) if k.kind == KeyEventKind::Release => {
+                                            // Ignore release — keep draining the burst.
+                                            continue;
+                                        }
+                                        Event::Key(k)
+                                            if key_as_paste_burst_char(&k).is_some() =>
+                                        {
+                                            if let Some(ch) = key_as_paste_burst_char(&k) {
+                                                burst.push(ch);
+                                            }
+                                        }
+                                        Event::Paste(p) => burst.push_str(&p),
+                                        // Mouse/focus during a paste burst: park
+                                        // for Phase C (keys-first policy).
+                                        other @ (Event::Mouse(_)
+                                        | Event::FocusLost
+                                        | Event::FocusGained
+                                        | Event::Resize(_, _)) => {
+                                            other_events.push(other);
+                                        }
+                                        other => {
+                                            deferred = Some(other);
+                                            break;
+                                        }
+                                    }
+                                }
+                                // Multi-char burst, or mid-paste drip → accumulate.
+                                // Single isolated char (burst len 1, empty accum) → type.
+                                if burst.chars().count() > 1 || !app.paste_accum.is_empty() {
+                                    app.paste_accum.push_str(&burst);
+                                    app.paste_accum_at = Some(Instant::now());
+                                    dirty = true;
+                                    continue;
+                                }
+                                // Lone character: normal typing via on_key.
+                                app.flush_paste_accum();
+                                if key.kind == KeyEventKind::Press
+                                    || key.kind == KeyEventKind::Repeat
+                                {
+                                    let mut k = key;
+                                    k.code = KeyCode::Char(c);
+                                    app.on_key(k);
+                                }
+                                dirty = true;
+                                continue;
+                            }
+
+                            app.flush_paste_accum();
+                            // Press + Repeat (held arrows / shortcuts).
+                            app.on_key(key);
+                            dirty = true;
                         }
-                        // Multi-char burst, or mid-paste drip → accumulate.
-                        // Single isolated char (burst len 1, empty accum) → type.
-                        if burst.chars().count() > 1 || !app.paste_accum.is_empty() {
-                            app.paste_accum.push_str(&burst);
+                        Event::Paste(s) => {
+                            // Bracketed paste (the clean path) — but the terminal may
+                            // split a huge paste into many Event::Paste chunks across
+                            // frames. Coalesce them in paste_accum and flush as ONE chip,
+                            // which then uses the active_paste_id merge window so even
+                            // split flushes become a single chip.
+                            app.paste_accum.push_str(&s);
                             app.paste_accum_at = Some(Instant::now());
                             dirty = true;
-                            continue;
                         }
-                        app.flush_paste_accum();
-                        // Press + Repeat both type (held key should keep inserting
-                        // on hosts that emit Repeat; Windows auto-repeat is Press).
-                        let mut k = key;
-                        k.code = KeyCode::Char(c);
-                        app.on_key(k);
-                        dirty = true;
-                        continue;
+                        _ => {}
                     }
-                    app.flush_paste_accum();
-                    // Navigation / shortcuts: Press and Repeat (held ↑↓).
-                    app.on_key(key);
-                    dirty = true;
                     if app.should_quit {
                         break;
                     }
-                }
-                for s in paste_chunks {
-                    // Bracketed paste — coalesce in paste_accum and flush as one
-                    // chip (active_paste_id merge stitches split flushes).
-                    app.paste_accum.push_str(&s);
-                    app.paste_accum_at = Some(Instant::now());
-                    dirty = true;
                 }
             }
 
