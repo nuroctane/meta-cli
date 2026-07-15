@@ -56,6 +56,7 @@ pub fn login_browser(provider_id: &str, tx: ProgressTx, cancel: CancelFlag) {
         "huggingface" => huggingface::login(&tx, &cancel),
         "azure" => azure::login(&tx, &cancel),
         "bedrock" => bedrock::login(&tx, &cancel),
+        "github-models" => github::login(&tx, &cancel),
         other => Err(MuseError::Other(format!(
             "browser login not supported for '{other}'"
         ))),
@@ -796,6 +797,130 @@ pub mod antigravity {
 
     pub fn refresh(_auth: &Auth, _refresh: &str) -> Result<OAuthTokens> {
         fetch_access_token()
+    }
+}
+
+// ── GitHub Models (browser SSO via the official `gh` CLI) ───────────────────
+
+pub mod github {
+    use super::*;
+
+    /// Sign in through the official GitHub CLI (`gh auth login --web`), then mint
+    /// a token for GitHub Models. No OAuth client secrets ship in-repo. If `gh`
+    /// is already authenticated, the existing session is reused. Users without
+    /// `gh` can still paste a GitHub PAT (with `models:read`) via "Enter API key".
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        // Already signed in? Reuse the existing gh token.
+        if let Ok(t) = fetch_token() {
+            send(
+                tx,
+                BrowserLoginProgress::Status("using existing GitHub CLI session".into()),
+            );
+            return Ok(t);
+        }
+        send(
+            tx,
+            BrowserLoginProgress::Status("launching GitHub browser login (gh auth login)…".into()),
+        );
+        send(
+            tx,
+            BrowserLoginProgress::OpenUrl("https://github.com/login/device".into()),
+        );
+        // `--web` opens the device flow; feed newlines so the "press Enter to
+        // open the browser" prompt proceeds without a TTY.
+        let mut child = Command::new("gh")
+            .args([
+                "auth",
+                "login",
+                "--web",
+                "--hostname",
+                "github.com",
+                "--git-protocol",
+                "https",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                MuseError::Other(format!(
+                    "gh not found ({e}). Install GitHub CLI, or choose “Enter API key” with a GitHub PAT (models:read)."
+                ))
+            })?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(b"\n\n");
+        }
+        // Surface the one-time code + verification URL from gh's stderr.
+        if let Some(mut err) = child.stderr.take() {
+            let tx2 = tx.clone();
+            thread::spawn(move || {
+                let mut buf = String::new();
+                let _ = err.read_to_string(&mut buf);
+                for word in buf.split_whitespace() {
+                    if word.starts_with("https://") {
+                        send(&tx2, BrowserLoginProgress::OpenUrl(word.to_string()));
+                        let _ = open_browser(word);
+                        break;
+                    }
+                }
+                if let Some(idx) = buf.find("one-time code:") {
+                    let code: String = buf[idx..].chars().take(40).collect();
+                    send(&tx2, BrowserLoginProgress::Status(code));
+                }
+            });
+        }
+        loop {
+            if cancel.is_cancelled() {
+                let _ = child.kill();
+                return Err(MuseError::Other("login cancelled".into()));
+            }
+            match child.try_wait() {
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(status)) => {
+                    return Err(MuseError::Other(format!(
+                        "gh auth login failed (exit {status}). Paste a GitHub PAT (models:read) as fallback."
+                    )))
+                }
+                Ok(None) => thread::sleep(Duration::from_millis(200)),
+                Err(e) => return Err(MuseError::Other(e.to_string())),
+            }
+        }
+        send(tx, BrowserLoginProgress::Status("fetching GitHub token…".into()));
+        fetch_token()
+    }
+
+    fn fetch_token() -> Result<OAuthTokens> {
+        let out = Command::new("gh")
+            .args(["auth", "token", "--hostname", "github.com"])
+            .output()
+            .map_err(|e| MuseError::Other(format!("gh auth token: {e}")))?;
+        if !out.status.success() {
+            return Err(MuseError::Other(format!(
+                "gh auth token failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            )));
+        }
+        let access = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if access.is_empty() {
+            return Err(MuseError::Other("empty token from gh".into()));
+        }
+        Ok(OAuthTokens {
+            access_token: access,
+            // Marker so ensure_fresh_oauth can re-call `gh auth token`.
+            refresh_token: Some("gh".into()),
+            // gh manages token lifetime; re-fetch opportunistically.
+            expires_at: None,
+            meta: Some(OauthMeta {
+                issuer: "https://github.com".into(),
+                client_id: "gh".into(),
+                extra: serde_json::json!({"product": "github-models", "via": "gh auth login"}),
+            }),
+        })
+    }
+
+    pub fn refresh(_auth: &Auth, _refresh: &str) -> Result<OAuthTokens> {
+        fetch_token()
     }
 }
 

@@ -91,6 +91,7 @@ pub fn refresh_tokens(provider: &str, auth: &Auth, refresh: &str) -> Result<OAut
         "huggingface" => flows::huggingface::refresh(refresh),
         "azure" => flows::azure::refresh(),
         "bedrock" => flows::bedrock::refresh(),
+        "github-models" => flows::github::refresh(auth, refresh),
         _ => Err(MuseError::Other(format!(
             "no OAuth refresh path for provider '{provider}'"
         ))),

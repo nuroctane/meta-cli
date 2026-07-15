@@ -60,6 +60,9 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "cohere", name: "Cohere", base_url: "https://api.cohere.ai/compatibility/v1", default_model: "command-a-03-2025", env_key: "COHERE_API_KEY", style: CC, note: "Command", key_optional: false, browser_auth: false },
     Provider { id: "ai21", name: "AI21", base_url: "https://api.ai21.com/studio/v1", default_model: "jamba-large", env_key: "AI21_API_KEY", style: CC, note: "Jamba", key_optional: false, browser_auth: false },
     Provider { id: "reka", name: "Reka", base_url: "https://api.reka.ai/v1", default_model: "reka-core", env_key: "REKA_API_KEY", style: CC, note: "Reka Core / Flash", key_optional: false, browser_auth: false },
+    Provider { id: "inception", name: "Inception (Mercury)", base_url: "https://api.inceptionlabs.ai/v1", default_model: "mercury-coder", env_key: "INCEPTION_API_KEY", style: CC, note: "Mercury · diffusion LLM", key_optional: false, browser_auth: false },
+    Provider { id: "writer", name: "Writer (Palmyra)", base_url: "https://api.writer.com/v1", default_model: "palmyra-x5", env_key: "WRITER_API_KEY", style: CC, note: "Palmyra · enterprise", key_optional: false, browser_auth: false },
+    Provider { id: "upstage", name: "Upstage (Solar)", base_url: "https://api.upstage.ai/v1", default_model: "solar-pro2", env_key: "UPSTAGE_API_KEY", style: CC, note: "Solar", key_optional: false, browser_auth: false },
 
     // ── cloud / subscription SSO ─────────────────────────────────────────
     Provider { id: "huggingface", name: "Hugging Face", base_url: "https://router.huggingface.co/v1", default_model: "meta-llama/Llama-3.3-70B-Instruct", env_key: "HF_TOKEN", style: CC, note: "HF · key or browser", key_optional: false, browser_auth: true },
@@ -81,6 +84,10 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "octoai", name: "OctoAI", base_url: "https://text.octoai.run/v1", default_model: "meta-llama-3.3-70b-instruct", env_key: "OCTOAI_API_KEY", style: CC, note: "inference cloud", key_optional: false, browser_auth: false },
     Provider { id: "nvidia", name: "NVIDIA NIM", base_url: "https://integrate.api.nvidia.com/v1", default_model: "meta/llama-3.3-70b-instruct", env_key: "NVIDIA_API_KEY", style: CC, note: "build.nvidia.com", key_optional: false, browser_auth: false },
     Provider { id: "perplexity", name: "Perplexity", base_url: "https://api.perplexity.ai", default_model: "sonar-pro", env_key: "PERPLEXITY_API_KEY", style: CC, note: "Sonar · web-grounded", key_optional: false, browser_auth: false },
+    Provider { id: "baseten", name: "Baseten", base_url: "https://inference.baseten.co/v1", default_model: "deepseek-ai/DeepSeek-V3-0324", env_key: "BASETEN_API_KEY", style: CC, note: "model APIs · fast", key_optional: false, browser_auth: false },
+    Provider { id: "friendli", name: "Friendli", base_url: "https://api.friendli.ai/serverless/v1", default_model: "meta-llama-3.3-70b-instruct", env_key: "FRIENDLI_TOKEN", style: CC, note: "serverless endpoints", key_optional: false, browser_auth: false },
+    Provider { id: "chutes", name: "Chutes.ai", base_url: "https://llm.chutes.ai/v1", default_model: "deepseek-ai/DeepSeek-V3", env_key: "CHUTES_API_TOKEN", style: CC, note: "decentralized inference", key_optional: false, browser_auth: false },
+    Provider { id: "venice", name: "Venice AI", base_url: "https://api.venice.ai/api/v1", default_model: "llama-3.3-70b", env_key: "VENICE_API_KEY", style: CC, note: "private · uncensored", key_optional: false, browser_auth: false },
 
     // ── Chinese labs ─────────────────────────────────────────────────────
     Provider { id: "moonshot", name: "Moonshot (Kimi)", base_url: "https://api.moonshot.ai/v1", default_model: "kimi-k2-0711-preview", env_key: "MOONSHOT_API_KEY", style: CC, note: "Kimi K2", key_optional: false, browser_auth: false },
@@ -105,6 +112,10 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "featherless", name: "Featherless", base_url: "https://api.featherless.ai/v1", default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct", env_key: "FEATHERLESS_API_KEY", style: CC, note: "any HF model", key_optional: false, browser_auth: false },
     Provider { id: "targon", name: "Targon", base_url: "https://api.targon.com/v1", default_model: "deepseek-ai/DeepSeek-V3", env_key: "TARGON_API_KEY", style: CC, note: "Bittensor inference", key_optional: false, browser_auth: false },
     Provider { id: "nano-gpt", name: "NanoGPT", base_url: "https://nano-gpt.com/api/v1", default_model: "gpt-5.5", env_key: "NANOGPT_API_KEY", style: CC, note: "pay-per-prompt", key_optional: false, browser_auth: false },
+    Provider { id: "opencode", name: "OpenCode Zen", base_url: "https://opencode.ai/zen/v1", default_model: "claude-sonnet-4", env_key: "OPENCODE_API_KEY", style: CC, note: "coding-model gateway", key_optional: false, browser_auth: false },
+    Provider { id: "github-models", name: "GitHub Models", base_url: "https://models.github.ai/inference", default_model: "openai/gpt-4o", env_key: "GITHUB_TOKEN", style: CC, note: "gh CLI or PAT · free tier", key_optional: false, browser_auth: true },
+    Provider { id: "helicone", name: "Helicone AI Gateway", base_url: "https://ai-gateway.helicone.ai/v1", default_model: "openai/gpt-5.5", env_key: "HELICONE_API_KEY", style: CC, note: "gateway + observability", key_optional: false, browser_auth: false },
+    Provider { id: "aimlapi", name: "AI/ML API", base_url: "https://api.aimlapi.com/v1", default_model: "gpt-5.5", env_key: "AIMLAPI_KEY", style: CC, note: "300+ models, one key", key_optional: false, browser_auth: false },
 
     // ── local servers (key optional) ─────────────────────────────────────
     Provider { id: "ollama", name: "Ollama (local)", base_url: "http://localhost:11434/v1", default_model: "llama3.3", env_key: "OLLAMA_API_KEY", style: CC, note: "localhost:11434", key_optional: true, browser_auth: false },
@@ -153,6 +164,7 @@ mod tests {
             "huggingface",
             "azure",
             "bedrock",
+            "github-models",
         ] {
             let p = by_id(id).unwrap_or_else(|| panic!("missing {id}"));
             assert!(p.browser_auth, "{id} should offer browser auth");

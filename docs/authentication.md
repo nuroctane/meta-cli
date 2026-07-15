@@ -18,7 +18,10 @@ The active provider, endpoint, and default model are stored in
 | **Hugging Face** | `HF_TOKEN` | Device code (`hf auth login` style) |
 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | `az login` / Entra device code |
 | **AWS Bedrock** | gateway / bearer | `aws sso login` |
+| **GitHub Models** | GitHub PAT (`models:read`) | `gh auth login` browser SSO |
 | OpenAI, Gemini, Groq, … | Vendor dashboard | - |
+| OpenCode Zen, Vercel AI Gateway, GitHub Models, Helicone, … | Gateway key | - |
+| Baseten, Friendli, Chutes, Venice, Writer, Upstage, … | Vendor dashboard | - |
 | Ollama, LM Studio, … | Often none (local) | - |
 
 ## Log in from the TUI (recommended)
@@ -30,7 +33,7 @@ The active provider, endpoint, and default model are stored in
 What happens:
 
 1. Prior credentials are cleared so you start from a clean slate.
-2. A **scrollable, type-to-filter** picker lists **45+ providers** (frontier APIs,
+2. A **scrollable, type-to-filter** picker lists **60+ providers** (frontier APIs,
    inference clouds, Chinese labs, OpenAI-compatible routers, local servers).
    Providers with browser sign-in show a 🌐 hint.
 3. If the provider supports browser auth, choose:
@@ -131,10 +134,10 @@ The catalog lives in code (`src/providers.rs`). Categories include:
 
 | Category | Examples |
 |----------|----------|
-| Frontier | OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Mistral, Cohere, Meta Model API, … |
-| Inference clouds | Groq, Cerebras, Together, Fireworks, DeepInfra, Perplexity, NVIDIA NIM, … |
+| Frontier | OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Mistral, Cohere, Meta Model API, Inception (Mercury), Writer, Upstage, … |
+| Inference clouds | Groq, Cerebras, Together, Fireworks, DeepInfra, Perplexity, NVIDIA NIM, Baseten, Friendli, Chutes, Venice, … |
 | Chinese labs | Moonshot (Kimi), Zhipu GLM, Qwen (DashScope), MiniMax, … |
-| Aggregators / routers | OpenRouter, OmniRoute, Requesty, Vercel / Cloudflare AI gateways, … |
+| Aggregators / routers | OpenRouter, OmniRoute, Requesty, Vercel / Cloudflare AI gateways, OpenCode Zen, GitHub Models, Helicone, AI/ML API, … |
 | Local | Ollama, LM Studio, llama.cpp, vLLM (key often optional) |
 
 Each entry declares:

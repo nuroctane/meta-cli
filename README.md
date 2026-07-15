@@ -51,9 +51,9 @@ nur                 # open the TUI
 nur doctor          # health check
 ```
 
-Or run `nur` and use **`/login`** in the TUI: pick any of **45+ providers**
+Or run `nur` and use **`/login`** in the TUI: pick any of **60+ providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, Meta Model API, and so on).
-For **Grok, Claude, Antigravity, Hugging Face, Azure, and AWS Bedrock** you can **sign in with the browser** or paste an API key. No credential on launch and login opens automatically.
+For **Grok, Claude, Antigravity, Hugging Face, Azure, AWS Bedrock, and GitHub Models** you can **sign in with the browser** or paste an API key. No credential on launch and login opens automatically.
 
 ### Update
 
@@ -185,7 +185,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 ## Feature map
 
 ### Agent harness
-- **Multi-provider** via `/login` (45+); Responses or Chat Completions adapter
+- **Multi-provider** via `/login` (60+); Responses or Chat Completions adapter
 - Manual / plan / auto · Shift+Tab mid-turn
 - Tool loop, approvals, Esc cancel, subagents, todos, plan mode
 - Session budgets (`/budget`), tool-result spill, smarter auto-compact

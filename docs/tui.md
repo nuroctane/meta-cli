@@ -173,7 +173,7 @@ The note is appended to your persistent memory file and recalled automatically i
 /login
 ```
 
-Scrollable, **type-to-filter** catalog of 45+ providers → masked key → writes
+Scrollable, **type-to-filter** catalog of 60+ providers → masked key → writes
 `provider` / `base_url` / `model` to config and hot-swaps the HTTP client.
 Full detail: [Authentication](authentication.md).
 
