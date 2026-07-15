@@ -8,6 +8,7 @@ mod config;
 mod ecosystem;
 mod error;
 mod oauth;
+mod open_uri;
 mod plugins;
 mod providers;
 mod theme;
@@ -533,32 +534,13 @@ fn run_browser_setup(open: bool) -> Result<()> {
             // Open the extensions page in the default browser. `chrome://` URLs
             // only resolve inside a Chromium browser, so hand it to the OS
             // opener which routes to the default browser.
-            let _ = open_url(browser.extensions_url());
+            let _ = crate::open_uri::open(browser.extensions_url());
             theme::print_ok(&format!("opened {} in {}", browser.extensions_url(), browser.label()));
         }
     }
     println!();
     theme::print_ok("after loading once, the `browser` tool works in every session");
     Ok(())
-}
-
-/// Open a URL in the OS default browser (best-effort, non-fatal).
-fn open_url(url: &str) -> std::io::Result<()> {
-    #[cfg(windows)]
-    {
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn()
-            .map(|_| ())
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open").arg(url).spawn().map(|_| ())
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open").arg(url).spawn().map(|_| ())
-    }
 }
 
 /// Headless health check for install, auth, config, and ecosystem.

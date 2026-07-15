@@ -1277,6 +1277,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut line_cells: Vec<Option<usize>> = Vec::new();
     let mut line_cell_all: Vec<Option<usize>> = Vec::new();
     let mut hit_click_to_peek: Vec<Option<(usize, usize, usize)>> = Vec::new();
+    let mut hit_urls: Vec<Vec<(usize, usize, String)>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
@@ -1291,6 +1292,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 line_cells.push(None);
                 line_cell_all.push(None);
                 hit_click_to_peek.push(None);
+                hit_urls.push(Vec::new());
                 plain_lines.push(String::new());
             }
             prompts.push(text.clone());
@@ -1346,6 +1348,8 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             };
+            // Clickable http(s) URLs on this visual line (after wrap).
+            let urls = crate::open_uri::find_url_spans(&plain);
             plain_lines.push(plain);
             wrapped.push(line);
             owner.push(current);
@@ -1360,12 +1364,14 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             });
             line_cell_all.push(if !empty { Some(cell_idx) } else { None });
             hit_click_to_peek.push(ctp);
+            hit_urls.push(urls);
         }
     }
     app.hit_headers = hit_headers;
     app.line_cells = line_cells;
     app.line_cell_all = line_cell_all;
     app.hit_click_to_peek = hit_click_to_peek;
+    app.hit_urls = hit_urls;
     app.plain_lines = plain_lines;
 
     let total = wrapped.len() as u16;

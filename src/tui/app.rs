@@ -1103,6 +1103,8 @@ pub struct App {
     /// Absolute line → (`cell_idx`, display_col_start, display_col_end) for the
     /// exact `"click to peek"` text span. Only this hitbox opens the dialogue.
     pub hit_click_to_peek: Vec<Option<(usize, usize, usize)>>,
+    /// Absolute line → clickable `http(s)://` spans `(col_lo, col_hi, url)`.
+    pub hit_urls: Vec<Vec<(usize, usize, String)>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
@@ -1333,6 +1335,7 @@ pub async fn run_tui(
         line_cells: Vec::new(),
         line_cell_all: Vec::new(),
         hit_click_to_peek: Vec::new(),
+        hit_urls: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
         hover_cell: None,
@@ -4657,6 +4660,7 @@ impl App {
     ///
     /// - Chevron (left ~3 cols on a header): expand/collapse.
     /// - Exact `"click to peek"` text span only: open stable dialogue.
+    /// - `http(s)://…` text spans: open in the OS default browser.
     /// - Closing the dialogue is **never** done here — only Esc / outside / ✕.
     fn click_transcript(&mut self, col: u16, row: u16) {
         let body = self.transcript_body;
@@ -4672,8 +4676,32 @@ impl App {
             return;
         }
         let local_y = row.saturating_sub(body.y) as usize;
+        // body.x already includes the 1-col left margin from draw_transcript.
         let local_x = col.saturating_sub(body.x) as usize;
         let line_idx = self.transcript_top as usize + local_y;
+
+        // Prefer opening URLs over expand/peek when the pointer is on a link.
+        if let Some(spans) = self.hit_urls.get(line_idx) {
+            for (lo, hi, url) in spans {
+                if local_x >= *lo && local_x < *hi {
+                    match crate::open_uri::open(url) {
+                        Ok(()) => {
+                            self.push_note(
+                                Tone::Neutral,
+                                format!("opened link · {}", truncate_url_note(url)),
+                            );
+                        }
+                        Err(e) => {
+                            self.push_note(
+                                Tone::Session,
+                                format!("could not open link: {e}\n  {url}"),
+                            );
+                        }
+                    }
+                    return;
+                }
+            }
+        }
 
         let header = self.hit_headers.get(line_idx).copied().flatten();
         let chevron = local_x <= 3;
@@ -4700,6 +4728,20 @@ impl App {
     }
 
     // ── helpers ────────────────────────────────────────────────────────
+}
+
+fn truncate_url_note(url: &str) -> String {
+    const MAX: usize = 72;
+    let n = url.chars().count();
+    if n <= MAX {
+        url.to_string()
+    } else {
+        let head: String = url.chars().take(MAX - 1).collect();
+        format!("{head}…")
+    }
+}
+
+impl App {
     fn replay_session_history(&mut self) {
         let Some(session) = &self.session else { return };
         if !session.ui_log.is_empty() {

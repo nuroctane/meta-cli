@@ -159,7 +159,7 @@ fn create(args: &Value, cwd: &Path) -> Result<String> {
                 abs_out.display()
             ));
             if want_open(args) {
-                let _ = open_path(&abs_out);
+                let _ = crate::open_uri::open_path(&abs_out);
                 s.push_str("opened local .excalidraw with the default app (if associated)\n");
             }
         }
@@ -195,7 +195,7 @@ fn export_and_maybe_open(abs: &Path, cwd: &Path, open: bool) -> Result<String> {
     if let Some(url) = extract_excalidraw_url(&out) {
         s.push_str(&format!("share_url: {url}\n"));
         if open {
-            match open_url(&url) {
+            match crate::open_uri::open(&url) {
                 Ok(()) => s.push_str("opened share URL in your default browser\n"),
                 Err(e) => s.push_str(&format!(
                     "could not open browser automatically ({e}) — paste the share_url above\n"
@@ -204,74 +204,24 @@ fn export_and_maybe_open(abs: &Path, cwd: &Path, open: bool) -> Result<String> {
         }
     } else if open {
         // No URL parsed — still try opening the local file.
-        let _ = open_path(abs);
+        let _ = crate::open_uri::open_path(abs);
         s.push_str("no share URL parsed from export; opened local file instead\n");
     }
     Ok(s)
 }
 
 fn extract_excalidraw_url(text: &str) -> Option<String> {
-    // CLI prints a line like https://excalidraw.com/#json=…
-    for token in text.split_whitespace() {
-        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == ',' || c == ')');
-        if t.starts_with("https://excalidraw.com/") || t.starts_with("http://excalidraw.com/") {
-            return Some(t.to_string());
-        }
-        if t.starts_with("https://") && t.contains("excalidraw") {
-            return Some(t.to_string());
-        }
-    }
-    // Fallback: scan for https://…excalidraw…
-    if let Some(start) = text.find("https://excalidraw.com/") {
-        let rest = &text[start..];
-        let end = rest
-            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')')
-            .unwrap_or(rest.len());
-        return Some(rest[..end].to_string());
-    }
-    None
-}
-
-fn open_url(url: &str) -> std::result::Result<(), String> {
-    open_with_default(url)
-}
-
-fn open_path(path: &Path) -> std::result::Result<(), String> {
-    open_with_default(&path.to_string_lossy())
-}
-
-fn open_with_default(target: &str) -> std::result::Result<(), String> {
-    #[cfg(windows)]
-    {
-        // `start` is a cmd built-in; empty title arg required when URL has &/#.
-        let status = std::process::Command::new("cmd.exe")
-            .args(["/C", "start", "", target])
-            .spawn()
-            .map_err(|e| e.to_string())?
-            .wait()
-            .map_err(|e| e.to_string())?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("start exited {status}"))
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(target)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    }
+    // Prefer the shared URL finder (handles trailing punctuation).
+    crate::open_uri::find_url_spans(text)
+        .into_iter()
+        .map(|(_, _, u)| u)
+        .find(|u| u.contains("excalidraw"))
+        .or_else(|| {
+            crate::open_uri::find_url_spans(text)
+                .into_iter()
+                .next()
+                .map(|(_, _, u)| u)
+        })
 }
 
 fn elements_to_json_string(args: &Value) -> Result<String> {

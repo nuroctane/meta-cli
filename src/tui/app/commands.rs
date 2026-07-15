@@ -1137,6 +1137,7 @@ impl App {
              drag text            select + auto-copy\n  \
              drag the scrollbar   scrub history (right edge)\n  \
              click a card  ·  ▸   peek  ·  expand\n  \
+             click http(s) link   open in your default browser\n  \
              right/2×-click prompt  fork · revert · copy\n  \
              ↓ End                jump to latest\n  \
              Shift+Tab            cycle manual → plan → auto\n  \
