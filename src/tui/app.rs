@@ -67,8 +67,8 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/model", "show and switch models"),
     ("/plugins", "browse · install · enable marketplace plugins"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
-    ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
-    ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
+    ("/sessions", "browse & open past sessions  (same as /resume)"),
+    ("/resume", "browse & open past sessions  (same as /sessions)"),
     ("/init", "generate a NUR.md project guide"),
     ("/goal", "set a standing session goal (context on every turn)"),
     ("/btw", "add a one-off note to your next message"),
@@ -807,7 +807,7 @@ impl PluginPicker {
     }
 }
 
-/// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
+/// One row of the unified sessions picker (`/sessions` · `/resume`).
 #[derive(Debug, Clone)]
 pub struct SessionRow {
     pub id: String,
@@ -823,7 +823,7 @@ pub struct SessionRow {
     pub here: bool,
 }
 
-/// Interactive sessions browser — open with `/sessions`, `/resume`, or Ctrl+R.
+/// Interactive sessions browser — open with `/sessions` or `/resume`.
 pub struct SessionPicker {
     pub rows: Vec<SessionRow>,
     /// Selected entry (absolute index into `visible()`).
@@ -2087,6 +2087,13 @@ impl App {
         let alt = key.modifiers.contains(KeyModifiers::ALT);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
+        // Reverse history search (Ctrl+R) owns the keyboard while active. A
+        // `false` return means it accepted/closed and the key should fall
+        // through to normal handling (e.g. an arrow that also moves the caret).
+        if self.input.search_is_active() && self.handle_search_key(key, ctrl, alt) {
+            return;
+        }
+
         match key.code {
             // Ctrl+C: copy selection (transcript → input → open peek body) → else
             // interrupt / clear / double-tap quit.
@@ -2322,7 +2329,7 @@ impl App {
                 self.cells.retain(|c| matches!(c, Cell::Banner));
                 self.scroll_from_bottom = 0;
             }
-            KeyCode::Char('r') if ctrl => self.open_session_picker(),
+            KeyCode::Char('r') if ctrl => self.input.search_begin(),
             // Ctrl+A: select all input text; if input empty, select whole transcript.
             KeyCode::Char('a') if ctrl => {
                 if !self.input.is_empty() {
@@ -2357,6 +2364,47 @@ impl App {
                 self.palette_scroll = 0;
             }
             _ => {}
+        }
+    }
+
+    /// Handle a key while reverse history search (Ctrl+R) is active. Returns
+    /// `true` if the key was fully consumed; `false` means the search was
+    /// accepted/closed and the caller should process `key` normally.
+    fn handle_search_key(&mut self, key: event::KeyEvent, ctrl: bool, alt: bool) -> bool {
+        match key.code {
+            KeyCode::Char('r') if ctrl => {
+                self.input.search_begin(); // step to the next older match
+                true
+            }
+            KeyCode::Esc => {
+                self.input.search_cancel();
+                true
+            }
+            KeyCode::Char('c') | KeyCode::Char('g') if ctrl => {
+                self.input.search_cancel();
+                true
+            }
+            KeyCode::Backspace => {
+                self.input.search_backspace();
+                true
+            }
+            KeyCode::Enter => {
+                // Accept the match into the composer (ready to edit or submit).
+                self.input.search_accept();
+                self.ensure_input_caret_visible();
+                true
+            }
+            KeyCode::Char(c) if !ctrl && !alt => {
+                self.input.search_push(c);
+                true
+            }
+            _ => {
+                // Any other key (arrows, word ops, …): accept the match and let
+                // the key fall through to normal editing.
+                self.input.search_accept();
+                self.ensure_input_caret_visible();
+                false
+            }
         }
     }
 
@@ -3145,7 +3193,7 @@ impl App {
         }
     }
 
-    // ── session picker (`/sessions` · `/resume` · Ctrl+R) ─────────────
+    // ── session picker (`/sessions` · `/resume`) ─────────────
     fn open_session_picker(&mut self) {
         if self.busy {
             self.push_error("wait for the current turn to finish".into());

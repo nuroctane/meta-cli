@@ -408,7 +408,7 @@ impl App {
             ("Ctrl+P / N", "prompt history  (also Alt+↑/↓)"),
             ("Enter  ·  Shift+Enter", "send  ·  newline"),
             ("Shift+Tab", "cycle permission mode"),
-            ("Ctrl+R", "sessions browser  (/sessions · /resume)"),
+            ("Ctrl+R", "reverse-search prompt history  (type · Ctrl+R older · Esc cancel)"),
             ("Esc", "close peek  →  cancel turn  →  clear input"),
             ("Ctrl+L", "clear transcript view"),
             ("y  ·  a  ·  n", "approve once  ·  always  ·  deny"),
@@ -417,7 +417,7 @@ impl App {
             s.push_str(&format!("  {k:<22}  {v}\n"));
         }
 
-        s.push_str("\nsessions browser  (Ctrl+R)\n");
+        s.push_str("\nsessions browser  (/sessions · /resume)\n");
         for (k, v) in [
             ("↑ ↓  ·  wheel", "move selection"),
             ("Enter", "open session"),

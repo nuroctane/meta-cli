@@ -30,6 +30,16 @@ pub struct VisualRow {
     pub abs_end: usize,
 }
 
+/// Active Ctrl+R reverse-history-search session.
+struct ReverseSearch {
+    /// The incremental search query the user is typing.
+    query: String,
+    /// Index into `history` of the current match, if any.
+    match_idx: Option<usize>,
+    /// Buffer text before search began — restored on cancel.
+    restore: String,
+}
+
 pub struct InputState {
     /// Buffer with embedded '\n' for multi-line prompts.
     /// Large pastes may appear as a single private-use sentinel char.
@@ -46,6 +56,25 @@ pub struct InputState {
     history: Vec<String>,
     hist_idx: Option<usize>,
     stash: String,
+    /// Some while a Ctrl+R reverse search is in progress.
+    search: Option<ReverseSearch>,
+}
+
+/// Most-recent history entry (searching newest → oldest) at an index `< before`
+/// whose text contains `query` (case-insensitive). `before = None` searches the
+/// whole list. Empty query or no hit → `None`.
+fn reverse_search_match(history: &[String], query: &str, before: Option<usize>) -> Option<usize> {
+    if query.is_empty() {
+        return None;
+    }
+    let q = query.to_lowercase();
+    let end = before.unwrap_or(history.len()).min(history.len());
+    history[..end]
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, h)| h.to_lowercase().contains(&q))
+        .map(|(i, _)| i)
 }
 
 fn history_path() -> PathBuf {
@@ -113,6 +142,7 @@ impl InputState {
             history,
             hist_idx: None,
             stash: String::new(),
+            search: None,
         }
     }
 
@@ -849,6 +879,89 @@ impl InputState {
         }
     }
 
+    /// Enter reverse history search (Ctrl+R). Stashes the current buffer so a
+    /// cancel can restore it. If already searching, steps to the next older
+    /// match (Ctrl+R pressed again).
+    pub fn search_begin(&mut self) {
+        if self.search.is_some() {
+            self.search_prev();
+            return;
+        }
+        self.search = Some(ReverseSearch {
+            query: String::new(),
+            match_idx: None,
+            restore: self.text_expanded(),
+        });
+    }
+
+    pub fn search_is_active(&self) -> bool {
+        self.search.is_some()
+    }
+
+    /// The current incremental-search query, if searching.
+    pub fn search_query(&self) -> Option<&str> {
+        self.search.as_ref().map(|s| s.query.as_str())
+    }
+
+    /// The history entry currently matched by the search, if any.
+    pub fn search_match_text(&self) -> Option<String> {
+        let s = self.search.as_ref()?;
+        s.match_idx.map(|i| self.history[i].clone())
+    }
+
+    /// Append a char to the search query and re-match from the newest entry.
+    pub fn search_push(&mut self, c: char) {
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        s.query.push(c);
+        s.match_idx = reverse_search_match(&self.history, &s.query, None);
+    }
+
+    /// Remove the last query char and re-match from the newest entry.
+    pub fn search_backspace(&mut self) {
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        s.query.pop();
+        s.match_idx = reverse_search_match(&self.history, &s.query, None);
+    }
+
+    /// Ctrl+R again: step to the next older match, keeping the current match if
+    /// there is nothing older.
+    pub fn search_prev(&mut self) {
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
+        match s.match_idx {
+            Some(cur) => {
+                if let Some(older) = reverse_search_match(&self.history, &s.query, Some(cur)) {
+                    s.match_idx = Some(older);
+                }
+            }
+            None => s.match_idx = reverse_search_match(&self.history, &s.query, None),
+        }
+    }
+
+    /// Accept the current match into the buffer and leave search mode. With no
+    /// match, leaves search mode with the pre-search buffer intact.
+    pub fn search_accept(&mut self) {
+        if let Some(s) = self.search.take() {
+            let text = match s.match_idx {
+                Some(i) => self.history[i].clone(),
+                None => s.restore,
+            };
+            self.set_text(&text);
+        }
+    }
+
+    /// Abort search and restore the buffer as it was before Ctrl+R.
+    pub fn search_cancel(&mut self) {
+        if let Some(s) = self.search.take() {
+            self.set_text(&s.restore);
+        }
+    }
+
     /// Take the buffer as a submission: expands chips, records history, clears.
     pub fn submit(&mut self) -> String {
         let text = self.text_expanded();
@@ -872,7 +985,13 @@ impl InputState {
             history: Vec::new(),
             hist_idx: None,
             stash: String::new(),
+            search: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_history_for_test(&mut self, items: &[&str]) {
+        self.history = items.iter().map(|s| s.to_string()).collect();
     }
 
     fn persist_history(&self) {
@@ -1155,6 +1274,79 @@ line two
         assert!(is_paste_sentinel(i.buffer[0]));
         assert_eq!(i.paste_id_at(0), Some(id));
         assert_eq!(i.text_expanded(), combined);
+    }
+
+    #[test]
+    fn reverse_search_match_picks_most_recent() {
+        let hist: Vec<String> = ["git status", "cargo build", "git commit -m wip", "cargo test"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(reverse_search_match(&hist, "git", None), Some(2));
+        assert_eq!(reverse_search_match(&hist, "git", Some(2)), Some(0));
+        assert_eq!(reverse_search_match(&hist, "git", Some(0)), None);
+        assert_eq!(reverse_search_match(&hist, "CARGO", None), Some(3)); // case-insensitive
+        assert_eq!(reverse_search_match(&hist, "", None), None);
+        assert_eq!(reverse_search_match(&hist, "docker", None), None);
+    }
+
+    #[test]
+    fn reverse_search_accept_sets_buffer() {
+        let mut i = InputState::empty_for_test();
+        i.seed_history_for_test(&["git status", "cargo build", "git commit"]);
+        i.insert_str("wip");
+        i.search_begin();
+        assert!(i.search_is_active());
+        for c in "git".chars() {
+            i.search_push(c);
+        }
+        assert_eq!(i.search_query(), Some("git"));
+        assert_eq!(i.search_match_text().as_deref(), Some("git commit"));
+        i.search_accept();
+        assert!(!i.search_is_active());
+        assert_eq!(i.text_expanded(), "git commit");
+    }
+
+    #[test]
+    fn reverse_search_cancel_restores_buffer() {
+        let mut i = InputState::empty_for_test();
+        i.seed_history_for_test(&["git status", "cargo build"]);
+        i.insert_str("draft text");
+        i.search_begin();
+        i.search_push('c');
+        i.search_push('a');
+        assert_eq!(i.search_match_text().as_deref(), Some("cargo build"));
+        i.search_cancel();
+        assert!(!i.search_is_active());
+        assert_eq!(i.text_expanded(), "draft text");
+    }
+
+    #[test]
+    fn reverse_search_steps_to_older_matches() {
+        let mut i = InputState::empty_for_test();
+        i.seed_history_for_test(&["git status", "make all", "git commit"]);
+        i.search_begin();
+        for c in "git".chars() {
+            i.search_push(c);
+        }
+        assert_eq!(i.search_match_text().as_deref(), Some("git commit"));
+        i.search_prev();
+        assert_eq!(i.search_match_text().as_deref(), Some("git status"));
+        i.search_prev(); // nothing older → keep the last good match
+        assert_eq!(i.search_match_text().as_deref(), Some("git status"));
+    }
+
+    #[test]
+    fn reverse_search_backspace_rematches() {
+        let mut i = InputState::empty_for_test();
+        i.seed_history_for_test(&["git status", "grep foo", "git commit"]);
+        i.search_begin();
+        for c in "gitx".chars() {
+            i.search_push(c);
+        }
+        assert_eq!(i.search_match_text(), None); // "gitx" matches nothing
+        i.search_backspace(); // back to "git"
+        assert_eq!(i.search_match_text().as_deref(), Some("git commit"));
     }
 
     #[test]

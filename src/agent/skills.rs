@@ -94,20 +94,11 @@ const INTENT_RULES: &[IntentRule] = &[
             "use the fable method",
             "use fable method",
             "fable method",
-            "fable style",
-            "fable's way",
-            "fables way",
-            "fable way",
             "fable would do",
-            "would fable",
             "as fable did",
             "like fable did",
             "be like fable",
             "channel fable",
-            "use fable",
-            "with fable",
-            "via fable",
-            "per fable",
         ],
         label: "fable-method",
         why: "Fable think → act → prove problem-solving loop",
@@ -464,6 +455,37 @@ pub fn normalize_intent_text(s: &str) -> String {
         .join(" ")
 }
 
+/// True if `needle` occurs in `haystack` as a whole-token run — bounded by a
+/// space or a string end on each side. Both are expected already normalized by
+/// [`normalize_intent_text`] (lowercase, single-spaced, tokens of alnum/`/`/`-`),
+/// and every `needle` (rule phrase) is ASCII, so byte-boundary checks are safe.
+///
+/// This is the fix for short phrases matching *inside* a longer word — e.g.
+/// `excalidraw` must not fire on `excalidrawings`, and `use fable` must not
+/// fire on `use fables`.
+fn phrase_matches(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hb = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(needle) {
+        let start = from + rel;
+        let end = start + needle.len();
+        let before_ok = start == 0 || hb[start - 1] == b' ';
+        let after_ok = end == haystack.len() || hb[end] == b' ';
+        if before_ok && after_ok {
+            return true;
+        }
+        // needle[0] is ASCII, so `start + 1` stays on a char boundary.
+        from = start + 1;
+        if from >= haystack.len() {
+            break;
+        }
+    }
+    false
+}
+
 fn find_installed<'a>(skills: &'a [Skill], names: &[&str]) -> Option<&'a Skill> {
     for n in names {
         if let Some(sk) = skills.iter().find(|s| s.name.eq_ignore_ascii_case(n)) {
@@ -484,7 +506,7 @@ pub fn detect_skill_activation<'a>(
     }
 
     for rule in INTENT_RULES {
-        if !rule.phrases.iter().any(|p| t.contains(p)) {
+        if !rule.phrases.iter().any(|p| phrase_matches(&t, p)) {
             continue;
         }
         if let Some(sk) = find_installed(skills, rule.skill_names) {
@@ -492,16 +514,20 @@ pub fn detect_skill_activation<'a>(
         }
     }
 
-    // Loose Fable fallback: "fable" + a method-ish word, only if method installed.
-    if t.contains("fable") {
-        let methodish = ["think", "approach", "method", "workflow", "style", "way", "loop", "judge"];
-        if methodish.iter().any(|w| t.contains(w)) {
-            let names: &[&str] = if t.contains("judge") {
-                &["fable-judge", "fable-method"]
-            } else if t.contains("loop") {
-                &["fable-loop", "fable-method"]
-            } else {
-                &["fable-method"]
+    // Loose Fable fallback for phrasings the explicit list misses. Require a
+    // strong method cue **directly adjacent** to the `fable` token (a bigram),
+    // so questions that merely mention fable ("how does fable's loop differ
+    // from opus") don't hijack the turn.
+    if phrase_matches(&t, "fable") {
+        const STRONG: &[&str] = &["judge", "loop", "think", "approach", "method", "workflow"];
+        let cue = STRONG.iter().copied().find(|w| {
+            phrase_matches(&t, &format!("fable {w}")) || phrase_matches(&t, &format!("{w} fable"))
+        });
+        if let Some(w) = cue {
+            let names: &[&str] = match w {
+                "judge" => &["fable-judge", "fable-method"],
+                "loop" => &["fable-loop", "fable-method"],
+                _ => &["fable-method"],
             };
             if let Some(sk) = find_installed(skills, names) {
                 // Reuse the matching rule for label/why when possible.
@@ -806,5 +832,57 @@ mod intent_tests {
         let skills = vec![fake_skill("unrelated")];
         assert!(detect_skill_activation("think like fable", &skills).is_none());
         assert!(detect_skill_activation("tdd this", &skills).is_none());
+    }
+
+    #[test]
+    fn substring_mentions_do_not_false_fire() {
+        // A phrase must match whole words, never inside a longer token.
+        let skills = vec![fake_skill("excalidraw")];
+        assert!(detect_skill_activation("these excalidrawings look great", &skills).is_none());
+    }
+
+    #[test]
+    fn broad_fable_mentions_do_not_activate() {
+        // Merely mentioning fable in a question/comparison must not hijack the turn.
+        let skills = vec![
+            fake_skill("fable-method"),
+            fake_skill("fable-loop"),
+            fake_skill("fable-judge"),
+        ];
+        for q in [
+            "compare it with fable and opus",
+            "per fable 5 release notes",
+            "route this via fable api",
+            "how does fable's loop differ from opus",
+            "would fable be better than opus here",
+            "use fables of aesop as examples",
+        ] {
+            assert!(
+                detect_skill_activation(q, &skills).is_none(),
+                "should NOT activate on: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn directive_fable_still_activates() {
+        // Clear directives must keep working after the false-positive cleanup.
+        let skills = vec![
+            fake_skill("fable-method"),
+            fake_skill("fable-loop"),
+            fake_skill("fable-judge"),
+        ];
+        let cases = [
+            ("use the fable method here", "fable-method"),
+            ("channel fable on this refactor", "fable-method"),
+            ("run the fable loop on this", "fable-loop"),
+            ("take the fable approach here", "fable-method"),
+            ("please fable judge this work", "fable-judge"),
+        ];
+        for (q, want) in cases {
+            let (sk, _) = detect_skill_activation(q, &skills)
+                .unwrap_or_else(|| panic!("expected activation for: {q}"));
+            assert_eq!(sk.name, want, "for: {q}");
+        }
     }
 }

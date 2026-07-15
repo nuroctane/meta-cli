@@ -860,7 +860,7 @@ fn draw_login_key(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-// ── sessions picker (`/sessions` · `/resume` · Ctrl+R) ────────────────────
+// ── sessions picker (`/sessions` · `/resume`) ────────────────────
 // Thick custom frame, rotating border accents + entry separators, entry-stable scroll.
 fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     if app.picker.is_none() {
@@ -2692,6 +2692,48 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
         .fg(theme::BG)
         .bg(theme::META_BLUE)
         .add_modifier(Modifier::BOLD);
+
+    // Reverse history search (Ctrl+R) takes over the composer body so the user
+    // sees the query and the matched entry before accepting it.
+    if app.input.search_is_active() {
+        let query = app.input.search_query().unwrap_or("").to_string();
+        let mut spans = vec![
+            Span::styled(
+                "❯ ".to_string(),
+                Style::default()
+                    .fg(theme::META_BLUE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("(reverse-search)`{query}`: "), theme::style_faint()),
+        ];
+        match app.input.search_match_text() {
+            Some(m) => {
+                // Collapse to a single-line preview; the raw entry is what gets
+                // accepted into the composer on Enter.
+                let first = m.lines().next().unwrap_or("");
+                let preview = if m.contains('\n') {
+                    format!("{first} …")
+                } else {
+                    first.to_string()
+                };
+                spans.push(Span::styled(preview, normal));
+            }
+            None => spans.push(Span::styled(
+                "(no match — Esc cancels)".to_string(),
+                theme::style_faint(),
+            )),
+        }
+        f.render_widget(
+            Paragraph::new(vec![Line::from(spans)]).style(theme::style_surface()),
+            inner,
+        );
+        if focused {
+            f.set_cursor_position((inner.x + 2, inner.y));
+        }
+        app.input_area = area;
+        app.input_inner = inner;
+        return;
+    }
 
     // Content width after "❯ " / "  " prefix.
     let usable = (inner.width as usize).saturating_sub(3).max(1);
