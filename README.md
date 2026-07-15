@@ -2,10 +2,10 @@
 
 <div align="center">
 
-### ⚡ Extremely efficient token spend
+### Extremely efficient token spend
 
 **Cut costs for every provider by up to ~85%.**  
-The harness is built to burn fewer tokens — less waste, more work per dollar — across OpenAI, Anthropic, Grok, Gemini, Meta Model API, and the rest of the catalog.
+The harness is built to burn fewer tokens. Less waste, more work per dollar, across OpenAI, Anthropic, Grok, Gemini, Meta Model API, and the rest of the catalog.
 
 </div>
 
@@ -23,11 +23,11 @@ nur          # interactive gold TUI
 
 ---
 
-## Install — dead simple
+## Install: dead simple
 
 One shot. The **one-liner** (builds from source) or the **Windows EXE** (prebuilt) each drop `nur` on your PATH, pull in every runtime dependency they can, and wire the full agent stack **before** the TUI opens.
 
-### <img alt="Windows (PowerShell) — recommended" src="https://img.shields.io/badge/Windows_(PowerShell)_—_recommended-a855f7?style=for-the-badge">
+### <img alt="Windows (PowerShell) - recommended" src="https://img.shields.io/badge/Windows_(PowerShell)_-_recommended-a855f7?style=for-the-badge">
 
 ```powershell
 irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex
@@ -42,14 +42,14 @@ curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh |
 ### After install
 
 ```text
-nur auth login      # key → ~/.nur/auth.json  (or set NUR_API_KEY)
+nur auth login      # key -> ~/.nur/auth.json  (or set NUR_API_KEY)
 nur                 # open the TUI
 nur doctor          # health check
 ```
 
 Or run `nur` and use **`/login`** in the TUI: pick any of **45+ providers**
-(OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, Meta Model API, …).
-For **Grok, Claude, Antigravity, Hugging Face, Azure, and AWS Bedrock** you can **sign in with the browser** or paste an API key. No credential on launch → login opens automatically.
+(OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, Meta Model API, and so on).
+For **Grok, Claude, Antigravity, Hugging Face, Azure, and AWS Bedrock** you can **sign in with the browser** or paste an API key. No credential on launch and login opens automatically.
 
 ### Update
 
@@ -62,7 +62,7 @@ Pulls latest `main` when a Laboratory checkout exists (`~/laboratory/nur-cli` or
 | Also fine | |
 |-----------|--|
 | Re-run the **one-liner** | Full rebuild from GitHub |
-| Re-download + double‑click **Windows EXE** | Prebuilt path |
+| Re-download + double-click **Windows EXE** | Prebuilt path |
 | `nur install` | Reinstall *this* binary + stack (no git pull) |
 
 Verify: `nur --version` · `nur doctor`. Detail: [docs/setup.md → Update](./docs/setup.md#update-keep-nurcli-current).
@@ -71,21 +71,21 @@ Verify: `nur --version` · `nur doctor`. Detail: [docs/setup.md → Update](./do
 
 <table>
 <tr>
-<td width="33%"><strong>① One-liner (above)</strong><br/>Easiest. Builds from source + full stack.</td>
-<td width="33%"><img alt="② Prebuilt EXE (Windows)" src="https://img.shields.io/badge/②_Prebuilt_EXE_(Windows)-a855f7?style=for-the-badge"><br/>Download → double‑click → done.</td>
-<td width="33%"><strong>③ From a clone</strong><br/>You already have the repo.</td>
+<td width="33%"><strong>1. One-liner (above)</strong><br/>Easiest. Builds from source + full stack.</td>
+<td width="33%"><img alt="2. Prebuilt EXE (Windows)" src="https://img.shields.io/badge/2_Prebuilt_EXE_(Windows)-a855f7?style=for-the-badge"><br/>Download → double-click → done.</td>
+<td width="33%"><strong>3. From a clone</strong><br/>You already have the repo.</td>
 </tr>
 </table>
 
-### <img alt="② Prebuilt Windows binary" src="https://img.shields.io/badge/②_Prebuilt_Windows_binary-a855f7?style=for-the-badge">
+### <img alt="2. Prebuilt Windows binary" src="https://img.shields.io/badge/2_Prebuilt_Windows_binary-a855f7?style=for-the-badge">
 
 1. Open **[Releases → latest](https://github.com/nuroctane/nur-cli/releases/latest)**
 2. Download **`nur-windows-x86_64.exe`**
-3. **Double‑click it** (or `.\nur-windows-x86_64.exe` in a terminal)
+3. **Double-click it** (or `.\nur-windows-x86_64.exe` in a terminal)
 
 Copies itself to `~\.local\bin\nur.exe`, PATH, prereqs, ecosystem + browser setup, then opens NurCLI.
 
-**③ Already cloned**
+**3. Already cloned**
 
 ```powershell
 cd nur-cli
@@ -93,7 +93,7 @@ cd nur-cli
 # ./install.sh         # macOS / Linux
 ```
 
-**④ Manual cargo build**
+**4. Manual cargo build**
 
 ```bash
 git clone https://github.com/nuroctane/nur-cli.git
@@ -130,28 +130,28 @@ Everything is **local**. Secrets never go into the git repo.
 | **Source checkout** (one-liner) | `~/laboratory/nur-cli` (override `NUR_CLI_DIR`) |
 | **User PATH** | `~/.local/bin` |
 
-#### C. Data home — `~/.nur/`
+#### C. Data home: `~/.nur/`
 
 | Path | Purpose |
 |------|---------|
 | `auth.json` | API key after login |
-| `config.toml` | Model, effort, budgets, … |
+| `config.toml` | Model, effort, budgets, etc. |
 | `sessions/` | Chat sessions |
 | `skills/` · `ruflo/` · `tool-results/` | Skills, vector memory, spilled tool output |
 | `status.json` · `usage.jsonl` · `ade.json` | Live usage + host panels |
 | `nur.log` | Tracing (not painted into the TUI) |
 
-Older builds may still have data under `~/.meta` or `~/.muse`. On first run NurCLI **gap-fills** missing files into `~/.nur/` (never overwrites). You can delete the old homes after you’re happy everything works.
+Older builds may still have data under `~/.meta` or `~/.muse`. On first run NurCLI **gap-fills** missing files into `~/.nur/` (never overwrites). Delete the old homes once you're happy everything works.
 
 #### D. Ecosystem packs
 
-Graphify · PLUR · Ruflo · Executor · omp · agent-browser-cli · skill packs — installed when Node/uv/Bun are available.
+Graphify · PLUR · Ruflo · Executor · omp · agent-browser-cli · skill packs. Installed when Node/uv/Bun are available.
 
 Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** · [docs/setup.md](./docs/setup.md)
 
 ---
 
-**v0.10.0** — Full harness: **[Docs](https://nuroctane.github.io/nur-cli/)**
+**v0.11.0**: Full harness. **[Docs](https://nuroctane.github.io/nur-cli/)**
 
 | Surface | What ships |
 |---------|------------|
@@ -169,7 +169,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 | | |
 |--|--|
 | **Real agent, not a wrapper** | Modes, tools, sandbox, streaming, cancel, subagents, auto-compact |
-| **Sees media** | Multimodal images/short video — sparse frames, not spam |
+| **Sees media** | Multimodal images/short video. Sparse frames, not spam. |
 | **One-shot install** | One-liner or Windows EXE · PATH · ecosystem · browser |
 | **Easy updates** | `nur update` |
 | **Knowledge stack** | Graph · engrams · vector memory · MCP · skills |
@@ -189,6 +189,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 - `/poor` cost-saver prompt
 - Project instructions: `NUR.md` · `AGENTS.md` · `CLAUDE.md` (also loads legacy `META.md` / `MUSE.md` if present)
 - Session resume: `-c`, `-r`, `/sessions`
+- `/model` opens a live model list for the active provider (or `/model <id>` to set one directly)
 
 ### Tools (native)
 
@@ -219,7 +220,7 @@ nur "steal UI design tokens from demo.mp4 and scaffold a matching component"
 
 | Piece | Role |
 |-------|------|
-| **Graphify** | Code knowledge graph (`graphify-out/` in the workspace — gitignored, regenerable) |
+| **Graphify** | Code knowledge graph (`graphify-out/` in the workspace; gitignored, regenerable) |
 | **PLUR** | Shared engram memory |
 | **Ruflo** | Vector memory / swarm helpers under `~/.nur/ruflo/` |
 | **Executor** | MCP / OpenAPI gateway |
@@ -259,8 +260,8 @@ nur "fix the bug"          # start with a prompt
 nur "design from ref.mp4"   # vision: auto-attach media if path exists
 nur -c                      # continue last session in this directory
 nur -r <session-id>         # resume a session
-nur --mode plan "…"         # plan mode
-nur run "…" -y              # headless + auto-approve
+nur --mode plan "..."       # plan mode
+nur run "..." -y            # headless + auto-approve
 nur sessions
 nur usage
 nur auth status
@@ -304,6 +305,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 |---------|---------|
 | `/help` | Keys + commands |
 | `/login` `/logout` | Provider + key / clear |
+| `/model` | Show and switch models for the active provider |
 | `/goal` `/btw` | Session goal / one-off note |
 | `/codesearch` `/cs` | Workspace ripgrep |
 | `/mc` `/mcp` | MCP via Executor |
@@ -329,7 +331,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 `~/.nur/config.toml` (created on first run):
 
 ```toml
-provider = "meta"              # or openai, openrouter, ollama, …
+provider = "meta"              # or openai, openrouter, ollama, ...
 model = "muse-spark-1.1"       # whatever the active provider expects
 base_url = "https://api.meta.ai/v1"
 reasoning_effort = "high"
