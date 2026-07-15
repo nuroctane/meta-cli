@@ -10,6 +10,10 @@ The harness is built to burn fewer tokens. Less waste, more work per dollar, acr
 </div>
 
 <p align="center">
+  <img src="docs/assets/nur-cli-logo.png" alt="NurCLI logo" width="132">
+</p>
+
+<p align="center">
   <img src="docs/assets/nur-demo.gif" alt="NurCLI demo" width="600">
 </p>
 
