@@ -16,13 +16,17 @@ use tokio_util::sync::CancellationToken;
 /// Spawn a command detached (null stdio, don't wait). Used for `cua autostart
 /// enable/disable`, which may pop a UAC prompt — we must not block the TUI on it.
 fn spawn_detached(bin: &str, args: &[&str]) -> std::io::Result<()> {
-    std::process::Command::new(bin)
-        .args(args)
+    let mut cmd = std::process::Command::new(bin);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|_| ())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW — don't touch nur's console
+    }
+    cmd.spawn().map(|_| ())
 }
 
 impl App {

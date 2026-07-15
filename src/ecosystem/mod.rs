@@ -689,22 +689,35 @@ pub fn which(name: &str) -> bool {
 fn spawn_program(bin: &str, args: &[&str]) -> Command {
     #[cfg(windows)]
     {
+        use std::os::windows::process::CommandExt;
         let lower = bin.to_ascii_lowercase();
         let needs_cmd = lower.ends_with(".cmd")
             || lower.ends_with(".bat")
             || (!bin.contains('\\') && !bin.contains('/'));
-        if needs_cmd {
+        let mut c = if needs_cmd {
             let mut c = Command::new("cmd.exe");
             c.arg("/D").arg("/C").arg(bin);
             for a in args {
                 c.arg(a);
             }
-            return c;
-        }
+            c
+        } else {
+            let mut c = Command::new(bin);
+            c.args(args);
+            c
+        };
+        // CREATE_NO_WINDOW — keep background/ensure children off nur's console so
+        // their cmd/npm `SetConsoleTitle` never clobbers nur's animated moon-phase
+        // window title (and no console window flashes on install).
+        c.creation_flags(0x0800_0000);
+        c
     }
-    let mut c = Command::new(bin);
-    c.args(args);
-    c
+    #[cfg(not(windows))]
+    {
+        let mut c = Command::new(bin);
+        c.args(args);
+        c
+    }
 }
 
 pub fn run_capture(
