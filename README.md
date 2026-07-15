@@ -328,6 +328,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/failover` | Cross-provider failover + privacy tiers (provider-picker; Space adds a fallback, Alt+P sets its privacy tier) |
 | `/undo` | Revert the last file edit (write / edit / multi_edit) this session |
 | `/receipt` | Session receipt — verify what actually ran (models, tools, privacy tiers), hash-chained |
+| `/cua` | Computer-use desktop driver: `/cua on` = always-on background desktop control (elevated), `off` = on-demand only, `status` |
 
 ---
 

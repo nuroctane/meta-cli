@@ -13,6 +13,18 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Spawn a command detached (null stdio, don't wait). Used for `cua autostart
+/// enable/disable`, which may pop a UAC prompt — we must not block the TUI on it.
+fn spawn_detached(bin: &str, args: &[&str]) -> std::io::Result<()> {
+    std::process::Command::new(bin)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map(|_| ())
+}
+
 impl App {
     // ── slash commands ──────────────────────────────────────────────────
     pub(super) fn run_command(&mut self, raw: &str) {
@@ -83,6 +95,7 @@ impl App {
             "/undo" => self.cmd_undo(),
             "/failover" => self.open_failover(),
             "/receipt" => self.cmd_receipt(),
+            "/cua" => self.cmd_cua(&arg),
             "/permissions" => self.cmd_permissions(&arg),
             "/hooks" => self.push_note(
                 Tone::Skill,
@@ -533,6 +546,67 @@ impl App {
     fn cmd_receipt(&mut self) {
         let text = crate::agent::receipt::render(&self.session_id);
         self.push_note(Tone::Session, text);
+    }
+
+    /// `/cua [on|off|status]` — control the Cua computer-use desktop driver.
+    ///
+    /// - `on`  registers cua's always-on background driver (elevated, runs at
+    ///   every logon) so cua can see and control your desktop without nur
+    ///   launching it each time — Windows shows a UAC prompt.
+    /// - `off` removes it; cua computer-use stays available on demand (nur
+    ///   starts it only when a task needs the desktop). This is the default.
+    /// - no arg / `status` shows whether the driver is installed and running.
+    fn cmd_cua(&mut self, arg: &str) {
+        let Some(bin) = crate::ecosystem::cua_driver_path() else {
+            self.push_note(
+                Tone::Session,
+                "cua-driver isn't installed yet — it auto-provisions on install / next nur open. \
+                 Run `nur ecosystem ensure` (or reopen nur) to install it, then `/cua`."
+                    .into(),
+            );
+            return;
+        };
+        match arg.trim().to_lowercase().as_str() {
+            "on" | "enable" | "start" => match spawn_detached(&bin, &["autostart", "enable"]) {
+                Ok(()) => self.push_note(
+                    Tone::Session,
+                    "cua · turning ON the always-on desktop driver — approve the Windows UAC prompt.\n\
+                     Once on, cua can see and control your desktop in the background (runs elevated \
+                     at every logon), so computer-use tasks start instantly.\n\
+                     Turn it off any time with /cua off · check /cua status."
+                        .into(),
+                ),
+                Err(e) => self.push_note(Tone::Neutral, format!("cua enable failed: {e}")),
+            },
+            "off" | "disable" | "stop" => match spawn_detached(&bin, &["autostart", "disable"]) {
+                Ok(()) => self.push_note(
+                    Tone::Session,
+                    "cua · turning OFF the always-on desktop driver. Nothing runs in the background — \
+                     cua computer-use is still available on demand (nur launches it only when a task \
+                     needs the desktop). Check /cua status."
+                        .into(),
+                ),
+                Err(e) => self.push_note(Tone::Neutral, format!("cua disable failed: {e}")),
+            },
+            _ => {
+                let ver = crate::ecosystem::cmd_version_pub(&bin, &["--version"])
+                    .unwrap_or_else(|| "installed".into());
+                let status = crate::ecosystem::run_capture(&bin, &["autostart", "status"], None, 4_000)
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|e| {
+                        format!("(status unavailable: {})", e.chars().take(80).collect::<String>())
+                    });
+                self.push_note(
+                    Tone::Session,
+                    format!(
+                        "cua-driver {ver} — computer-use desktop driver\n{status}\n\n\
+                         /cua on   — always-on: cua sees/controls your desktop in the background \
+                         (elevated, starts at logon; UAC prompt)\n\
+                         /cua off  — on-demand only: nothing runs in the background (default)",
+                    ),
+                );
+            }
+        }
     }
 
     fn cmd_undo(&mut self) {

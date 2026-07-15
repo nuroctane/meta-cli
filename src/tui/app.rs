@@ -61,6 +61,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/poor", "toggle cost-saver: skip PLUR inject + skills catalog + long memory in prompt"),
     ("/undo", "revert the last file edit (write/edit/multi_edit) made this session"),
     ("/receipt", "session receipt: verify what actually ran (models, tools, privacy tiers)"),
+    ("/cua", "computer-use desktop driver — /cua on (always-on background control) · off (on-demand) · status"),
     ("/failover", "set up cross-provider failover in the provider picker (space toggles)"),
     ("/context", "context-window utilization for this session"),
     ("/status", "session snapshot: model · mode · cwd · tokens"),

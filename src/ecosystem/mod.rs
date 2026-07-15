@@ -339,6 +339,11 @@ fn cua_driver_bin() -> Option<String> {
     None
 }
 
+/// Public locator for the `cua-driver` binary (used by the `/cua` command).
+pub fn cua_driver_path() -> Option<String> {
+    cua_driver_bin()
+}
+
 /// Cua Drivers — computer-use MCP server + CLI (`cua-driver`) from trycua/cua.
 /// Installed via the vendor's official script. On Windows we pass `-NoAutoStart`
 /// so nur never silently registers an **elevated** background daemon: the useful
