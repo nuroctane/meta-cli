@@ -3,7 +3,7 @@
 use super::mode::{PermissionMode, SharedMode};
 use super::session::Session;
 use super::{AgentEvent, AgentRunner};
-use crate::api::MetaClient;
+use crate::api::ApiClient;
 use crate::config::Config;
 use crate::error::{MuseError, Result};
 use crate::tools::ToolHost;
@@ -15,7 +15,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 pub async fn run_subagent(
-    client: MetaClient,
+    client: ApiClient,
     config: Config,
     cwd: PathBuf,
     parent_mode: SharedMode,

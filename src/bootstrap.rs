@@ -66,10 +66,14 @@ pub fn looks_like_release_artifact() -> bool {
         .unwrap_or("")
         .to_ascii_lowercase();
     name.starts_with("nur-windows")
+        || name.starts_with("nur-linux")
+        || name.starts_with("nur-macos")
+        || name.starts_with("nur-darwin")
+        || name.contains("nur-windows-x86_64")
+        // Legacy pre-rebrand release-asset names.
         || name.starts_with("meta-linux")
         || name.starts_with("meta-macos")
         || name.starts_with("meta-darwin")
-        || name.contains("nur-windows-x86_64")
 }
 
 pub fn is_running_from_install() -> bool {
@@ -116,13 +120,13 @@ fn bootstrap_complete() -> bool {
 /// Already-installed `nur` on PATH must **never** re-enter one-stop install on
 /// every open — that used to rename the running EXE to `meta.old` and brick PATH.
 ///
-/// Skip with `META_SKIP_BOOTSTRAP=1` (dev / re-exec after install).
-/// Force anytime: `nur install`.
+/// Skip with `NUR_SKIP_BOOTSTRAP=1` (dev / re-exec after install; legacy
+/// `META_SKIP_BOOTSTRAP` still honored). Force anytime: `nur install`.
 pub fn should_bootstrap_on_launch() -> bool {
-    if env_truthy("META_SKIP_BOOTSTRAP") {
+    if env_truthy("NUR_SKIP_BOOTSTRAP") || env_truthy("META_SKIP_BOOTSTRAP") {
         return false;
     }
-    if env_truthy("META_FORCE_BOOTSTRAP") {
+    if env_truthy("NUR_FORCE_BOOTSTRAP") || env_truthy("META_FORCE_BOOTSTRAP") {
         return true;
     }
     // Downloads folder / release asset: always one-stop.
@@ -133,7 +137,7 @@ pub fn should_bootstrap_on_launch() -> bool {
     if is_running_from_install() || install_binary_path().is_file() {
         return false;
     }
-    // No install on disk yet (e.g. bare `target/release/meta`) → offer full setup once.
+    // No install on disk yet (e.g. bare `target/release/nur`) → offer full setup once.
     true
 }
 
@@ -283,7 +287,7 @@ pub fn run_full_install() -> Result<()> {
     println!();
     theme::print_ok("Done. Full stack is on this machine.");
     theme::print_info(&format!("Binary:  {}", dest.display()));
-    theme::print_info("Run:     meta");
+    theme::print_info("Run:     nur");
     theme::print_info("Auth:    nur auth login   (or /login in the TUI)");
     theme::print_info("Doctor:  nur doctor");
     theme::print_info("Update:  nur update");
@@ -376,7 +380,7 @@ pub fn run_update() -> Result<()> {
     println!();
     theme::print_ok("Update complete.");
     theme::print_info(&format!("Binary:  {}", dest.display()));
-    theme::print_info("Run:     meta");
+    theme::print_info("Run:     nur");
     println!();
     Ok(())
 }
@@ -393,6 +397,7 @@ pub fn reexec_installed_tui() -> Result<()> {
     }
     theme::print_info("Opening NurCLI…");
     let status = Command::new(&dest)
+        .env("NUR_SKIP_BOOTSTRAP", "1")
         .env("META_SKIP_BOOTSTRAP", "1")
         .status()
         .map_err(|e| {
@@ -402,7 +407,7 @@ pub fn reexec_installed_tui() -> Result<()> {
         Ok(())
     } else {
         let code = status.code().unwrap_or(1);
-        Err(MuseError::Other(format!("meta exited with status {code}")))
+        Err(MuseError::Other(format!("nur exited with status {code}")))
     }
 }
 

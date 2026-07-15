@@ -10,7 +10,7 @@ The harness is built to burn fewer tokens — less waste, more work per dollar �
 </div>
 
 <p align="center">
-  <img src="docs/assets/muse-demo-obfuscated.gif" alt="NurCLI demo" width="600">
+  <img src="docs/assets/nur-demo.gif" alt="NurCLI demo" width="600">
 </p>
 
 **Your personal coding agent.** Custom Rust harness, dense gold TUI, **native vision**, tools, knowledge stack, hardened sandbox. Multi-provider `/login`. Any model via `--model` / `/model` / config.
@@ -65,7 +65,7 @@ Pulls latest `main` when a Laboratory checkout exists (`~/laboratory/nur-cli` or
 | Re-download + double‑click **Windows EXE** | Prebuilt path |
 | `nur install` | Reinstall *this* binary + stack (no git pull) |
 
-Verify: `nur --version` · `nur doctor`. Detail: [docs/setup.md → Update](./docs/setup.md#update-keep-meta-current).
+Verify: `nur --version` · `nur doctor`. Detail: [docs/setup.md → Update](./docs/setup.md#update-keep-nurcli-current).
 
 ### Other ways to install
 

@@ -35,7 +35,7 @@ What happens:
    inference clouds, Chinese labs, OpenAI-compatible routers, local servers).
    Providers with browser sign-in show a 🌐 hint.
 3. If the provider supports browser auth, choose:
-   - **Sign in with browser** — opens a URL (and may show a short code); approve in the browser; Meta stores tokens and refreshes when needed.
+   - **Sign in with browser** — opens a URL (and may show a short code); approve in the browser; NurCLI stores tokens and refreshes when needed.
    - **Enter API key** — masked paste (classic path).
    - **Use existing CLI session** — when a Grok or Claude Code login is already on disk.
 4. Config is updated: `provider`, `base_url`, and `model` (that provider’s
@@ -69,9 +69,9 @@ provider catalog, endpoint, model, and API style all switch together.
 ## Via environment variable
 
 ```bash
+export NUR_API_KEY="your-key-here"
+# or (Meta Model API / legacy)
 export META_API_KEY="your-key-here"
-# or
-export MODEL_API_KEY="your-key-here"
 ```
 
 If a key is found in the environment, NurCLI can save it to `~/.nur/auth.json`
@@ -82,17 +82,17 @@ you prefer not to store a key via `/login`.
 Self-hosted OpenAI-compatible servers (Ollama, vLLM, LiteLLM, custom gateways):
 
 ```bash
-export META_BASE_URL="http://localhost:11434/v1"   # overrides config base_url
+export NUR_BASE_URL="http://localhost:11434/v1"   # overrides config base_url
 ```
 
-`META_BASE_URL` wins over the catalog default after `/login` and on every startup.
+`NUR_BASE_URL` (legacy `META_BASE_URL`) wins over the catalog default after `/login` and on every startup.
 
 !!! note "Legacy variables"
-    `MUSE_API_KEY` is also accepted for backwards compatibility.
+    `META_API_KEY`, `MODEL_API_KEY`, and `MUSE_API_KEY` are also accepted for backwards compatibility.
 
 !!! warning "Plaintext secrets on disk"
     `~/.nur/auth.json` stores API keys and OAuth access/refresh tokens in
-    **plaintext JSON**. On Unix Meta sets mode `0600`. On Windows the file lives
+    **plaintext JSON**. On Unix NurCLI sets mode `0600`. On Windows the file lives
     under your user profile (default NTFS ACLs — not a portable 0600). Never commit
     or share `~/.nur/`. OS keychain storage is a future option, not the default.
 
@@ -174,8 +174,8 @@ Active **provider id / base URL / model** come from `~/.nur/config.toml`
 |----------|----------|
 | `~/.nur/auth.json` | API key **or** OAuth access/refresh tokens (**plaintext**) |
 | `~/.nur/config.toml` | `provider`, `base_url`, `model`, … (no secret) |
-| Env `META_API_KEY` / `MODEL_API_KEY` | Optional override (never printed in logs) |
-| Env `META_BASE_URL` | Optional API base override (self-hosted) |
+| Env `NUR_API_KEY` (legacy `META_API_KEY` / `MODEL_API_KEY`) | Optional override (never printed in logs) |
+| Env `NUR_BASE_URL` (legacy `META_BASE_URL`) | Optional API base override (self-hosted) |
 | `~/.nur/sessions/` | Session metadata (no key) |
 | `~/.nur/status.json` | Live token usage (no key) |
 | `~/.nur/usage.jsonl` | Per-request usage log (no key) |

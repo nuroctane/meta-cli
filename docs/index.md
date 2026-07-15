@@ -8,7 +8,7 @@ Custom Rust harness, dense Nur-gold TUI, **native vision**, tools, knowledge sta
     Not affiliated with Meta Platforms, Inc. · Community · [nuroctane/nur-cli](https://github.com/nuroctane/nur-cli)
 
 ```text
-meta          # primary — Nur-gold interactive TUI
+nur           # primary — Nur-gold interactive TUI
 muse          # legacy alias (same binary)
 ```
 
@@ -38,7 +38,7 @@ Then: `nur auth login` → `nur`.
 nur update
 ```
 
-That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout, reinstalls `nur` + ecosystem. Or re-run the one-liner / re-download the EXE. Full detail: **[Setup → Update](setup.md#update-keep-meta-current)**.
+That’s the normal upgrade. Pulls / rebuilds when you have a Laboratory checkout, reinstalls `nur` + ecosystem. Or re-run the one-liner / re-download the EXE. Full detail: **[Setup → Update](setup.md#update-keep-nurcli-current)**.
 
 ---
 

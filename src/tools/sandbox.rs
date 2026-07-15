@@ -175,7 +175,7 @@ pub fn prefer_git_root(cwd: &Path) -> PathBuf {
 }
 
 /// Pick a safe workspace when the user starts from `C:\` / `/`.
-/// Order: explicit --cwd (caller) → git root → META_CWD → last session → Laboratory → home.
+/// Order: explicit --cwd (caller) → git root → NUR_CWD → last session → Laboratory → home.
 /// Returns (path, optional human reason for the adjustment).
 pub fn resolve_safe_workspace(
     requested: &Path,
@@ -197,7 +197,7 @@ pub fn resolve_safe_workspace(
              Pick a project folder, e.g.\n\
                nur --cwd C:\\Users\\{}\\Laboratory\\nur-cli\n\
              or in the TUI:  /cd path\\to\\repo\n\
-             or set user env META_CWD to your usual project folder",
+             or set user env NUR_CWD to your usual project folder",
             requested.display(),
             std::env::var("USERNAME")
                 .or_else(|_| std::env::var("USER"))
@@ -215,7 +215,7 @@ pub fn resolve_safe_workspace(
     }
 
     // 2) Env override
-    for var in ["META_CWD", "MUSE_CWD"] {
+    for var in ["NUR_CWD", "META_CWD", "MUSE_CWD"] {
         if let Ok(v) = std::env::var(var) {
             let p = PathBuf::from(v.trim());
             if p.is_dir() && !is_dangerous_workspace(&p) {
@@ -243,13 +243,13 @@ pub fn resolve_safe_workspace(
             let p = home.join(name);
             if p.is_dir() && !is_dangerous_workspace(&p) {
                 // Prefer nur-cli inside laboratory if present
-                let meta_cli = p.join("nur-cli");
-                if meta_cli.is_dir() {
+                let nur_cli = p.join("nur-cli");
+                if nur_cli.is_dir() {
                     return Ok((
-                        meta_cli
+                        nur_cli
                             .canonicalize()
                             .map(|c| strip_verbatim(&c))
-                            .unwrap_or(meta_cli),
+                            .unwrap_or(nur_cli),
                         Some(format!("using ~\\{name}\\nur-cli (started from drive root)")),
                     ));
                 }
@@ -274,7 +274,7 @@ pub fn resolve_safe_workspace(
         "refusing to run with workspace at filesystem root ({})\n\
          In the TUI:  /cd path\\to\\repo\n\
          Or launch with:  nur --cwd C:\\Users\\you\\path\\to\\repo\n\
-         Or set user env META_CWD for a default project folder.",
+         Or set user env NUR_CWD for a default project folder.",
         requested.display()
     )))
 }

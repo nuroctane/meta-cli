@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use reqwest::Client;
 
 #[derive(Clone)]
-pub struct MetaClient {
+pub struct ApiClient {
     http: Client,
     base_url: String,
     api_key: String,
@@ -26,7 +26,7 @@ pub enum StreamEvent {
     Completed(ApiResponse),
 }
 
-impl MetaClient {
+impl ApiClient {
     pub fn new(base_url: impl Into<String>, api_key: impl Into<String>) -> Result<Self> {
         let http = Client::builder()
             .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))

@@ -7,7 +7,7 @@ use crate::agent::{
 };
 use crate::theme::{self, Tone};
 use crate::tools::ToolHost;
-use crate::api::MetaClient;
+use crate::api::ApiClient;
 use crate::config::Config;
 use crate::error::Result;
 use crate::tui::input::InputState;
@@ -63,11 +63,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/doctor", "health check: version · auth · ecosystem · shell"),
     ("/permissions", "show or reload allow/deny/ask rules (permissions.toml)"),
     ("/hooks", "show local tool hook status (hooks.toml)"),
-    ("/model", "show or switch model"),
+    ("/model", "show and switch models"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
-    ("/init", "generate a META.md project guide"),
+    ("/init", "generate a NUR.md project guide"),
     ("/goal", "set a standing session goal (context on every turn)"),
     ("/btw", "add a one-off note to your next message"),
     ("/codesearch", "fast ripgrep over the workspace  (/cs)"),
@@ -549,6 +549,143 @@ impl LoginModal {
     }
 }
 
+/// Model chooser opened by `/model` (no argument). Fetches the active
+/// provider's model list live and lets you filter + pick without knowing ids
+/// by hand. Scroll/select contract mirrors [`LoginModal`]'s provider picker.
+pub struct ModelPicker {
+    /// Provider name for the modal title (e.g. "OpenAI").
+    pub provider_name: String,
+    /// Model ids fetched from the provider (empty until the fetch lands).
+    pub models: Vec<String>,
+    /// The currently active model id — marked in the list.
+    pub current: String,
+    /// Search filter; also usable verbatim as a custom id to switch to.
+    pub filter: String,
+    /// Selected row into the filtered list.
+    pub sel: usize,
+    /// First visible row — moves by 1 when selection leaves the window.
+    pub scroll: usize,
+    /// Rows that fit in the body (set by last draw).
+    pub vis_page: usize,
+    /// Hit-test geometry filled by the last draw.
+    pub hit: PickerHit,
+    /// Coalesce wheel floods to one step per tick.
+    pub last_step_at: Instant,
+    /// True while the background model fetch is in flight.
+    pub loading: bool,
+    /// Fetch error shown inline (you can still type a custom id + Enter).
+    pub error: Option<String>,
+    /// Background fetch result channel (ids, or an error string).
+    pub rx: Option<std::sync::mpsc::Receiver<std::result::Result<Vec<String>, String>>>,
+}
+
+impl ModelPicker {
+    /// Models matching the current filter (substring, case-insensitive).
+    pub fn filtered(&self) -> Vec<&String> {
+        let f = self.filter.trim().to_lowercase();
+        self.models
+            .iter()
+            .filter(|m| f.is_empty() || m.to_lowercase().contains(&f))
+            .collect()
+    }
+
+    pub fn count(&self) -> usize {
+        self.filtered().len()
+    }
+
+    /// Same clamp rules as the provider picker.
+    pub fn clamp_scroll(&mut self) {
+        let count = self.count();
+        if count == 0 {
+            self.sel = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.sel = self.sel.min(count - 1);
+        let page = self.vis_page.max(1);
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+        if self.sel < self.scroll {
+            self.scroll = self.sel;
+        }
+        let last_vis = self.scroll + page - 1;
+        if self.sel > last_vis {
+            self.scroll = self.sel + 1 - page;
+        }
+    }
+
+    /// Move selection by exactly one entry. Viewport shifts by at most 1.
+    pub fn step(&mut self, dir: i32) {
+        if dir == 0 {
+            return;
+        }
+        let count = self.count();
+        if count == 0 {
+            return;
+        }
+        let page = self.vis_page.max(1);
+        if dir < 0 {
+            if self.sel == 0 {
+                return;
+            }
+            self.sel -= 1;
+            if self.sel < self.scroll {
+                self.scroll = self.sel;
+            }
+        } else {
+            if self.sel + 1 >= count {
+                return;
+            }
+            self.sel += 1;
+            let last_vis = self.scroll + page - 1;
+            if self.sel > last_vis {
+                self.scroll += 1;
+            }
+        }
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+    }
+
+    /// Wheel: one step max every 45ms (identical to other pickers).
+    pub fn wheel_step(&mut self, dir: i32) {
+        let now = Instant::now();
+        if now.duration_since(self.last_step_at) < Duration::from_millis(45) {
+            return;
+        }
+        self.last_step_at = now;
+        self.step(dir.signum());
+    }
+
+    pub fn set_idx(&mut self, i: usize) {
+        let count = self.count();
+        if count == 0 {
+            self.sel = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.sel = i.min(count - 1);
+        self.clamp_scroll();
+    }
+
+    /// The id that Enter would select: the highlighted row, or — when nothing
+    /// matches the filter — the raw filter text as a custom id.
+    pub fn chosen(&self) -> Option<String> {
+        let picks = self.filtered();
+        if let Some(m) = picks.get(self.sel) {
+            return Some((*m).clone());
+        }
+        let typed = self.filter.trim();
+        if !typed.is_empty() {
+            return Some(typed.to_string());
+        }
+        None
+    }
+}
+
 /// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
 #[derive(Debug, Clone)]
 pub struct SessionRow {
@@ -734,7 +871,7 @@ fn relative_when(dt: chrono::DateTime<chrono::Utc>) -> String {
 }
 
 pub struct App {
-    pub client: MetaClient,
+    pub client: ApiClient,
     pub cfg: Config,
     pub cwd: PathBuf,
     /// Live permission mode (manual / plan / auto) — Arc, mid-turn safe.
@@ -904,6 +1041,8 @@ pub struct App {
     window_base: String,
     /// Secure API-key entry modal (`/login`), when open.
     pub login: Option<LoginModal>,
+    /// Model chooser (`/model`) — live provider model list, when open.
+    pub model_picker: Option<ModelPicker>,
     /// Whether an API key is available. `/logout` flips this false and blocks
     /// turns until `/login` provides a new key.
     authed: bool,
@@ -944,7 +1083,7 @@ fn disable_mouse() {
 }
 
 pub async fn run_tui(
-    client: MetaClient,
+    client: ApiClient,
     cfg: Config,
     cwd: PathBuf,
     permission_mode: SharedMode,
@@ -1110,6 +1249,7 @@ pub async fn run_tui(
         title_from_prompt,
         window_base: seed_prompt.clone().unwrap_or_else(|| "ready".into()),
         login: None,
+        model_picker: None,
         authed: true,
     };
 
@@ -1160,6 +1300,7 @@ pub async fn run_tui(
     loop {
         // 1) Agent events (streaming text/tools).
         app.poll_oauth_login();
+        app.poll_model_picker();
         while let Ok(ev) = app.rx.try_recv() {
             app.on_agent_event(ev);
             dirty = true;
@@ -1169,6 +1310,7 @@ pub async fn run_tui(
             || app.picker.is_some()
             || app.approval.is_some()
             || app.login.is_some()
+            || app.model_picker.is_some()
             || app.scrollbar_drag
             || app.selecting
             || app.mouse_left_down
@@ -1756,6 +1898,11 @@ impl App {
             self.on_login_key(key);
             return;
         }
+        // Model picker swallows all keys while open (type-to-filter).
+        if self.model_picker.is_some() {
+            self.on_model_picker_key(key);
+            return;
+        }
         // Approval modal swallows all keys.
         if self.approval.is_some() {
             self.on_approval_key(key.code);
@@ -2088,6 +2235,15 @@ impl App {
             self.select_anchor = None;
             self.mouse_left_down = false;
             self.on_login_mouse(m);
+            return;
+        }
+        // Model picker is modal — same wheel/click routing.
+        if self.model_picker.is_some() {
+            self.scrollbar_drag = false;
+            self.selecting = false;
+            self.select_anchor = None;
+            self.mouse_left_down = false;
+            self.on_model_picker_mouse(m);
             return;
         }
 
@@ -3016,6 +3172,205 @@ impl App {
         });
     }
 
+    /// Open the `/model` chooser and kick off a live model-list fetch for the
+    /// active provider in the background (same thread+channel pattern as OAuth).
+    pub fn open_model_picker(&mut self) {
+        let provider = crate::providers::by_id(&self.cfg.provider)
+            .copied()
+            .unwrap_or(*crate::providers::default_provider());
+        let base_url = self.cfg.base_url.clone();
+        let key = crate::auth::resolve_api_key().unwrap_or_default();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(crate::api::fetch_model_ids(&base_url, &key));
+        });
+
+        self.model_picker = Some(ModelPicker {
+            provider_name: provider.name.to_string(),
+            models: Vec::new(),
+            current: self.cfg.model.clone(),
+            filter: String::new(),
+            sel: 0,
+            scroll: 0,
+            vis_page: 12,
+            hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            loading: true,
+            error: None,
+            rx: Some(rx),
+        });
+    }
+
+    /// Commit a model switch (from the picker or `/model <id>`): update config,
+    /// session, and usage meter, then persist. Returns the id set.
+    pub fn apply_model_selection(&mut self, id: &str) {
+        let id = id.trim();
+        if id.is_empty() {
+            return;
+        }
+        self.cfg.model = id.to_string();
+        let _ = crate::config::save_config(&self.cfg);
+        if let Some(s) = &mut self.session {
+            s.model = id.to_string();
+        }
+        if let Some(u) = &mut self.usage {
+            u.set_model(id.to_string());
+        }
+        self.push_info(format!("model → {id}"));
+    }
+
+    /// Drain the background model-list fetch while the picker is open.
+    pub fn poll_model_picker(&mut self) {
+        let mut result = None;
+        if let Some(mp) = &self.model_picker {
+            if let Some(rx) = &mp.rx {
+                if let Ok(r) = rx.try_recv() {
+                    result = Some(r);
+                }
+            }
+        }
+        let Some(result) = result else { return };
+        if let Some(mp) = &mut self.model_picker {
+            mp.loading = false;
+            mp.rx = None;
+            match result {
+                Ok(ids) => {
+                    // Land the cursor on the current model if it's in the list.
+                    let cur_idx = ids.iter().position(|m| m == &mp.current);
+                    mp.models = ids;
+                    mp.error = None;
+                    if let Some(i) = cur_idx {
+                        mp.set_idx(i);
+                    }
+                }
+                Err(e) => {
+                    mp.error = Some(e);
+                }
+            }
+            mp.clamp_scroll();
+        }
+    }
+
+    fn on_model_picker_key(&mut self, key: event::KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.model_picker = None;
+            }
+            KeyCode::Enter => {
+                let chosen = self.model_picker.as_ref().and_then(|m| m.chosen());
+                if let Some(id) = chosen {
+                    self.model_picker = None;
+                    self.apply_model_selection(&id);
+                }
+            }
+            KeyCode::Up => {
+                if let Some(m) = &mut self.model_picker {
+                    m.step(-1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(m) = &mut self.model_picker {
+                    m.step(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(m) = &mut self.model_picker {
+                    let page = m.vis_page.max(1) as i32;
+                    for _ in 0..page {
+                        m.step(-1);
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(m) = &mut self.model_picker {
+                    let page = m.vis_page.max(1) as i32;
+                    for _ in 0..page {
+                        m.step(1);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(m) = &mut self.model_picker {
+                    m.filter.pop();
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(m) = &mut self.model_picker {
+                    m.filter.clear();
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(m) = &mut self.model_picker {
+                    m.filter.push(c);
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Mouse while the model picker is open — wheel scrolls, click row selects,
+    /// second click / Enter confirms, click ✕ closes.
+    fn on_model_picker_mouse(&mut self, m: event::MouseEvent) {
+        self.mouse_col = m.column;
+        self.mouse_row = m.row;
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(mp) = &mut self.model_picker {
+                    mp.wheel_step(-1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(mp) = &mut self.model_picker {
+                    mp.wheel_step(1);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let hit = self.model_picker.as_ref().map(|mp| mp.hit.clone());
+                let Some(hit) = hit else { return };
+                let (col, row) = (m.column, m.row);
+                if rect_contains(hit.close, col, row) {
+                    self.model_picker = None;
+                    return;
+                }
+                for (i, rect) in &hit.rows {
+                    if rect_contains(*rect, col, row) {
+                        let same = self
+                            .model_picker
+                            .as_ref()
+                            .map(|mp| mp.sel == *i)
+                            .unwrap_or(false);
+                        if let Some(mp) = &mut self.model_picker {
+                            mp.set_idx(*i);
+                        }
+                        if same {
+                            let chosen =
+                                self.model_picker.as_ref().and_then(|mp| mp.chosen());
+                            if let Some(id) = chosen {
+                                self.model_picker = None;
+                                self.apply_model_selection(&id);
+                            }
+                        }
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn cancel_oauth(&mut self) {
         if let Some(m) = &self.login {
             if let Some(c) = &m.oauth_cancel {
@@ -3449,7 +3804,7 @@ impl App {
         } else {
             key.to_string()
         };
-        match crate::api::MetaClient::new(&self.cfg.base_url, &bearer)
+        match crate::api::ApiClient::new(&self.cfg.base_url, &bearer)
             .map(|c| c.with_chat_completions(chat))
         {
             Ok(client) => {

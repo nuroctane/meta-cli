@@ -5,15 +5,15 @@ Full CLI reference for NurCLI.
 ## Usage
 
 ```bash
-meta [OPTIONS] [PROMPT]
-meta <COMMAND> [ARGS]
+nur [OPTIONS] [PROMPT]
+nur <COMMAND> [ARGS]
 ```
 
 ## Global options
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--model <MODEL>` | `-m` | Meta Model API model id (default from config) |
+| `--model <MODEL>` | `-m` | Model id for the active provider (default from config; browse with `/model` in the TUI) |
 | `--cwd <DIR>` | | Working directory |
 | `--yes` | `-y` | Auto-approve tools (sets permission mode to auto) |
 | `--mode <MODE>` | | Permission mode: `manual`, `plan`, or `auto` |
@@ -28,12 +28,12 @@ meta <COMMAND> [ARGS]
 ## Examples
 
 ```bash
-meta                                    # open interactive TUI
+nur                                     # open interactive TUI
 nur install                            # one-stop stack install (same as release EXE)
-meta "fix the bug"                      # start with a prompt
-meta "design from ref.mp4"             # vision: auto-attach media
-meta -c                                 # continue last session
-meta -r abc123                          # resume session abc123
+nur "fix the bug"                       # start with a prompt
+nur "design from ref.mp4"              # vision: auto-attach media
+nur -c                                  # continue last session
+nur -r abc123                           # resume session abc123
 nur --mode plan "explain this"         # plan: explore + shell, no edits/commits
 nur --effort xhigh "deep analysis"     # maximum reasoning
 nur --model muse-spark-1.1 "hello"     # explicit model
@@ -126,12 +126,12 @@ Columns: **ID · UPDATED · MSGS · TOKENS · COST · CWD**.
 
 ---
 
-### `meta usage`
+### `nur usage`
 
 Show last known token usage and cost. Displays paths to status and usage log files.
 
 ```bash
-meta usage
+nur usage
 ```
 
 ---
@@ -143,14 +143,14 @@ One-stop install — **same job as the release EXE and the shell one-liners** (m
 ```bash
 nur install
 # alias:
-meta self-install
+nur self-install
 ```
 
-Double-clicking `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) runs this path automatically, then opens Meta.
+Double-clicking `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) runs this path automatically, then opens NurCLI.
 
 ### `nur update`
 
-**How you upgrade Meta.** Pull latest source, rebuild release, reinstall binary + full stack.
+**How you upgrade NurCLI.** Pull latest source, rebuild release, reinstall binary + full stack.
 
 ```bash
 nur update
@@ -161,13 +161,13 @@ nur update
 | Source | Uses `~/laboratory/nur-cli` or `~/Laboratory/nur-cli` if present |
 | Git | `git pull --ff-only origin main` |
 | Build | `cargo build --release` |
-| Binary | Installs to `~/.local/bin/meta` (+ `muse`) |
+| Binary | Installs to `~/.local/bin/nur` |
 | Stack | `ecosystem ensure --force`, `browser setup`, Orca hook |
 | No checkout | Falls back to `nur install` (repair from the running binary) |
 
 Afterward: `nur --version` · `nur doctor`.
 
-Full paths and alternatives (one-liner / EXE / `nur install`): **[Setup → Update](setup.md#update-keep-meta-current)**.
+Full paths and alternatives (one-liner / EXE / `nur install`): **[Setup → Update](setup.md#update-keep-nurcli-current)**.
 
 ---
 
@@ -272,9 +272,10 @@ NurCLI loads project-level instructions from your working directory at session s
 
 | File | Purpose |
 |------|---------|
-| `META.md` | Primary project instructions |
+| `NUR.md` | Primary project instructions |
 | `AGENTS.md` | Agent conventions |
-| `CLAUDE.md` | Legacy (still loaded) |
+| `CLAUDE.md` | Also loaded |
+| `META.md` | Legacy (still loaded) |
 | `MUSE.md` | Legacy (still loaded) |
 
 ---

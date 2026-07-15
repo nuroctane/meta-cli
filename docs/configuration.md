@@ -108,19 +108,19 @@ Reload without restart: `/permissions reload`.
 Optional file: **`~/.nur/hooks.toml`**.
 
 ```toml
-pre_tool = "echo pre $META_TOOL"
+pre_tool = "echo pre $NUR_TOOL"
 post_tool = ""
 timeout_ms = 5000
 ```
 
-Environment for hook commands:
+Environment for hook commands (legacy `META_*` aliases are also set):
 
 | Env | Meaning |
 |-----|---------|
-| `META_TOOL` | Tool name |
-| `META_ARGS_JSON` | Raw JSON args |
-| `META_CWD` | Workspace cwd |
-| `META_SESSION` | Session id |
+| `NUR_TOOL` | Tool name |
+| `NUR_ARGS_JSON` | Raw JSON args |
+| `NUR_CWD` | Workspace cwd |
+| `NUR_SESSION` | Session id |
 
 Non-zero **pre_tool** exit blocks the tool. Missing file = no hooks. Check status with `/hooks`.
 
@@ -132,29 +132,30 @@ Non-zero **pre_tool** exit blocks the tool. Missing file = no hooks. Check statu
 
 | Variable | Purpose |
 |----------|---------|
-| `META_API_KEY` | API key (preferred) |
+| `NUR_API_KEY` | API key (preferred) |
+| `META_API_KEY` | API key (Meta Model API / legacy app) |
 | `MODEL_API_KEY` | API key (alternative) |
 | `MUSE_API_KEY` | API key (legacy) |
-| `META_BASE_URL` | Override API base URL (self-hosted Ollama/vLLM/LiteLLM/gateways) |
-| `META_MODEL` | Override model id |
-| `MUSE_MODEL` | Override model id (legacy) |
+| `NUR_BASE_URL` | Override API base URL (self-hosted Ollama/vLLM/LiteLLM/gateways); legacy `META_BASE_URL` |
+| `NUR_MODEL` | Override model id; legacy `META_MODEL` / `MUSE_MODEL` |
 
 ### Paths
 
 | Variable | Purpose |
 |----------|---------|
-| `META_HOME` | Override data home (default `~/.nur`) |
-| `MUSE_HOME` | Override data home (legacy) |
-| `META_CWD` | Default working directory |
+| `NUR_HOME` | Override data home (default `~/.nur`); legacy `META_HOME` / `MUSE_HOME` |
+| `NUR_CWD` | Default working directory; legacy `META_CWD` |
 
 ### Status and usage
 
+Set by NurCLI for host integrations (legacy `META_*` aliases are also exported):
+
 | Variable | Purpose |
 |----------|---------|
-| `META_STATUS_PATH` | Path to live status file |
-| `META_USAGE_LOG_PATH` | Path to usage log |
-| `META_SESSION_ID` | Current session id |
-| `META_PROVIDER` | Provider identifier (set to `nur`) |
+| `NUR_STATUS_PATH` | Path to live status file |
+| `NUR_USAGE_LOG_PATH` | Path to usage log |
+| `NUR_SESSION_ID` | Current session id |
+| `NUR_PROVIDER` | Provider identifier (set to `nur`) |
 
 ### Update control
 
@@ -215,7 +216,7 @@ NurCLI reads project-level instruction files from your working directory:
 
 | File | Purpose |
 |------|---------|
-| `META.md` | Primary project instructions |
+| `NUR.md` | Primary project instructions |
 | `AGENTS.md` | Agent conventions (shared with other tools) |
 | `CLAUDE.md` | Legacy instructions (still loaded) |
 | `MUSE.md` | Legacy instructions (still loaded) |

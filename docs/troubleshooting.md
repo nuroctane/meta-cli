@@ -33,11 +33,11 @@ nur doctor
 nur doctor · v0.10.0
 
 binary  C:\Users\you\.local\bin\nur.exe
-config  model=muse-spark-1.1 effort=high max_turns=40 budget=∞$/∞tok  (C:\Users\you\.meta\config.toml)
+config  model=muse-spark-1.1 effort=high max_turns=40 budget=∞$/∞tok  (C:\Users\you\.nur\config.toml)
 auth    key set (…abcd)
-home    C:\Users\you\.meta
-status  C:\Users\you\.meta\status.json
-usage   C:\Users\you\.meta\usage.jsonl
+home    C:\Users\you\.nur
+status  C:\Users\you\.nur\status.json
+usage   C:\Users\you\.nur\usage.jsonl
 sessions C:\Users\you\.nur\sessions
 
 ecosystem
@@ -61,13 +61,13 @@ doctor complete
 
 ---
 
-## How do I update Meta?
+## How do I update NurCLI?
 
 ```bash
 nur update
 ```
 
-That pulls your Laboratory checkout (`~/laboratory/nur-cli` or `~/Laboratory/nur-cli`), runs `cargo build --release`, reinstalls `~/.local/bin/meta`, and re-runs ecosystem / browser setup.
+That pulls your Laboratory checkout (`~/laboratory/nur-cli` or `~/Laboratory/nur-cli`), runs `cargo build --release`, reinstalls `~/.local/bin/nur`, and re-runs ecosystem / browser setup.
 
 | If… | Then… |
 |-----|--------|
@@ -83,19 +83,19 @@ nur --version
 nur doctor
 ```
 
-More: **[Setup → Update](setup.md#update-keep-meta-current)** · **[Commands → nur update](commands.md#meta-update)**.
+More: **[Setup → Update](setup.md#update-keep-nurcli-current)** · **[Commands → nur update](commands.md#nur-update)**.
 
 ---
 
 ## Common issues
 
-### `command not found: meta`
+### `command not found: nur`
 
 The `nur` binary is not on your PATH.
 
 **Fix:**
 
-1. Check where it was installed: `ls ~/.local/bin/meta`
+1. Check where it was installed: `ls ~/.local/bin/nur`
 2. Add `~/.local/bin` to your PATH:
     ```bash
     # Bash / Zsh
@@ -124,7 +124,7 @@ Sessions are never auto-deleted. If a chat “vanished”:
 
 1. Toggle the sessions picker scope to **all** (not only this cwd) — Tab or the scope chip.
 2. CLI: `nur sessions --limit 50` and look at the **COST** column for high-spend chats.
-3. Resume by id: `meta -r <prefix>` (first 8 chars of the UUID are enough when unique).
+3. Resume by id: `nur -r <prefix>` (first 8 chars of the UUID are enough when unique).
 4. Check both `~/.nur/sessions/` and legacy `~/.muse/sessions/`. Sidecar `*.json.bak` may hold the previous save.
 
 ### Session budget stopped the agent
@@ -215,8 +215,8 @@ If you see API errors:
 
 ```bash
 nur sessions              # list sessions
-meta -r <session-id>       # resume by id
-meta -c                    # continue most recent for this cwd
+nur -r <session-id>        # resume by id
+nur -c                     # continue most recent for this cwd
 ```
 
 ### `config` validation errors

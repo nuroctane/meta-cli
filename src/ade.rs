@@ -231,7 +231,7 @@ pub fn install_orca_hook() -> crate::error::Result<()> {
     }
     println!("installed Orca hook: {}", path.display());
     println!("Orca can poll: {}", status_path().display());
-    println!("Launch with:  orca terminal create --command meta");
+    println!("Launch with:  orca terminal create --command nur");
     Ok(())
 }
 

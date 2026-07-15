@@ -16,7 +16,7 @@ mod usage;
 
 use agent::session::{print_sessions, Session};
 use agent::{AgentEvent, AgentRunner, ApprovalDecision, PermissionMode, SharedMode};
-use api::MetaClient;
+use api::ApiClient;
 use auth::{auth_status, login_interactive, logout, resolve_api_key, save_api_key};
 use clap::Parser;
 use cli::{AuthCmd, Cli, Commands};
@@ -268,7 +268,7 @@ async fn real_main() -> Result<()> {
     let chat_mode = providers::by_id(&cfg.provider)
         .map(|p| p.style == providers::ApiStyle::ChatCompletions)
         .unwrap_or(false);
-    let client = MetaClient::new(&cfg.base_url, &api_key)?.with_chat_completions(chat_mode);
+    let client = ApiClient::new(&cfg.base_url, &api_key)?.with_chat_completions(chat_mode);
 
     let mut session = if let Some(id) = &cli.resume {
         theme::print_info(&format!("resuming session {id}…"));
@@ -686,7 +686,7 @@ fn which_bin(name: &str) -> Option<String> {
 
 #[allow(clippy::too_many_arguments)]
 async fn run_headless(
-    client: MetaClient,
+    client: ApiClient,
     cfg: Config,
     cwd: PathBuf,
     session: Session,

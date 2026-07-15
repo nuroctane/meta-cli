@@ -33,7 +33,7 @@ The reader tool id is always the short token: `claude` | `codex` | `cursor` | `n
 ## Quick start
 
 ```bash
-python3 ~/.nur/skills/resume-session/session_reader.py <claude|codex|cursor|meta|grok> list --cwd "$PWD" --json
+python3 ~/.nur/skills/resume-session/session_reader.py <claude|codex|cursor|nur|grok> list --cwd "$PWD" --json
 python3 ~/.nur/skills/resume-session/session_reader.py <tool> show latest --cwd "$PWD" --json
 ```
 

@@ -1,13 +1,14 @@
 //! Optional local tool hooks (`~/.nur/hooks.toml`).
 //!
 //! ```toml
-//! pre_tool = "echo checking $META_TOOL"
+//! pre_tool = "echo checking $NUR_TOOL"
 //! post_tool = ""
 //! timeout_ms = 5000
 //! ```
 //!
-//! Env for commands: META_TOOL, META_ARGS_JSON, META_CWD, META_SESSION.
-//! Non-zero pre_tool exit blocks the tool. Missing file = no hooks.
+//! Env for commands: NUR_TOOL, NUR_ARGS_JSON, NUR_CWD, NUR_SESSION (legacy
+//! META_* aliases are also set). Non-zero pre_tool exit blocks the tool.
+//! Missing file = no hooks.
 
 use crate::config::meta_home;
 use crate::error::{MuseError, Result};
@@ -100,6 +101,11 @@ fn run_hook(
         c
     };
     c.current_dir(cwd)
+        // NUR_* are the current names; META_* kept as aliases for existing hooks.
+        .env("NUR_TOOL", tool)
+        .env("NUR_ARGS_JSON", args_json)
+        .env("NUR_CWD", cwd.display().to_string())
+        .env("NUR_SESSION", session_id)
         .env("META_TOOL", tool)
         .env("META_ARGS_JSON", args_json)
         .env("META_CWD", cwd.display().to_string())

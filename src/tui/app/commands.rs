@@ -103,7 +103,7 @@ impl App {
             "/init" => {
                 self.submit_text(
                     "Analyze this codebase (structure, build/test commands, conventions, \
-                     architecture) and create a META.md file at the workspace root that future \
+                     architecture) and create a NUR.md file at the workspace root that future \
                      agent sessions can use as project instructions. Keep it under 120 lines.",
                 );
             }
@@ -749,7 +749,7 @@ impl App {
         self.push_note(
             Tone::Session,
             format!(
-                "status\n  version  meta v{}\n  model    {}  · effort {}\n  mode     {}  ({})\n  \
+                "status\n  version  nur v{}\n  model    {}  · effort {}\n  mode     {}  ({})\n  \
                  session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ${:.4}",
                 env!("CARGO_PKG_VERSION"),
                 self.cfg.model,
@@ -770,7 +770,7 @@ impl App {
         let sh = crate::tools::shell_backend();
         let auth = if self.authed { "signed in" } else { "no key — /login" };
         let mut lines = format!(
-            "doctor · meta v{}\n  model    {}\n  cwd      {}\n  auth     {}\n  shell    {}\n",
+            "doctor · nur v{}\n  model    {}\n  cwd      {}\n  auth     {}\n  shell    {}\n",
             env!("CARGO_PKG_VERSION"),
             self.cfg.model,
             self.cwd.display(),
@@ -783,21 +783,13 @@ impl App {
     }
 
     fn cmd_model(&mut self, arg: &str) {
+        // No argument → open the live model chooser for the active provider.
+        // `/model <id>` still switches directly (scripts / power users).
         if arg.is_empty() {
-            self.push_info(format!(
-                "model: {} · effort: {} · /model <id> to switch",
-                self.cfg.model, self.cfg.reasoning_effort
-            ));
+            self.open_model_picker();
             return;
         }
-        self.cfg.model = arg.to_string();
-        if let Some(s) = &mut self.session {
-            s.model = arg.to_string();
-        }
-        if let Some(u) = &mut self.usage {
-            u.set_model(arg.to_string());
-        }
-        self.push_info(format!("model → {arg}"));
+        self.apply_model_selection(arg);
     }
 
     fn cmd_effort(&mut self, arg: &str) {
@@ -969,7 +961,7 @@ impl App {
         const REPO: &str = "nuroctane/nur-cli";
         let title: String = arg.lines().next().unwrap_or(arg).chars().take(80).collect();
         let body = format!(
-            "{arg}\n\n---\nmeta v{}  ·  {}  ·  model {}",
+            "{arg}\n\n---\nnur v{}  ·  {}  ·  model {}",
             env!("CARGO_PKG_VERSION"),
             std::env::consts::OS,
             self.cfg.model,

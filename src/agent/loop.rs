@@ -8,7 +8,7 @@ use crate::api::types::{
     function_call_output_item, replay_output_items, user_multimodal_item, user_text_item,
     FunctionCallRef, ReasoningConfig, ResponseRequest,
 };
-use crate::api::{ApiResponse, MetaClient, StreamEvent};
+use crate::api::{ApiResponse, ApiClient, StreamEvent};
 use crate::config::Config;
 use crate::error::{MuseError, Result};
 use crate::tools::media::{self, MediaAttach};
@@ -65,7 +65,7 @@ pub enum ApprovalDecision {
 // `crate::tools::capabilities` — single source of truth for the agent loop.
 
 pub struct AgentRunner {
-    pub client: MetaClient,
+    pub client: ApiClient,
     pub config: Config,
     pub cwd: PathBuf,
     pub permission_mode: SharedMode,
@@ -141,7 +141,7 @@ impl AgentRunner {
         }
 
         let tools = self.tools.tool_defs();
-        // Disk-backed prompt parts (skills, MUSE.md, memory, shell) — read once
+        // Disk-backed prompt parts (skills, NUR.md, memory, shell) — read once
         // per user turn, not once per model request.
         let provider_label = crate::config::active_provider_label(&self.config);
         let prompt_ctx = PromptContext::build_with_opts(

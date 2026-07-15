@@ -57,15 +57,15 @@ What it does **before** any TUI (console progress):
 | Ecosystem | `ecosystem ensure --force` (graphify · plur · ruflo · omp · browser · skills) |
 | Browser | Stages Chromium extension for your default browser |
 | Hook | Orca hook if present |
-| Auth | Saves `META_API_KEY` / `MODEL_API_KEY` if set in the environment |
+| Auth | Saves `NUR_API_KEY` (or legacy `META_API_KEY` / `MODEL_API_KEY`) if set in the environment |
 | Launch | Opens the installed `nur` TUI |
 
 Re-download + re-run the release EXE to upgrade. Force again anytime: `nur install`.
 
 !!! tip "When auto-install runs"
-    **Release EXE** (`nur-windows-*.exe`) and **first** run with no `~\.local\bin\meta` → full one-stop install.  
+    **Release EXE** (`nur-windows-*.exe`) and **first** run with no `~\.local\bin\nur` → full one-stop install.  
     Already-installed `nur` on PATH opens the TUI immediately (no reinstall).  
-    Force again: `nur install`. Dev skip: `META_SKIP_BOOTSTRAP=1`.
+    Force again: `nur install`. Dev skip: `NUR_SKIP_BOOTSTRAP=1`.
 
 ### 3. From a local clone
 
@@ -88,7 +88,7 @@ nur auth login
 
 `nur install` is the same one-stop path the release EXE runs (binary → PATH → ecosystem → browser).
 
-### Update (keep Meta current)
+### Update (keep NurCLI current)
 
 **Default — one command:**
 
@@ -103,7 +103,7 @@ That is the supported upgrade path after any install. Same spirit as the one-lin
 | 1. Find source | `~/laboratory/nur-cli` or `~/Laboratory/nur-cli` (Windows `%USERPROFILE%\…`) |
 | 2. Pull | `git pull --ff-only origin main` when a checkout exists |
 | 3. Build | `cargo build --release` in that tree |
-| 4. Install binary | Copy → `~/.local/bin/meta` (+ `muse` alias) |
+| 4. Install binary | Copy → `~/.local/bin/nur` |
 | 5. Stack | `ecosystem ensure --force` · `browser setup` · Orca hook |
 | No source tree? | Falls back to **`nur install`** (self-repair from the running binary) |
 
@@ -176,7 +176,7 @@ Everything is **on your machine only**. Secrets never go into the git checkout. 
 
 | Piece | Path |
 |-------|------|
-| **`nur`** | `~/.local/bin/meta` · Windows `nur.exe` |
+| **`nur`** | `~/.local/bin/nur` · Windows `nur.exe` |
 | **`muse`** | Same binary, legacy alias |
 | **Integrity** | `~/.local/bin/nur.sha256` |
 | **Source tree** (one-liner) | `~/laboratory/nur-cli` (Windows: `%USERPROFILE%\laboratory\nur-cli`) |
@@ -254,7 +254,7 @@ irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex  
 # from a clone
 git pull && ./install.ps1   # or install.sh
 
-# already have meta on PATH
+# already have nur on PATH
 nur install
 
 # prebuilt: download newer nur-windows-x86_64.exe from Releases and double-click
@@ -280,7 +280,7 @@ nur doctor   # confirm version + sha256
 === "macOS / Linux"
 
     ```bash
-    rm -f ~/.local/bin/meta ~/.local/bin/muse ~/.local/bin/nur.sha256
+    rm -f ~/.local/bin/nur ~/.local/bin/muse ~/.local/bin/meta ~/.local/bin/nur.sha256
     ```
 
 ### Config, sessions, usage (destructive)
@@ -305,4 +305,4 @@ Older builds used `~/.muse/` — remove the same way if you no longer need it.
 
 - Source checkout: `~/laboratory/nur-cli` (or your clone path)
 - Rust target artifacts: inside that repo’s `target/`
-- rustup / node / bun / uv / ffmpeg: uninstall with your OS package manager if you installed them only for Meta and don’t need them elsewhere
+- rustup / node / bun / uv / ffmpeg: uninstall with your OS package manager if you installed them only for NurCLI and don’t need them elsewhere

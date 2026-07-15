@@ -12,10 +12,10 @@ The Nur-gold terminal UI for interactive sessions.
 ## Opening the TUI
 
 ```bash
-meta                    # fresh session
-meta "fix the bug"      # start with a prompt
-meta -c                 # continue last session
-meta -r <session-id>    # resume specific session
+nur                     # fresh session
+nur "fix the bug"       # start with a prompt
+nur -c                  # continue last session
+nur -r <session-id>     # resume specific session
 ```
 
 ### Opening banner
@@ -135,7 +135,7 @@ The note is appended to your persistent memory file and recalled automatically i
 
 | Command | Purpose |
 |---------|---------|
-| `/model` | Change model (e.g. `/model muse-spark-1.1`) |
+| `/model` | Show and switch models. Run bare to open a picker that fetches your provider's live model list (`/models`) — filter, arrow, and ↵ to switch, or type any id. `/model <id>` switches directly (e.g. `/model muse-spark-1.1`) |
 | `/effort` | Change reasoning effort |
 | `/compact` | Manually compact context (thins old tool bodies; keeps recent turns; writes `.precompact.bak`) |
 | `/usage` | Show token usage and cost (`/cost`) — includes budget caps when set |
@@ -150,7 +150,7 @@ The note is appended to your persistent memory file and recalled automatically i
 |---------|---------|
 | `/cd <path>` | Change the working directory tools are sandboxed to (`~` and relative paths OK) |
 | `/pwd` | Print the current working directory |
-| `/init` | Initialise project instructions (`META.md`) |
+| `/init` | Initialise project instructions (`NUR.md`) |
 | `/config` | Show config + data paths |
 | `/permissions` | Show or reload allow/deny/ask rules (`permissions.toml`) |
 | `/hooks` | Local tool hook status (`hooks.toml`) |
@@ -322,5 +322,5 @@ NurCLI writes live status files for host panels:
 
 ```bash
 nur install-hook           # install Orca agent hook
-orca terminal create --command meta   # launch in Orca
+orca terminal create --command nur    # launch in Orca
 ```

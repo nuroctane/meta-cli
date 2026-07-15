@@ -18,7 +18,7 @@ Your first NurCLI session in 60 seconds.
 
 That’s the full stack (binary + PATH + prereqs + ecosystem).
 
-**<span class="install-hot">Windows without building:</span>** download `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) and double‑click — it runs the **same full install**, then opens Meta. Other paths: **[Setup](setup.md)**.
+**<span class="install-hot">Windows without building:</span>** download `nur-windows-x86_64.exe` from [Releases](https://github.com/nuroctane/nur-cli/releases/latest) and double‑click — it runs the **same full install**, then opens NurCLI. Other paths: **[Setup](setup.md)**.
 
 ## 2. Authenticate
 
@@ -37,7 +37,7 @@ Paste your [Meta Model API key](https://dev.meta.ai/) when prompted. The key is 
 ## 3. Open the TUI
 
 ```bash
-meta
+nur
 ```
 
 This opens the interactive Nur-gold TUI in your current directory.
@@ -57,9 +57,9 @@ The agent will read files, run tools, and stream its response in real time.
 ## Common first commands
 
 ```bash
-meta                              # interactive TUI
-meta "fix the bug"                # start with a prompt
-meta -c                           # continue last session in this directory
+nur                               # interactive TUI
+nur "fix the bug"                 # start with a prompt
+nur -c                            # continue last session in this directory
 nur --mode plan "explain this"   # plan mode (read-only, no writes)
 nur run "add tests" -y           # headless + auto-approve
 ```
@@ -94,13 +94,13 @@ Later opens only run light **background repair** if `ecosystem_auto_ensure` is o
 
 ## Update later
 
-Keep Meta current with one command:
+Keep NurCLI current with one command:
 
 ```bash
 nur update
 ```
 
-Pulls latest main (when a Laboratory checkout exists), rebuilds, reinstalls the binary, and re-provisions the ecosystem. Alternatives (re-run one-liner, re-download Windows EXE): **[Setup → Update](setup.md#update-keep-meta-current)**.
+Pulls latest main (when a Laboratory checkout exists), rebuilds, reinstalls the binary, and re-provisions the ecosystem. Alternatives (re-run one-liner, re-download Windows EXE): **[Setup → Update](setup.md#update-keep-nurcli-current)**.
 
 ---
 

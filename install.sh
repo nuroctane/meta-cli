@@ -8,7 +8,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.sh | bash
 #
 # Secrets are NEVER written into the repo. Keys live only in ~/.nur/auth.json
-# or env META_API_KEY / MODEL_API_KEY (legacy: MUSE_API_KEY).
+# or env NUR_API_KEY (legacy: META_API_KEY / MODEL_API_KEY / MUSE_API_KEY).
 
 set -euo pipefail
 
@@ -105,7 +105,9 @@ export PATH="${HOME}/.bun/bin:${HOME}/.local/bin:${PATH}"
 
 step "Building release (first time can take a few minutes)…"
 ( cd "${REPO_DIR}" && cargo build --release )
-BUILT="${REPO_DIR}/target/release/meta"
+BUILT="${REPO_DIR}/target/release/nur"
+# Legacy fallbacks for stale checkouts built before the rebrand.
+[[ -f "${BUILT}" ]] || BUILT="${REPO_DIR}/target/release/meta"
 [[ -f "${BUILT}" ]] || BUILT="${REPO_DIR}/target/release/muse"
 [[ -f "${BUILT}" ]] || { echo "missing release binary"; exit 1; }
 
@@ -121,12 +123,13 @@ else
   warn "sha256sum/shasum not found — skipping binary integrity hash"
 fi
 cp -f "${BUILT}" "${DEST_DIR}/nur"
-cp -f "${BUILT}" "${DEST_DIR}/muse"
-chmod +x "${DEST_DIR}/nur" "${DEST_DIR}/muse"
+chmod +x "${DEST_DIR}/nur"
+# Drop legacy muse/meta aliases if present (rebrand — single `nur` command).
+rm -f "${DEST_DIR}/muse" "${DEST_DIR}/meta" 2>/dev/null || true
 if [[ -n "${BUILT_HASH}" ]]; then
   INSTALLED_HASH="$( (sha256sum "${DEST_DIR}/nur" 2>/dev/null || shasum -a 256 "${DEST_DIR}/nur") | awk '{print $1}' )"
   if [[ "${INSTALLED_HASH}" != "${BUILT_HASH}" ]]; then
-    echo "Integrity check failed: installed meta hash does not match build" >&2
+    echo "Integrity check failed: installed nur hash does not match build" >&2
     exit 1
   fi
   echo "${BUILT_HASH}  nur" > "${DEST_DIR}/nur.sha256"

@@ -71,9 +71,17 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.login.is_some() {
         draw_login(f, app, area);
     }
+    if app.model_picker.is_some() {
+        draw_model_picker(f, app, area);
+    }
     // Grok-style hover dialogue over thoughts / tools / turns (above everything
     // except approval/picker, which already short-circuit interaction).
-    if app.approval.is_none() && app.picker.is_none() && app.login.is_none() && app.ctx_menu.is_none() {
+    if app.approval.is_none()
+        && app.picker.is_none()
+        && app.login.is_none()
+        && app.model_picker.is_none()
+        && app.ctx_menu.is_none()
+    {
         match draw_hover_peek(f, app, area) {
             Some((b, c)) => {
                 app.peek_box = b;
@@ -420,6 +428,176 @@ fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
         inner,
     );
     if let Some(m) = &mut app.login {
+        m.hit = hit;
+    }
+}
+
+// ── model chooser (`/model`) ─────────────────────────────────────────────────
+/// Live model picker — same scroll/select/filter contract as the provider
+/// picker. Shows the active provider's `/models` list; type to filter (or to
+/// enter a custom id), ↵ to switch.
+fn draw_model_picker(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = 74u16.min(area.width.saturating_sub(4)).max(48);
+    let h = 28u16.min(area.height.saturating_sub(2)).max(12);
+    let rect = Rect {
+        x: (area.width.saturating_sub(w)) / 2,
+        y: (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
+    let phase = modal_phase(app);
+
+    let (provider_name, total, loading) = app
+        .model_picker
+        .as_ref()
+        .map(|m| (m.provider_name.clone(), m.count(), m.loading))
+        .unwrap_or_default();
+    let title = if loading {
+        format!(" ⧗ {provider_name} models  ·  loading… ")
+    } else {
+        format!(" ◆ {provider_name} models  ·  {total} ")
+    };
+    draw_modal_frame(
+        f,
+        rect,
+        phase,
+        theme::INDIGO,
+        &title,
+        None,
+        " ↑↓/wheel  ·  ↵ switch  ·  type to filter / custom id  ·  esc/✕  ",
+    );
+    let inner = modal_inner(rect);
+
+    let close = Rect {
+        x: rect.x + rect.width.saturating_sub(5),
+        y: rect.y,
+        width: 3,
+        height: 1,
+    };
+    let mut hit = super::app::PickerHit {
+        frame: rect,
+        close,
+        body: inner,
+        scope: Rect::default(),
+        rows: Vec::new(),
+    };
+
+    // Filter line (2 rows) + list below — one screen row per model.
+    const FILTER_ROWS: usize = 2;
+    let list_h = (inner.height as usize).saturating_sub(FILTER_ROWS).max(1);
+    let vis_rows = list_h.max(1);
+
+    let (filter, current, error, mut sel, mut start) = {
+        let m = app.model_picker.as_ref().unwrap();
+        (
+            m.filter.clone(),
+            m.current.clone(),
+            m.error.clone(),
+            m.sel,
+            m.scroll,
+        )
+    };
+
+    if let Some(m) = &mut app.model_picker {
+        m.vis_page = vis_rows;
+        m.clamp_scroll();
+        sel = m.sel;
+        start = m.scroll;
+    }
+
+    let mut caret = filter.clone();
+    if theme::blink_on(app.spinner_epoch.elapsed()) {
+        caret.push('▉');
+    }
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("  filter  ".to_string(), theme::style_faint()),
+            Span::styled(
+                caret,
+                Style::default()
+                    .fg(theme::BLUE_100)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+    ];
+
+    let picks = app
+        .model_picker
+        .as_ref()
+        .map(|m| m.filtered().into_iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let col = (inner.width as usize).saturating_sub(4);
+
+    // Empty states: loading, fetch error, or no filter match.
+    if picks.is_empty() {
+        let msg = if loading {
+            "  fetching models from provider…".to_string()
+        } else if let Some(e) = &error {
+            format!("  couldn't list models · {e}")
+        } else {
+            "  no models match — type an id + ↵ to switch".to_string()
+        };
+        lines.push(Line::from(Span::styled(truncate(&msg, col), theme::style_faint())));
+        if error.is_some() && !filter.trim().is_empty() {
+            lines.push(Line::from(Span::styled(
+                truncate(&format!("  ↵ switch to \"{}\"", filter.trim()), col),
+                Style::default().fg(theme::BLUE_100),
+            )));
+        }
+        f.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+            inner,
+        );
+        if let Some(m) = &mut app.model_picker {
+            m.hit = hit;
+            m.vis_page = 1;
+        }
+        return;
+    }
+
+    for (i, id) in picks.iter().enumerate().skip(start).take(vis_rows) {
+        let selected = i == sel;
+        let is_current = *id == current;
+        let marker = if selected { "❯ " } else { "  " };
+        let badge = if is_current { "  ● active" } else { "" };
+        let text = format!("{marker}{id}{badge}");
+        let style = if selected {
+            Style::default()
+                .fg(theme::BG)
+                .bg(theme::META_BLUE)
+                .add_modifier(Modifier::BOLD)
+        } else if is_current {
+            Style::default()
+                .fg(theme::BLUE_100)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme::FG)
+        };
+        lines.push(Line::from(Span::styled(truncate(&text, col), style)));
+
+        let drawn = i - start;
+        let row_y = inner.y + FILTER_ROWS as u16 + drawn as u16;
+        if row_y < inner.y + inner.height {
+            hit.rows.push((
+                i,
+                Rect {
+                    x: inner.x,
+                    y: row_y,
+                    width: inner.width,
+                    height: 1,
+                },
+            ));
+        }
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+        inner,
+    );
+    if let Some(m) = &mut app.model_picker {
         m.hit = hit;
     }
 }

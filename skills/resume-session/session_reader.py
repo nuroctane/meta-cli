@@ -24,7 +24,8 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-TOOLS = ("claude", "codex", "cursor", "meta", "grok")
+# "meta" is retained as a back-compat alias for "nur" (pre-rebrand token).
+TOOLS = ("claude", "codex", "cursor", "nur", "meta", "grok")
 UUID_RE = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
     r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
@@ -1867,7 +1868,7 @@ def _sort_and_dedupe(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "claude-code": 0,
         "codex-cli": 0,
         "codex-vscode": 1,
-        "meta-cli": 0,
+        "nur-cli": 0,
         "grok-build": 0,
     }
     ordered = sorted(
@@ -1891,13 +1892,26 @@ def _sort_and_dedupe(sessions: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 
-def _meta_home() -> Path:
-    configured = os.environ.get("META_HOME") or os.environ.get("MUSE_HOME")
-    return Path(configured).expanduser() if configured else Path.home() / ".meta"
+def _nur_home() -> Path:
+    # NurCLI data home. Honor NUR_HOME first, then the legacy META_HOME / MUSE_HOME
+    # overrides. With no override, prefer ~/.nur (current), then fall back to the
+    # pre-rebrand ~/.meta / ~/.muse homes if they still hold un-migrated sessions.
+    configured = (
+        os.environ.get("NUR_HOME")
+        or os.environ.get("META_HOME")
+        or os.environ.get("MUSE_HOME")
+    )
+    if configured:
+        return Path(configured).expanduser()
+    home = Path.home()
+    for legacy in (home / ".nur", home / ".meta", home / ".muse"):
+        if (legacy / "sessions").is_dir():
+            return legacy
+    return home / ".nur"
 
 
-def _meta_sessions_dir() -> Path:
-    return _meta_home() / "sessions"
+def _nur_sessions_dir() -> Path:
+    return _nur_home() / "sessions"
 
 
 def _normalize_cwd_key(cwd: str) -> str:
@@ -1907,9 +1921,9 @@ def _normalize_cwd_key(cwd: str) -> str:
     return path
 
 
-def _discover_meta(cwd: str, within_min: int) -> list[dict[str, Any]]:
+def _discover_nur(cwd: str, within_min: int) -> list[dict[str, Any]]:
     sessions: list[dict[str, Any]] = []
-    directory = _meta_sessions_dir()
+    directory = _nur_sessions_dir()
     if not directory.is_dir():
         return sessions
     want = _normalize_cwd_key(cwd)
@@ -1940,11 +1954,11 @@ def _discover_meta(cwd: str, within_min: int) -> list[dict[str, Any]]:
                 preview = _one_line(msg.get("content") or "", 80)
                 break
         if not preview:
-            preview = _one_line(data.get("model") or "(meta session)", 80)
+            preview = _one_line(data.get("model") or "(nur session)", 80)
         sessions.append(
             {
-                "tool": "meta",
-                "source": "meta-cli",
+                "tool": "nur",
+                "source": "nur-cli",
                 "session_id": session_id,
                 "path": str(path),
                 "title": preview or "(untitled)",
@@ -1958,15 +1972,15 @@ def _discover_meta(cwd: str, within_min: int) -> list[dict[str, Any]]:
     return sessions
 
 
-def read_meta_session(path: Path | str, max_tool_chars: int = 300) -> dict[str, Any]:
+def read_nur_session(path: Path | str, max_tool_chars: int = 300) -> dict[str, Any]:
     session_path = Path(path)
     warnings: list[dict[str, str]] = []
     try:
         data = json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise ReaderError(f"failed to read meta session {session_path}: {exc}") from exc
+        raise ReaderError(f"failed to read nur session {session_path}: {exc}") from exc
     if not isinstance(data, dict):
-        raise ReaderError(f"invalid meta session: {session_path}")
+        raise ReaderError(f"invalid nur session: {session_path}")
     turns: list[dict[str, Any]] = []
     ui_log = data.get("ui_log") or []
     if isinstance(ui_log, list) and ui_log:
@@ -2038,7 +2052,7 @@ def read_meta_session(path: Path | str, max_tool_chars: int = 300) -> dict[str, 
                 )
         _add_warning(
             warnings,
-            "meta-no-ui-log",
+            "nur-no-ui-log",
             "session has no ui_log; reconstructed from messages/input_items only",
         )
     title = None
@@ -2048,8 +2062,8 @@ def read_meta_session(path: Path | str, max_tool_chars: int = 300) -> dict[str, 
             break
     return _finalize_result(
         {
-            "tool": "meta",
-            "source": "meta-cli",
+            "tool": "nur",
+            "source": "nur-cli",
             "session_id": data.get("id") or session_path.stem,
             "path": str(session_path),
             "title": title,
@@ -2064,13 +2078,13 @@ def read_meta_session(path: Path | str, max_tool_chars: int = 300) -> dict[str, 
     )
 
 
-def _find_meta_id(session_id: str, cwd: str) -> dict[str, Any] | None:
-    path = _meta_sessions_dir() / f"{session_id}.json"
+def _find_nur_id(session_id: str, cwd: str) -> dict[str, Any] | None:
+    path = _nur_sessions_dir() / f"{session_id}.json"
     if path.is_file():
         updated = _mtime_millis(path)
         return {
-            "tool": "meta",
-            "source": "meta-cli",
+            "tool": "nur",
+            "source": "nur-cli",
             "session_id": session_id,
             "path": str(path),
             "title": None,
@@ -2078,7 +2092,7 @@ def _find_meta_id(session_id: str, cwd: str) -> dict[str, Any] | None:
             "updated_at_ms": updated,
             "updated_at": _iso_from_millis(updated),
         }
-    directory = _meta_sessions_dir()
+    directory = _nur_sessions_dir()
     if not directory.is_dir():
         return None
     matches = [
@@ -2087,7 +2101,7 @@ def _find_meta_id(session_id: str, cwd: str) -> dict[str, Any] | None:
         if p.stem.startswith(session_id) and not p.name.endswith(".status.json")
     ]
     if len(matches) == 1:
-        return _find_meta_id(matches[0].stem, cwd)
+        return _find_nur_id(matches[0].stem, cwd)
     return None
 
 
@@ -2351,8 +2365,8 @@ def discover_sessions(tool: str, cwd: str, within_min: int = 0) -> list[dict[str
         sessions = _discover_claude(requested_cwd, within_min)
     elif tool == "codex":
         sessions = _discover_codex(requested_cwd, within_min)
-    elif tool == "meta":
-        sessions = _discover_meta(requested_cwd, within_min)
+    elif tool in ("nur", "meta"):
+        sessions = _discover_nur(requested_cwd, within_min)
     elif tool == "grok":
         sessions = _discover_grok(requested_cwd, within_min)
     else:
@@ -2416,10 +2430,10 @@ def _candidate_from_path(tool: str, raw_path: str, cwd: str) -> dict[str, Any] |
             "cwd": cwd,
             "updated_at_ms": updated,
         }
-    if tool == "meta" and path.is_file() and path.suffix == ".json":
+    if tool in ("nur", "meta") and path.is_file() and path.suffix == ".json":
         return {
-            "tool": tool,
-            "source": "meta-cli",
+            "tool": "nur",
+            "source": "nur-cli",
             "session_id": path.stem,
             "path": str(path),
             "title": None,
@@ -2527,7 +2541,8 @@ def resolve_session(
             "claude": _find_claude_id,
             "codex": _find_codex_id,
             "cursor": _find_cursor_id,
-            "meta": _find_meta_id,
+            "nur": _find_nur_id,
+            "meta": _find_nur_id,
             "grok": _find_grok_id,
         }[tool]
         found = finder(ref, cwd)
@@ -2555,8 +2570,8 @@ def read_resolved_session(
         return read_claude_session(candidate["path"], max_tool_chars)
     if tool == "codex":
         return read_codex_session(candidate["path"], max_tool_chars)
-    if tool == "meta":
-        return read_meta_session(candidate["path"], max_tool_chars)
+    if tool in ("nur", "meta"):
+        return read_nur_session(candidate["path"], max_tool_chars)
     if tool == "grok":
         return read_grok_session(candidate["path"], max_tool_chars)
     return read_cursor_session(candidate, max_tool_chars)
