@@ -22,7 +22,7 @@ pub use skills::install_bundled_skills;
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
 /// Bump when spawn/install logic changes so markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 6;
+const ECOSYSTEM_SCHEMA: u32 = 7;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -54,6 +54,9 @@ pub struct EcosystemStatus {
     pub browser: ComponentStatus,
     #[serde(default)]
     pub excalidraw: ComponentStatus,
+    /// Cua Drivers — computer-use MCP server + CLI (`cua-driver`).
+    #[serde(default)]
+    pub cua: ComponentStatus,
     pub skills_installed: Vec<String>,
     #[serde(default)]
     pub packs_installed: Vec<String>,
@@ -72,7 +75,7 @@ impl EcosystemStatus {
             }
         };
         format!(
-            "ecosystem · {}  {}  {}  {}  {}  {}  {}  {}  · packs {}",
+            "ecosystem · {}  {}  {}  {}  {}  {}  {}  {}  {}  · packs {}",
             bit(self.graphify.available, "graphify"),
             bit(self.plur.available, "plur"),
             bit(self.ruflo.available, "ruflo"),
@@ -81,6 +84,7 @@ impl EcosystemStatus {
             bit(self.browser.available, "browser"),
             bit(self.excalidraw.available, "excalidraw"),
             bit(self.skills_cli.available, "skills"),
+            bit(self.cua.available, "cua"),
             if self.packs_installed.is_empty() {
                 "…".into()
             } else {
@@ -92,7 +96,7 @@ impl EcosystemStatus {
     pub fn report(&self) -> String {
         let mut s = String::from("Nur ecosystem (auto-provisioned on install / open)\n");
         // Fixed names so older ecosystem.json markers (pre-field) still list every slot.
-        let comps: [(&str, &ComponentStatus); 9] = [
+        let comps: [(&str, &ComponentStatus); 10] = [
             ("graphify", &self.graphify),
             ("plur", &self.plur),
             ("ruflo", &self.ruflo),
@@ -102,6 +106,7 @@ impl EcosystemStatus {
             ("omp", &self.omp),
             ("browser", &self.browser),
             ("excalidraw", &self.excalidraw),
+            ("cua", &self.cua),
         ];
         for (fallback_name, c) in comps {
             let name = if c.name.is_empty() {
@@ -211,6 +216,7 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
     status.omp = packs::ensure_omp();
     status.browser = packs::ensure_browser_cli(status.node_ok);
     status.excalidraw = ensure_excalidraw(status.node_ok);
+    status.cua = ensure_cua();
 
     // Third-party skill packs (network; markers skip re-download).
     let (packs_ok, pack_notes) = packs::install_skill_packs(&status.skills_cli);
@@ -305,6 +311,88 @@ fn ensure_excalidraw(node_ok: bool) -> ComponentStatus {
     }
     if c.detail.is_empty() {
         c.detail = "not found after npm install — try: npm i -g excalidraw-cli".into();
+    }
+    c
+}
+
+// ── Cua Drivers (computer-use MCP + CLI) ────────────────────────────────────
+
+/// Locate the `cua-driver` binary. Falls back to the Windows installer's fixed
+/// LOCALAPPDATA location so we find it right after install, before a new shell
+/// picks up the updated User PATH.
+fn cua_driver_bin() -> Option<String> {
+    if let Some(bin) = find_bin("cua-driver") {
+        return Some(bin);
+    }
+    #[cfg(windows)]
+    if let Some(local) = dirs::data_local_dir() {
+        let p = local
+            .join("Programs")
+            .join("Cua")
+            .join("cua-driver")
+            .join("bin")
+            .join("cua-driver.exe");
+        if p.is_file() {
+            return Some(p.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+/// Cua Drivers — computer-use MCP server + CLI (`cua-driver`) from trycua/cua.
+/// Installed via the vendor's official script. On Windows we pass `-NoAutoStart`
+/// so nur never silently registers an **elevated** background daemon: the useful
+/// binary lands on PATH, and you start it on demand (`cua-driver serve`) or wire
+/// its MCP (`cua-driver mcp-config`). Best-effort — a failure never blocks ensure.
+fn ensure_cua() -> ComponentStatus {
+    let mut c = ComponentStatus {
+        name: "cua".into(),
+        ..Default::default()
+    };
+    if let Some(bin) = cua_driver_bin() {
+        c.available = true;
+        c.version = cmd_version(&bin, &["--version"]);
+        c.path = Some(bin);
+        c.detail = "cua-driver ready · computer-use MCP/CLI (no autostart daemon)".into();
+        return c;
+    }
+
+    #[cfg(windows)]
+    let install = run_capture(
+        "powershell",
+        &[
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            "& ([scriptblock]::Create((irm https://cua.ai/driver/install.ps1))) -NoAutoStart",
+        ],
+        None,
+        300_000,
+    );
+    #[cfg(not(windows))]
+    let install = run_capture(
+        "bash",
+        &["-c", "curl -fsSL https://cua.ai/driver/install.sh | bash"],
+        None,
+        300_000,
+    );
+
+    if let Err(e) = install {
+        c.detail = format!(
+            "cua-driver install failed: {}",
+            e.chars().take(200).collect::<String>()
+        );
+        return c;
+    }
+
+    if let Some(bin) = cua_driver_bin() {
+        c.available = true;
+        c.version = cmd_version(&bin, &["--version"]);
+        c.path = Some(bin);
+        c.detail = "cua-driver installed · computer-use MCP/CLI (no autostart daemon)".into();
+    } else {
+        c.detail = "installed but cua-driver not on PATH yet — open a new shell".into();
     }
     c
 }
