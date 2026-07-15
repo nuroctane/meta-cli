@@ -112,7 +112,13 @@ impl App {
             "/plur" => self.cmd_plur(&arg),
             "/ruflo" => self.cmd_ruflo(&arg),
             "/ecosystem" => {
-                self.push_note(Tone::Skill, crate::ecosystem::quick_status());
+                // Heals missing pieces (excalidraw, etc.) — same as one-shot ensure.
+                self.push_note(
+                    Tone::Skill,
+                    "checking / provisioning ecosystem…".into(),
+                );
+                let st = crate::ecosystem::ensure_ecosystem(false);
+                self.push_note(Tone::Skill, st.report());
             }
             "/login" => self.open_login(),
             "/logout" => self.cmd_logout(),

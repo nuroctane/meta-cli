@@ -54,7 +54,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/graphify", "knowledge graph: status | query | path | explain | extract"),
     ("/plur", "shared engram memory: status | learn | recall | inject"),
     ("/ruflo", "vector memory / swarm: status | search | store"),
-    ("/ecosystem", "graphify · plur · ruflo readiness"),
+    ("/ecosystem", "ecosystem readiness (graphify · plur · ruflo · excalidraw · …)"),
     ("/usage", "token usage + cost for this session  (/cost)"),
     ("/budget", "session spend ceiling: /budget [cost <usd>|tokens <n>|clear|save]"),
     ("/poor", "toggle cost-saver: skip PLUR inject + skills catalog + long memory in prompt"),

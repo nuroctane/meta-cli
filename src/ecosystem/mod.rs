@@ -90,24 +90,42 @@ impl EcosystemStatus {
     }
 
     pub fn report(&self) -> String {
-        let mut s = String::from("Meta ecosystem (auto-provisioned)\n");
-        let comps = [
-            &self.graphify,
-            &self.plur,
-            &self.ruflo,
-            &self.skills_cli,
-            &self.akm,
-            &self.executor,
-            &self.omp,
-            &self.browser,
-            &self.excalidraw,
+        let mut s = String::from("Nur ecosystem (auto-provisioned on install / open)\n");
+        // Fixed names so older ecosystem.json markers (pre-field) still list every slot.
+        let comps: [(&str, &ComponentStatus); 9] = [
+            ("graphify", &self.graphify),
+            ("plur", &self.plur),
+            ("ruflo", &self.ruflo),
+            ("skills", &self.skills_cli),
+            ("akm", &self.akm),
+            ("executor", &self.executor),
+            ("omp", &self.omp),
+            ("browser", &self.browser),
+            ("excalidraw", &self.excalidraw),
         ];
-        for c in comps {
-            if c.name.is_empty() {
-                continue;
-            }
+        for (fallback_name, c) in comps {
+            let name = if c.name.is_empty() {
+                fallback_name
+            } else {
+                c.name.as_str()
+            };
+            let detail = if c.name.is_empty() && c.detail.is_empty() {
+                if c.available {
+                    "ready"
+                } else {
+                    "not provisioned yet — will install on next open / ensure"
+                }
+            } else if c.detail.is_empty() {
+                if c.available {
+                    "ready"
+                } else {
+                    "missing"
+                }
+            } else {
+                c.detail.as_str()
+            };
             let mark = if c.available { "✓" } else { "✗" };
-            s.push_str(&format!("  {mark} {:10} {}\n", c.name, c.detail));
+            s.push_str(&format!("  {mark} {name:12} {detail}\n"));
             if let Some(v) = &c.version {
                 s.push_str(&format!("              version {v}\n"));
             }
@@ -215,11 +233,14 @@ fn load_marker_if_fresh() -> Option<EcosystemStatus> {
         return None;
     }
     let age = now_secs().saturating_sub(st.ensured_at);
+    // Re-run when a core/new component is missing so schema bumps and new
+    // tools (excalidraw, browser, …) land without a manual --force.
     if age < ENSURE_TTL_SECS
         && st.graphify.available
         && st.plur.available
         && st.ruflo.available
         && st.skills_cli.available
+        && st.excalidraw.available
     {
         Some(st)
     } else {
@@ -751,15 +772,13 @@ pub fn plur_inject(task: &str) -> Option<String> {
     Some(capped)
 }
 
-/// Brief status snippet for the TUI banner / /ecosystem command.
-/// Reads the on-disk marker only — never blocks on network installs.
+/// Status for `/ecosystem` and doctor. Heals the marker when schema is old or
+/// a component (e.g. excalidraw) is missing — same path as one-shot install.
 pub fn quick_status() -> String {
-    if let Ok(text) = fs::read_to_string(marker_path()) {
-        if let Ok(st) = serde_json::from_str::<EcosystemStatus>(&text) {
-            return st.report();
-        }
-    }
-    "Meta ecosystem not provisioned yet — background ensure is running, or run:\n  nur ecosystem ensure\n".into()
+    // Prefer a live ensure so /ecosystem never lies about a stale marker.
+    // Cached when fresh (TTL + all core bits including excalidraw).
+    let st = ensure_ecosystem(false);
+    st.report()
 }
 
 /// One-line snapshot for TUI open. Instant; no npm/uv.

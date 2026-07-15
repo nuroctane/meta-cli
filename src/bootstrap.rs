@@ -232,9 +232,16 @@ pub fn run_full_install() -> Result<()> {
         || st.plur.available
         || st.ruflo.available
         || st.browser.available
+        || st.excalidraw.available
         || st.skills_cli.available;
-    if st.graphify.available && st.plur.available && st.ruflo.available {
-        theme::print_ok("ecosystem ready");
+    if st.graphify.available && st.plur.available && st.ruflo.available && st.excalidraw.available
+    {
+        theme::print_ok("ecosystem ready (incl. excalidraw)");
+    } else if st.graphify.available && st.plur.available && st.ruflo.available {
+        theme::print_ok("ecosystem core ready");
+        if !st.excalidraw.available {
+            theme::print_info("excalidraw-cli deferred — Node/npm required for diagrams");
+        }
     } else if any_ok {
         theme::print_info("partial ecosystem — missing pieces noted above (Node/uv help)");
     } else {

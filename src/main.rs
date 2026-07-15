@@ -127,7 +127,9 @@ async fn real_main() -> Result<()> {
         Some(Commands::Ecosystem { action }) => {
             match action {
                 cli::EcosystemCmd::Ensure { force } => {
-                    theme::print_info("provisioning graphify · plur · ruflo (one-shot)…");
+                    theme::print_info(
+                        "provisioning graphify · plur · ruflo · browser · excalidraw · skills…",
+                    );
                     let st = ecosystem::ensure_ecosystem(*force);
                     println!("{}", st.report());
                     if !(st.graphify.available && st.plur.available && st.ruflo.available) {
@@ -140,6 +142,10 @@ async fn real_main() -> Result<()> {
                             ));
                         }
                         theme::print_info("partial ecosystem — missing components noted above");
+                    } else if !st.excalidraw.available {
+                        theme::print_info(
+                            "core ready; excalidraw-cli missing — needs Node/npm (npm i -g excalidraw-cli)",
+                        );
                     } else {
                         theme::print_ok("ecosystem ready");
                     }
