@@ -184,10 +184,10 @@ pub fn run_full_install() -> Result<()> {
         }
         theme::print_ok(&format!("Installed {}", dest.display()));
     }
-    // Drop legacy product binaries (meta / muse).
-    for legacy in ["muse.exe", "muse", "meta.exe", "meta"] {
-        let _ = fs::remove_file(dest_dir.join(legacy));
-    }
+    // Product binary is ONLY `nur`. Remove legacy Meta/Muse names.
+    // Also remove same-hash impostors of *this* image under other agent names
+    // (e.g. an old install that overwrote claude.exe with meta.exe).
+    scrub_legacy_and_impostor_bins(&dest_dir, &dest);
 
     // Prefer the install dir for everything that follows in this process.
     prepend_path(&dest_dir);
@@ -344,11 +344,7 @@ pub fn run_update() -> Result<()> {
         fs::create_dir_all(&dest_dir)?;
         let dest = install_binary_path();
         install_binary_safe(&built, &dest)?;
-        // Remove legacy product aliases if present.
-        for legacy in ["muse.exe", "muse", "meta.exe", "meta"] {
-            let p = dest_dir.join(legacy);
-            let _ = fs::remove_file(p);
-        }
+        scrub_legacy_and_impostor_bins(&dest_dir, &dest);
         theme::print_ok(&format!("Installed {}", dest.display()));
         prepend_path(&dest_dir);
         let _ = ensure_user_path(&dest_dir);
@@ -459,7 +455,52 @@ fn same_file(a: &Path, b: &Path) -> bool {
     paths_equal_loose(a, b)
 }
 
+/// Install target is **only** `nur` / `nur.exe`. Never write ourselves as
+/// `claude`, `codex`, etc. Remove legacy meta/muse names, and delete any
+/// *identical copy* of this binary under foreign agent names (historical bug:
+/// Meta CLI was copied over real Claude Code).
+fn scrub_legacy_and_impostor_bins(dest_dir: &Path, nur_bin: &Path) {
+    for legacy in ["muse.exe", "muse", "meta.exe", "meta"] {
+        let _ = fs::remove_file(dest_dir.join(legacy));
+    }
+    let Some(our_hash) = file_sha256(nur_bin) else {
+        return;
+    };
+    // Well-known foreign agent names that must never be our product binary.
+    const FOREIGN: &[&str] = &[
+        "claude.exe",
+        "claude",
+        "codex.exe",
+        "codex",
+        "cursor.exe",
+        "cursor",
+        "gemini.exe",
+        "gemini",
+        "grok.exe",
+        "grok",
+    ];
+    for name in FOREIGN {
+        let p = dest_dir.join(name);
+        if !p.is_file() {
+            continue;
+        }
+        if same_file(nur_bin, &p) {
+            let _ = fs::remove_file(&p);
+            continue;
+        }
+        if let Some(h) = file_sha256(&p) {
+            if h == our_hash {
+                let _ = fs::remove_file(&p);
+                theme::print_info(&format!(
+                    "removed impostor {name} (was a copy of nur/meta — restore the real tool if you need it)"
+                ));
+            }
+        }
+    }
+}
+
 fn install_binary_safe(src: &Path, target: &Path) -> Result<()> {
+    // Only ever install as nur — never as claude/codex/etc.
     // Never "install over ourselves" — rename/copy would delete the only image
     // and leave PATH pointing at nothing (os error 2 after rename to .old).
     if same_file(src, target) {
