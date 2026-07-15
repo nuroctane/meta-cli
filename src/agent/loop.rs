@@ -107,6 +107,108 @@ pub fn spawn_turn(
 }
 
 impl AgentRunner {
+    /// Run one model request against `client`, forwarding stream events to the
+    /// UI. Returns `(response, text_deltas_emitted)` on success, or
+    /// `(error, text_deltas_emitted)` so the caller can tell whether failing
+    /// over is safe (only when nothing was streamed yet).
+    async fn stream_one(
+        &self,
+        client: &ApiClient,
+        req: &ResponseRequest,
+        tx: &mpsc::UnboundedSender<AgentEvent>,
+        cancel: &CancellationToken,
+    ) -> std::result::Result<(ApiResponse, usize), (MuseError, usize)> {
+        let mut deltas = 0usize;
+        if req.stream == Some(true) {
+            let r = client
+                .create_response_stream(
+                    req,
+                    |ev| match ev {
+                        StreamEvent::TextDelta(d) => {
+                            deltas += 1;
+                            let _ = tx.send(AgentEvent::TextDelta(d));
+                        }
+                        StreamEvent::ReasoningDelta(d) => {
+                            let _ = tx.send(AgentEvent::ReasoningDelta(d));
+                        }
+                        StreamEvent::Completed(_) => {}
+                    },
+                    cancel,
+                )
+                .await;
+            match r {
+                Ok(resp) => Ok((resp, deltas)),
+                Err(e) => Err((e, deltas)),
+            }
+        } else {
+            tokio::select! {
+                _ = cancel.cancelled() => Err((MuseError::Interrupted, 0)),
+                r = client.create_response(req) => match r {
+                    Ok(resp) => Ok((resp, 0)),
+                    Err(e) => Err((e, 0)),
+                },
+            }
+        }
+    }
+
+    /// One model request with opt-in cross-provider failover. Tries the active
+    /// provider first; on a retryable server error **before any text streamed**,
+    /// retries the same request against each configured fallback provider in
+    /// turn. Never fails over once output has begun, so the transcript never
+    /// shows duplicated text.
+    async fn request_with_failover(
+        &self,
+        req: &ResponseRequest,
+        tx: &mpsc::UnboundedSender<AgentEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<(ApiResponse, usize)> {
+        let primary_err = match self.stream_one(&self.client, req, tx, cancel).await {
+            Ok(pair) => return Ok(pair),
+            Err((e, emitted)) => {
+                if emitted > 0 || !crate::api::failover::should_failover(&e) {
+                    return Err(e);
+                }
+                e
+            }
+        };
+
+        let targets = crate::api::failover::plan_targets(
+            &self.config.provider,
+            &self.config.fallback_providers,
+            crate::api::failover::resolve_target_key,
+        );
+        if targets.is_empty() {
+            return Err(primary_err);
+        }
+
+        let mut last = primary_err;
+        for t in targets {
+            let _ = tx.send(AgentEvent::Status(format!(
+                "provider error ({last}) — failing over to {} · {}",
+                t.provider_id, t.model
+            )));
+            let client = match ApiClient::new(&t.base_url, &t.api_key) {
+                Ok(c) => c.with_chat_completions(t.chat),
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            };
+            let mut req2 = req.clone();
+            req2.model = t.model.clone();
+            match self.stream_one(&client, &req2, tx, cancel).await {
+                Ok(pair) => return Ok(pair),
+                Err((e, emitted)) => {
+                    if emitted > 0 || !crate::api::failover::should_failover(&e) {
+                        return Err(e);
+                    }
+                    last = e;
+                }
+            }
+        }
+        Err(last)
+    }
+
     pub async fn run_turn_events(
         &self,
         session: &mut Session,
@@ -227,30 +329,8 @@ impl AgentRunner {
                 prompt_cache_key: Some(session.id.clone()),
             };
 
-            let mut text_deltas = 0usize;
-            let resp: ApiResponse = if req.stream == Some(true) {
-                self.client
-                    .create_response_stream(
-                        &req,
-                        |ev| match ev {
-                            StreamEvent::TextDelta(d) => {
-                                text_deltas += 1;
-                                let _ = tx.send(AgentEvent::TextDelta(d));
-                            }
-                            StreamEvent::ReasoningDelta(d) => {
-                                let _ = tx.send(AgentEvent::ReasoningDelta(d));
-                            }
-                            StreamEvent::Completed(_) => {}
-                        },
-                        cancel,
-                    )
-                    .await?
-            } else {
-                tokio::select! {
-                    _ = cancel.cancelled() => return Err(MuseError::Interrupted),
-                    r = self.client.create_response(&req) => r?,
-                }
-            };
+            let (resp, text_deltas): (ApiResponse, usize) =
+                self.request_with_failover(&req, tx, cancel).await?;
 
             if let Some(u) = &resp.usage {
                 let tu: TokenUsage = u.into();
@@ -468,6 +548,17 @@ impl AgentRunner {
                             .push(function_call_output_item(&call.call_id, &msg));
                         idx += 1;
                         continue;
+                    }
+                    // Snapshot the target before a single-file mutating tool so
+                    // `/undo` can restore it. Best-effort; never blocks the tool.
+                    if matches!(call.name.as_str(), "write_file" | "edit_file" | "multi_edit") {
+                        if let Ok(v) = serde_json::from_str::<Value>(&call.arguments) {
+                            if let Some(p) = v.get("path").and_then(|p| p.as_str()) {
+                                if let Ok(abs) = crate::tools::resolve_path(&self.cwd, p) {
+                                    crate::tools::undo::record(&session.id, &abs);
+                                }
+                            }
+                        }
                     }
                     let host = ToolHost {
                         todos: self.tools.todos.clone(),

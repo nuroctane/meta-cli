@@ -80,6 +80,7 @@ impl App {
             "/usage" | "/cost" => self.cmd_usage(),
             "/budget" => self.cmd_budget(&arg),
             "/poor" => self.cmd_poor(),
+            "/undo" => self.cmd_undo(),
             "/permissions" => self.cmd_permissions(&arg),
             "/hooks" => self.push_note(
                 Tone::Skill,
@@ -525,6 +526,16 @@ impl App {
             u.estimated_cost_usd(),
             crate::config::status_path().display(),
         ));
+    }
+
+    fn cmd_undo(&mut self) {
+        match crate::tools::undo::undo_last(&self.session_id) {
+            Ok(msg) => {
+                let left = crate::tools::undo::depth(&self.session_id);
+                self.push_note(Tone::Session, format!("undo · {msg}  ({left} more)"));
+            }
+            Err(e) => self.push_note(Tone::Neutral, format!("undo · {e}")),
+        }
     }
 
     fn cmd_poor(&mut self) {

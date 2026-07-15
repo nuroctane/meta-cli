@@ -103,6 +103,14 @@ pub const CATALOG: &[PluginEntry] = &[
         source_url: "https://github.com/Sahir619/fable-method.git",
         path_in_repo: None,
     },
+    PluginEntry {
+        id: "impeccable",
+        name: "Impeccable",
+        description: "Design language for AI harnesses: audit / polish / critique / animate, 46 detector rules",
+        category: "development",
+        source_url: "https://github.com/pbakaus/impeccable.git",
+        path_in_repo: Some("plugin"),
+    },
 ];
 
 pub fn catalog() -> &'static [PluginEntry] {

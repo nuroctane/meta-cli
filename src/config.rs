@@ -89,6 +89,12 @@ pub struct Config {
     /// Set false for a pure binary + chat experience until `nur ecosystem ensure`.
     #[serde(default = "default_true")]
     pub ecosystem_auto_ensure: bool,
+    /// Opt-in cross-provider failover chain: catalog provider ids to retry (in
+    /// order) when the active provider returns a server error (5xx/429/transport).
+    /// Each fallback uses its own env-var key (e.g. `OPENAI_API_KEY`); empty =
+    /// no failover. See `crate::api::failover`.
+    #[serde(default)]
+    pub fallback_providers: Vec<String>,
 }
 
 fn default_model() -> String {
@@ -171,6 +177,7 @@ impl Default for Config {
             compact_tool_body_max_chars: default_compact_tool_body_max(),
             poor_mode: false,
             ecosystem_auto_ensure: true,
+            fallback_providers: Vec::new(),
         }
     }
 }

@@ -1,0 +1,163 @@
+//! Cross-provider failover.
+//!
+//! When the active provider returns a server-side availability error (5xx / 429
+//! / transport failure), the agent loop can retry the *same* request against a
+//! configured chain of fallback providers. This is **opt-in** — set
+//! `fallback_providers` in config to a list of catalog provider ids. Failover
+//! spends the fallback provider's credits, so it never happens implicitly.
+//!
+//! Credentials for a fallback come from that provider's own catalog env var
+//! (e.g. `OPENAI_API_KEY`), never from the primary's saved login — so a Meta
+//! outage falls over to OpenAI only if you actually have an OpenAI key present.
+
+use crate::error::MuseError;
+use crate::providers::{self, ApiStyle, Provider};
+
+/// A resolved failover destination — a fallback provider whose key we actually
+/// have, ready to build an `ApiClient` from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailoverTarget {
+    pub provider_id: String,
+    pub base_url: String,
+    pub api_key: String,
+    /// True → OpenAI Chat Completions shape; false → Responses API.
+    pub chat: bool,
+    pub model: String,
+}
+
+/// Whether `err` is worth retrying against a *different* provider. Only
+/// server-side availability problems qualify: 5xx, 429, mid-stream provider
+/// errors (status 0), and transport failures. Auth/quota (401/403), bad
+/// requests (4xx), user interrupts, and local tool errors do not — another
+/// provider cannot fix a cancelled turn or a malformed request.
+pub fn should_failover(err: &MuseError) -> bool {
+    match err {
+        MuseError::Api { status, .. } => matches!(status, 0 | 429 | 500 | 502 | 503 | 504),
+        // Transport/connection/parse failures from the client layer.
+        MuseError::Other(_) => true,
+        _ => false,
+    }
+}
+
+/// Build the ordered failover chain from configured fallback provider ids.
+/// Skips ids that are empty, unknown to the catalog, equal to the primary, or
+/// already seen, plus any provider for which `resolve_key` yields `None`
+/// (no credentials available). Order follows the configured list.
+pub fn plan_targets(
+    primary_provider_id: &str,
+    fallback_ids: &[String],
+    resolve_key: impl Fn(&Provider) -> Option<String>,
+) -> Vec<FailoverTarget> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw in fallback_ids {
+        let id = raw.trim();
+        if id.is_empty() || id == primary_provider_id || !seen.insert(id.to_string()) {
+            continue;
+        }
+        let Some(p) = providers::by_id(id) else {
+            continue;
+        };
+        let Some(key) = resolve_key(p) else {
+            continue;
+        };
+        out.push(FailoverTarget {
+            provider_id: p.id.to_string(),
+            base_url: p.base_url.trim_end_matches('/').to_string(),
+            api_key: key,
+            chat: p.style == ApiStyle::ChatCompletions,
+            model: p.default_model.to_string(),
+        });
+    }
+    out
+}
+
+/// Runtime key resolver for a fallback provider: its own catalog env var, or an
+/// empty string for local servers that don't need one. `None` = skip it.
+pub fn resolve_target_key(p: &Provider) -> Option<String> {
+    if let Ok(k) = std::env::var(p.env_key) {
+        let k = k.trim().to_string();
+        if !k.is_empty() {
+            return Some(k);
+        }
+    }
+    if p.key_optional {
+        return Some(String::new());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn should_failover_on_server_errors_only() {
+        for status in [0u16, 429, 500, 502, 503, 504] {
+            assert!(
+                should_failover(&MuseError::Api { status, message: "x".into() }),
+                "status {status} should fail over"
+            );
+        }
+        for status in [400u16, 401, 403, 404, 422] {
+            assert!(
+                !should_failover(&MuseError::Api { status, message: "x".into() }),
+                "status {status} should NOT fail over"
+            );
+        }
+        assert!(should_failover(&MuseError::Other("connection reset".into())));
+        assert!(!should_failover(&MuseError::Interrupted));
+        assert!(!should_failover(&MuseError::NotAuthenticated));
+    }
+
+    #[test]
+    fn plan_targets_builds_chain_in_order_with_keys() {
+        let ids = vec!["openai".to_string(), "anthropic".to_string()];
+        let targets = plan_targets("meta", &ids, |p| Some(format!("key-{}", p.id)));
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].provider_id, "openai");
+        assert_eq!(targets[0].chat, false); // OpenAI uses the Responses API
+        assert_eq!(targets[0].model, "gpt-5.5");
+        assert_eq!(targets[0].api_key, "key-openai");
+        assert_eq!(targets[1].provider_id, "anthropic");
+        assert_eq!(targets[1].chat, true); // Anthropic uses Chat Completions
+        assert_eq!(targets[1].api_key, "key-anthropic");
+    }
+
+    #[test]
+    fn plan_targets_skips_primary_unknown_dupes_and_keyless() {
+        let ids = vec![
+            "meta".to_string(),     // primary — skip
+            "nope".to_string(),     // not in catalog — skip
+            "openai".to_string(),   // keep
+            "openai".to_string(),   // dupe — skip
+            "anthropic".to_string(),// keyless in this resolver — skip
+        ];
+        let targets = plan_targets("meta", &ids, |p| {
+            if p.id == "anthropic" {
+                None
+            } else {
+                Some("k".to_string())
+            }
+        });
+        let got: Vec<&str> = targets.iter().map(|t| t.provider_id.as_str()).collect();
+        assert_eq!(got, vec!["openai"]);
+    }
+
+    #[test]
+    fn plan_targets_empty_when_no_fallbacks() {
+        assert!(plan_targets("meta", &[], |_| Some("k".into())).is_empty());
+    }
+
+    #[test]
+    fn resolve_target_key_allows_empty_for_local_servers() {
+        // Local servers are key_optional → empty string is a valid "key".
+        let ollama = providers::by_id("ollama").unwrap();
+        std::env::remove_var(ollama.env_key);
+        assert_eq!(resolve_target_key(ollama), Some(String::new()));
+        // A key-required provider with no env var set resolves to None.
+        let openai = providers::by_id("openai").unwrap();
+        std::env::remove_var(openai.env_key);
+        assert_eq!(resolve_target_key(openai), None);
+    }
+}

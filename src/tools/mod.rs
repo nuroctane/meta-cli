@@ -26,6 +26,7 @@ mod search_util;
 mod shell;
 pub mod spill;
 mod skill_tool;
+pub mod undo;
 mod submit_plan;
 mod todo_write;
 mod web_fetch;

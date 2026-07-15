@@ -1,5 +1,6 @@
 pub mod chat;
 pub mod client;
+pub mod failover;
 pub mod models;
 pub mod sse;
 pub mod types;

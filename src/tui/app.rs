@@ -59,6 +59,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/usage", "token usage + cost for this session  (/cost)"),
     ("/budget", "session spend ceiling: /budget [cost <usd>|tokens <n>|clear|save]"),
     ("/poor", "toggle cost-saver: skip PLUR inject + skills catalog + long memory in prompt"),
+    ("/undo", "revert the last file edit (write/edit/multi_edit) made this session"),
     ("/context", "context-window utilization for this session"),
     ("/status", "session snapshot: model · mode · cwd · tokens"),
     ("/doctor", "health check: version · auth · ecosystem · shell"),
