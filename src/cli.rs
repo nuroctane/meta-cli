@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 
+// Re-export for main.rs match arms.
+
 #[derive(Parser, Debug)]
 #[command(
     name = "nur",
@@ -105,6 +107,34 @@ pub enum Commands {
     Browser {
         #[command(subcommand)]
         action: BrowserCmd,
+    },
+    /// Marketplace plugins (install skills into ~/.nur/plugins)
+    Plugins {
+        #[command(subcommand)]
+        action: Option<PluginsCmd>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PluginsCmd {
+    /// List catalog + install state
+    List,
+    /// Install a catalog plugin by id
+    Install {
+        /// Plugin id (e.g. superpowers, vercel, firecrawl)
+        id: String,
+    },
+    /// Enable an installed plugin
+    Enable {
+        id: String,
+    },
+    /// Disable an installed plugin (keeps files on disk)
+    Disable {
+        id: String,
+    },
+    /// Remove plugin files + registry entry
+    Uninstall {
+        id: String,
     },
 }
 

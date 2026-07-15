@@ -11,19 +11,23 @@ pub struct Skill {
 }
 
 /// Discover skills from (first match wins per name):
-/// - `$META_HOME/skills` (or `~/.nur/skills`) — primary
+/// - `$NUR_HOME/skills` (or `~/.nur/skills`) — primary
+/// - enabled marketplace plugins under `~/.nur/plugins/` (skills/ + pack roots)
 /// - legacy `~/.muse/skills`
 /// - `~/.agents/skills` (Agent Skills / graphify install --platform agents)
-/// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills`
+/// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills` · `<cwd>/.nur/skills`
 pub fn load_skills(cwd: &Path) -> Vec<Skill> {
     let mut out = Vec::new();
     let mut dirs = Vec::new();
-    // Honor META_HOME / MUSE_HOME via meta_home() — not a hard-coded ~/.nur.
+    // Honor NUR_HOME / META_HOME / MUSE_HOME via meta_home() — not a hard-coded path.
     dirs.push(crate::config::meta_home().join("skills"));
+    // Marketplace plugins (enabled only) — after core home skills so user overrides win.
+    dirs.extend(crate::plugins::enabled_skill_roots());
     dirs.push(crate::config::legacy_muse_home().join("skills"));
     if let Some(home) = dirs::home_dir() {
         dirs.push(home.join(".agents").join("skills"));
     }
+    dirs.push(cwd.join(".nur").join("skills"));
     dirs.push(cwd.join(".meta").join("skills"));
     dirs.push(cwd.join(".muse").join("skills")); // legacy workspace
     dirs.push(cwd.join(".agents").join("skills"));

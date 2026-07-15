@@ -89,6 +89,7 @@ impl App {
             "/status" => self.cmd_status(),
             "/doctor" => self.cmd_doctor(),
             "/model" => self.cmd_model(&arg),
+            "/plugins" | "/plugin" => self.cmd_plugins(&arg),
             "/effort" => self.cmd_effort(&arg),
             // /sessions and /resume are the same interactive picker.
             "/sessions" | "/resume" => {
@@ -779,6 +780,8 @@ impl App {
         );
         lines.push_str("\n");
         lines.push_str(&crate::ecosystem::quick_status());
+        lines.push_str("\n");
+        lines.push_str(&crate::plugins::quick_status());
         self.push_note(Tone::Skill, lines);
     }
 
@@ -790,6 +793,87 @@ impl App {
             return;
         }
         self.apply_model_selection(arg);
+    }
+
+    fn cmd_plugins(&mut self, arg: &str) {
+        // Bare `/plugins` → marketplace picker (same UX as provider picker).
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.open_plugin_picker();
+            return;
+        }
+        let mut parts = arg.split_whitespace();
+        let cmd = parts.next().unwrap_or("").to_lowercase();
+        let id = parts.next().unwrap_or("").to_string();
+        match cmd.as_str() {
+            "list" | "ls" => {
+                self.push_note(Tone::Skill, crate::plugins::quick_status());
+                let rows = crate::plugins::marketplace_rows();
+                let mut lines = String::from("catalog:\n");
+                for r in rows {
+                    lines.push_str(&format!(
+                        "  {:<16}  {}  {}\n",
+                        r.id,
+                        r.status_badge(),
+                        r.name
+                    ));
+                }
+                self.push_note(Tone::Skill, lines);
+            }
+            "install" | "add" => {
+                if id.is_empty() {
+                    self.push_error("usage: /plugins install <id>  (or /plugins to browse)".into());
+                    return;
+                }
+                match crate::plugins::install_plugin(&id) {
+                    Ok(msg) => self.push_info(msg),
+                    Err(e) => self.push_error(e),
+                }
+            }
+            "enable" => {
+                if id.is_empty() {
+                    self.push_error("usage: /plugins enable <id>".into());
+                    return;
+                }
+                match crate::plugins::set_enabled(&id, true) {
+                    Ok(()) => self.push_info(format!("enabled {id}")),
+                    Err(e) => self.push_error(e),
+                }
+            }
+            "disable" => {
+                if id.is_empty() {
+                    self.push_error("usage: /plugins disable <id>".into());
+                    return;
+                }
+                match crate::plugins::set_enabled(&id, false) {
+                    Ok(()) => self.push_info(format!("disabled {id}")),
+                    Err(e) => self.push_error(e),
+                }
+            }
+            "uninstall" | "remove" => {
+                if id.is_empty() {
+                    self.push_error("usage: /plugins uninstall <id>".into());
+                    return;
+                }
+                match crate::plugins::uninstall_plugin(&id) {
+                    Ok(msg) => self.push_info(msg),
+                    Err(e) => self.push_error(e),
+                }
+            }
+            other => {
+                // Treat bare id as install/open hint.
+                if crate::plugins::by_id(other).is_some() {
+                    match crate::plugins::install_plugin(other) {
+                        Ok(msg) => self.push_info(msg),
+                        Err(e) => self.push_error(e),
+                    }
+                } else {
+                    self.push_error(format!(
+                        "unknown /plugins arg '{other}' — try list · install · enable · disable · uninstall"
+                    ));
+                }
+            }
+        }
     }
 
     fn cmd_effort(&mut self, arg: &str) {

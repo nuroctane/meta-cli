@@ -194,6 +194,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 - Project instructions: `NUR.md` · `AGENTS.md` · `CLAUDE.md` (also loads legacy `META.md` / `MUSE.md` if present)
 - Session resume: `-c`, `-r`, `/sessions`
 - `/model` opens a live model list for the active provider (or `/model <id>` to set one directly)
+- `/plugins` marketplace picker (same UX as `/login`): install Superpowers, Vercel, Firecrawl, Chrome DevTools, and more into `~/.nur/plugins`
 
 ### Tools (native)
 
@@ -310,6 +311,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/help` | Keys + commands |
 | `/login` `/logout` | Provider + key / clear |
 | `/model` | Show and switch models for the active provider |
+| `/plugins` | Browse and install marketplace plugins (provider-picker UX) |
 | `/goal` `/btw` | Session goal / one-off note |
 | `/codesearch` `/cs` | Workspace ripgrep |
 | `/mc` `/mcp` | MCP via Executor |

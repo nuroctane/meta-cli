@@ -74,12 +74,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.model_picker.is_some() {
         draw_model_picker(f, app, area);
     }
+    if app.plugin_picker.is_some() {
+        draw_plugin_picker(f, app, area);
+    }
     // Grok-style hover dialogue over thoughts / tools / turns (above everything
     // except approval/picker, which already short-circuit interaction).
     if app.approval.is_none()
         && app.picker.is_none()
         && app.login.is_none()
         && app.model_picker.is_none()
+        && app.plugin_picker.is_none()
         && app.ctx_menu.is_none()
     {
         match draw_hover_peek(f, app, area) {
@@ -598,6 +602,183 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, area: Rect) {
         inner,
     );
     if let Some(m) = &mut app.model_picker {
+        m.hit = hit;
+    }
+}
+
+// ── plugin marketplace (`/plugins`) ──────────────────────────────────────────
+/// Same scroll/select/filter contract as the provider picker.
+fn draw_plugin_picker(f: &mut Frame, app: &mut App, area: Rect) {
+    let w = 78u16.min(area.width.saturating_sub(4)).max(52);
+    let h = 28u16.min(area.height.saturating_sub(2)).max(12);
+    let rect = Rect {
+        x: (area.width.saturating_sub(w)) / 2,
+        y: (area.height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
+    let phase = modal_phase(app);
+
+    let (total, busy, installed_n) = app
+        .plugin_picker
+        .as_ref()
+        .map(|m| {
+            (
+                m.count(),
+                m.busy,
+                m.rows.iter().filter(|r| r.installed).count(),
+            )
+        })
+        .unwrap_or_default();
+    let title = if busy {
+        " ⬡ plugins  ·  working… ".to_string()
+    } else {
+        format!(" ⬡ plugins  ·  {total} shown  ·  {installed_n} installed ")
+    };
+    draw_modal_frame(
+        f,
+        rect,
+        phase,
+        theme::INDIGO,
+        &title,
+        None,
+        " ↑↓/wheel  ·  ↵ install/toggle  ·  type to filter  ·  esc/✕  ",
+    );
+    let inner = modal_inner(rect);
+
+    let close = Rect {
+        x: rect.x + rect.width.saturating_sub(5),
+        y: rect.y,
+        width: 3,
+        height: 1,
+    };
+    let mut hit = super::app::PickerHit {
+        frame: rect,
+        close,
+        body: inner,
+        scope: Rect::default(),
+        rows: Vec::new(),
+    };
+
+    const FILTER_ROWS: usize = 2;
+    let list_h = (inner.height as usize).saturating_sub(FILTER_ROWS + 1).max(1);
+    let vis_rows = list_h.max(1);
+
+    let (filter, status, mut sel, mut start) = {
+        let m = app.plugin_picker.as_ref().unwrap();
+        (
+            m.filter.clone(),
+            m.status.clone(),
+            m.sel,
+            m.scroll,
+        )
+    };
+
+    if let Some(m) = &mut app.plugin_picker {
+        m.vis_page = vis_rows;
+        m.clamp_scroll();
+        sel = m.sel;
+        start = m.scroll;
+    }
+
+    let mut caret = filter;
+    if theme::blink_on(app.spinner_epoch.elapsed()) {
+        caret.push('▉');
+    }
+    let mut lines: Vec<Line> = vec![
+        Line::from(vec![
+            Span::styled("  search  ".to_string(), theme::style_faint()),
+            Span::styled(
+                caret,
+                Style::default()
+                    .fg(theme::BLUE_100)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::default(),
+    ];
+
+    let picks = app
+        .plugin_picker
+        .as_ref()
+        .map(|m| m.filtered().into_iter().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    let col = (inner.width as usize).saturating_sub(4);
+
+    if picks.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no plugins match".to_string(),
+            theme::style_faint(),
+        )));
+    } else {
+        for (i, p) in picks.iter().enumerate().skip(start).take(vis_rows) {
+            let selected = i == sel;
+            let marker = if selected { "❯ " } else { "  " };
+            let badge = p.status_badge();
+            // name (pad) · category · status
+            let text = format!(
+                "{marker}{:<16} {:<12} {badge}",
+                truncate(&p.name, 16),
+                truncate(&p.category, 12),
+            );
+            let style = if selected {
+                Style::default()
+                    .fg(theme::BG)
+                    .bg(theme::META_BLUE)
+                    .add_modifier(Modifier::BOLD)
+            } else if p.enabled {
+                Style::default()
+                    .fg(theme::BLUE_100)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme::FG)
+            };
+            lines.push(Line::from(Span::styled(truncate(&text, col), style)));
+
+            let drawn = i - start;
+            let row_y = inner.y + FILTER_ROWS as u16 + drawn as u16;
+            if row_y < inner.y + inner.height {
+                hit.rows.push((
+                    i,
+                    Rect {
+                        x: inner.x,
+                        y: row_y,
+                        width: inner.width,
+                        height: 1,
+                    },
+                ));
+            }
+        }
+    }
+
+    // Footer: description of selection + status
+    if let Some(p) = picks.get(sel) {
+        let hint = format!("  {}  ·  {}", p.action_hint(), truncate(&p.description, col.saturating_sub(16)));
+        // Pad to bottom-ish by letting Paragraph clip — push after a blank.
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            truncate(&hint, col),
+            theme::style_faint(),
+        )));
+    }
+    if let Some(s) = status {
+        lines.push(Line::from(Span::styled(
+            truncate(&format!("  {s}"), col),
+            if busy {
+                Style::default().fg(theme::BLUE_100)
+            } else {
+                theme::style_faint()
+            },
+        )));
+    }
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::SURFACE_2)),
+        inner,
+    );
+    if let Some(m) = &mut app.plugin_picker {
         m.hit = hit;
     }
 }

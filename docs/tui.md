@@ -136,6 +136,7 @@ The note is appended to your persistent memory file and recalled automatically i
 | Command | Purpose |
 |---------|---------|
 | `/model` | Show and switch models. Run bare to open a picker that fetches your provider's live model list (`/models`) — filter, arrow, and ↵ to switch, or type any id. `/model <id>` switches directly (e.g. `/model muse-spark-1.1`) |
+| `/plugins` | Marketplace picker (same UX as provider/`/login` picker): filter, ↑↓/wheel, ↵ to install or enable/disable. Skills land in `~/.nur/plugins/<id>` and mirror to `~/.nur/skills`. CLI: `nur plugins list\|install\|enable\|disable\|uninstall` |
 | `/effort` | Change reasoning effort |
 | `/compact` | Manually compact context (thins old tool bodies; keeps recent turns; writes `.precompact.bak`) |
 | `/usage` | Show token usage and cost (`/cost`) — includes budget caps when set |

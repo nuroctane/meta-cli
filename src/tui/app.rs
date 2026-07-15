@@ -64,6 +64,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/permissions", "show or reload allow/deny/ask rules (permissions.toml)"),
     ("/hooks", "show local tool hook status (hooks.toml)"),
     ("/model", "show and switch models"),
+    ("/plugins", "browse · install · enable marketplace plugins"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
     ("/sessions", "browse & open past sessions  (same as /resume · Ctrl+R)"),
     ("/resume", "browse & open past sessions  (same as /sessions · Ctrl+R)"),
@@ -686,6 +687,125 @@ impl ModelPicker {
     }
 }
 
+/// Marketplace chooser opened by `/plugins`. Same scroll/filter/select contract
+/// as the provider picker (`LoginModal`) and `/model` picker.
+pub struct PluginPicker {
+    /// Live rows (catalog + install state). Refreshed after each install.
+    pub rows: Vec<crate::plugins::PluginRow>,
+    pub filter: String,
+    pub sel: usize,
+    pub scroll: usize,
+    pub vis_page: usize,
+    pub hit: PickerHit,
+    pub last_step_at: Instant,
+    /// Background install/toggle in flight.
+    pub busy: bool,
+    /// Status / error under the list.
+    pub status: Option<String>,
+    /// Install result channel: Ok(message) / Err(message).
+    pub rx: Option<std::sync::mpsc::Receiver<std::result::Result<String, String>>>,
+}
+
+impl PluginPicker {
+    pub fn filtered(&self) -> Vec<&crate::plugins::PluginRow> {
+        let f = self.filter.trim().to_lowercase();
+        self.rows
+            .iter()
+            .filter(|r| {
+                f.is_empty()
+                    || r.name.to_lowercase().contains(&f)
+                    || r.id.to_lowercase().contains(&f)
+                    || r.description.to_lowercase().contains(&f)
+                    || r.category.to_lowercase().contains(&f)
+            })
+            .collect()
+    }
+
+    pub fn count(&self) -> usize {
+        self.filtered().len()
+    }
+
+    pub fn clamp_scroll(&mut self) {
+        let count = self.count();
+        if count == 0 {
+            self.sel = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.sel = self.sel.min(count - 1);
+        let page = self.vis_page.max(1);
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+        if self.sel < self.scroll {
+            self.scroll = self.sel;
+        }
+        let last_vis = self.scroll + page - 1;
+        if self.sel > last_vis {
+            self.scroll = self.sel + 1 - page;
+        }
+    }
+
+    pub fn step(&mut self, dir: i32) {
+        if dir == 0 {
+            return;
+        }
+        let count = self.count();
+        if count == 0 {
+            return;
+        }
+        let page = self.vis_page.max(1);
+        if dir < 0 {
+            if self.sel == 0 {
+                return;
+            }
+            self.sel -= 1;
+            if self.sel < self.scroll {
+                self.scroll = self.sel;
+            }
+        } else {
+            if self.sel + 1 >= count {
+                return;
+            }
+            self.sel += 1;
+            let last_vis = self.scroll + page - 1;
+            if self.sel > last_vis {
+                self.scroll += 1;
+            }
+        }
+        let max_scroll = count.saturating_sub(page);
+        if self.scroll > max_scroll {
+            self.scroll = max_scroll;
+        }
+    }
+
+    pub fn wheel_step(&mut self, dir: i32) {
+        let now = Instant::now();
+        if now.duration_since(self.last_step_at) < Duration::from_millis(45) {
+            return;
+        }
+        self.last_step_at = now;
+        self.step(dir.signum());
+    }
+
+    pub fn set_idx(&mut self, i: usize) {
+        let count = self.count();
+        if count == 0 {
+            self.sel = 0;
+            self.scroll = 0;
+            return;
+        }
+        self.sel = i.min(count - 1);
+        self.clamp_scroll();
+    }
+
+    pub fn refresh_rows(&mut self) {
+        self.rows = crate::plugins::marketplace_rows();
+        self.clamp_scroll();
+    }
+}
+
 /// One row of the unified sessions picker (`/sessions` · `/resume` · Ctrl+R).
 #[derive(Debug, Clone)]
 pub struct SessionRow {
@@ -1043,6 +1163,8 @@ pub struct App {
     pub login: Option<LoginModal>,
     /// Model chooser (`/model`) — live provider model list, when open.
     pub model_picker: Option<ModelPicker>,
+    /// Plugin marketplace (`/plugins`) — install / enable / disable.
+    pub plugin_picker: Option<PluginPicker>,
     /// Whether an API key is available. `/logout` flips this false and blocks
     /// turns until `/login` provides a new key.
     authed: bool,
@@ -1250,6 +1372,7 @@ pub async fn run_tui(
         window_base: seed_prompt.clone().unwrap_or_else(|| "ready".into()),
         login: None,
         model_picker: None,
+        plugin_picker: None,
         authed: true,
     };
 
@@ -1301,6 +1424,7 @@ pub async fn run_tui(
         // 1) Agent events (streaming text/tools).
         app.poll_oauth_login();
         app.poll_model_picker();
+        app.poll_plugin_picker();
         while let Ok(ev) = app.rx.try_recv() {
             app.on_agent_event(ev);
             dirty = true;
@@ -1311,6 +1435,7 @@ pub async fn run_tui(
             || app.approval.is_some()
             || app.login.is_some()
             || app.model_picker.is_some()
+            || app.plugin_picker.is_some()
             || app.scrollbar_drag
             || app.selecting
             || app.mouse_left_down
@@ -1903,6 +2028,11 @@ impl App {
             self.on_model_picker_key(key);
             return;
         }
+        // Plugin marketplace swallows all keys while open.
+        if self.plugin_picker.is_some() {
+            self.on_plugin_picker_key(key);
+            return;
+        }
         // Approval modal swallows all keys.
         if self.approval.is_some() {
             self.on_approval_key(key.code);
@@ -2244,6 +2374,15 @@ impl App {
             self.select_anchor = None;
             self.mouse_left_down = false;
             self.on_model_picker_mouse(m);
+            return;
+        }
+        // Plugin marketplace is modal — same wheel/click routing.
+        if self.plugin_picker.is_some() {
+            self.scrollbar_drag = false;
+            self.selecting = false;
+            self.select_anchor = None;
+            self.mouse_left_down = false;
+            self.on_plugin_picker_mouse(m);
             return;
         }
 
@@ -3362,6 +3501,207 @@ impl App {
                                 self.model_picker = None;
                                 self.apply_model_selection(&id);
                             }
+                        }
+                        return;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Open the `/plugins` marketplace picker (provider-picker UX).
+    pub fn open_plugin_picker(&mut self) {
+        self.plugin_picker = Some(PluginPicker {
+            rows: crate::plugins::marketplace_rows(),
+            filter: String::new(),
+            sel: 0,
+            scroll: 0,
+            vis_page: 12,
+            hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+            busy: false,
+            status: Some("↵ install / enable / disable  ·  skills land in ~/.nur/skills".into()),
+            rx: None,
+        });
+    }
+
+    /// Drain background plugin install/toggle results.
+    pub fn poll_plugin_picker(&mut self) {
+        let mut result = None;
+        if let Some(pp) = &self.plugin_picker {
+            if let Some(rx) = &pp.rx {
+                if let Ok(r) = rx.try_recv() {
+                    result = Some(r);
+                }
+            }
+        }
+        let Some(result) = result else { return };
+        if let Some(pp) = &mut self.plugin_picker {
+            pp.busy = false;
+            pp.rx = None;
+            match result {
+                Ok(msg) => {
+                    pp.status = Some(msg.clone());
+                    pp.refresh_rows();
+                    self.push_info(msg);
+                }
+                Err(e) => {
+                    pp.status = Some(format!("error: {e}"));
+                    self.push_error(e);
+                }
+            }
+        }
+    }
+
+    /// Enter on a marketplace row: install if missing, else toggle enable.
+    pub fn activate_plugin_selection(&mut self) {
+        let Some(pp) = &self.plugin_picker else { return };
+        if pp.busy {
+            return;
+        }
+        let Some(row) = pp.filtered().get(pp.sel).map(|r| (*r).clone()) else {
+            return;
+        };
+        // Clone fields we need after we mutably borrow picker again.
+        let id = row.id.clone();
+        let installed = row.installed;
+        let enabled = row.enabled;
+        let name = row.name.clone();
+
+        if let Some(pp) = &mut self.plugin_picker {
+            pp.busy = true;
+            pp.status = Some(if !installed {
+                format!("installing {name}…")
+            } else if enabled {
+                format!("disabling {name}…")
+            } else {
+                format!("enabling {name}…")
+            });
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let res = if !installed {
+                crate::plugins::install_plugin(&id)
+            } else if enabled {
+                crate::plugins::set_enabled(&id, false)
+                    .map(|_| format!("disabled {name} (skills stay on disk; re-enable anytime)"))
+            } else {
+                crate::plugins::set_enabled(&id, true).map(|_| {
+                    format!("enabled {name} — skills active on next agent turn")
+                })
+            };
+            let _ = tx.send(res);
+        });
+        if let Some(pp) = &mut self.plugin_picker {
+            pp.rx = Some(rx);
+        }
+    }
+
+    fn on_plugin_picker_key(&mut self, key: event::KeyEvent) {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => {
+                self.plugin_picker = None;
+            }
+            KeyCode::Enter => {
+                self.activate_plugin_selection();
+            }
+            KeyCode::Up => {
+                if let Some(m) = &mut self.plugin_picker {
+                    m.step(-1);
+                }
+            }
+            KeyCode::Down => {
+                if let Some(m) = &mut self.plugin_picker {
+                    m.step(1);
+                }
+            }
+            KeyCode::PageUp => {
+                if let Some(m) = &mut self.plugin_picker {
+                    let page = m.vis_page.max(1) as i32;
+                    for _ in 0..page {
+                        m.step(-1);
+                    }
+                }
+            }
+            KeyCode::PageDown => {
+                if let Some(m) = &mut self.plugin_picker {
+                    let page = m.vis_page.max(1) as i32;
+                    for _ in 0..page {
+                        m.step(1);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(m) = &mut self.plugin_picker {
+                    m.filter.pop();
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            KeyCode::Char('u') if ctrl => {
+                if let Some(m) = &mut self.plugin_picker {
+                    m.filter.clear();
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            KeyCode::Char(c) if !ctrl => {
+                if let Some(m) = &mut self.plugin_picker {
+                    // Ignore input while installing.
+                    if m.busy {
+                        return;
+                    }
+                    m.filter.push(c);
+                    m.sel = 0;
+                    m.scroll = 0;
+                    m.clamp_scroll();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn on_plugin_picker_mouse(&mut self, m: event::MouseEvent) {
+        self.mouse_col = m.column;
+        self.mouse_row = m.row;
+        match m.kind {
+            MouseEventKind::ScrollUp => {
+                if let Some(mp) = &mut self.plugin_picker {
+                    mp.wheel_step(-1);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if let Some(mp) = &mut self.plugin_picker {
+                    mp.wheel_step(1);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                let hit = self.plugin_picker.as_ref().map(|mp| mp.hit.clone());
+                let Some(hit) = hit else { return };
+                let (col, row) = (m.column, m.row);
+                if rect_contains(hit.close, col, row) {
+                    self.plugin_picker = None;
+                    return;
+                }
+                for (i, rect) in &hit.rows {
+                    if rect_contains(*rect, col, row) {
+                        let same = self
+                            .plugin_picker
+                            .as_ref()
+                            .map(|mp| mp.sel == *i)
+                            .unwrap_or(false);
+                        if let Some(mp) = &mut self.plugin_picker {
+                            mp.set_idx(*i);
+                        }
+                        if same {
+                            self.activate_plugin_selection();
                         }
                         return;
                     }

@@ -8,6 +8,7 @@ mod config;
 mod ecosystem;
 mod error;
 mod oauth;
+mod plugins;
 mod providers;
 mod theme;
 mod tools;
@@ -164,6 +165,10 @@ async fn real_main() -> Result<()> {
                     }
                 }
             }
+            return Ok(());
+        }
+        Some(Commands::Plugins { action }) => {
+            run_plugins_cli(action.as_ref())?;
             return Ok(());
         }
         None => {
@@ -417,9 +422,50 @@ async fn real_main() -> Result<()> {
         | Some(Commands::Update)
         | Some(Commands::Doctor)
         | Some(Commands::Ecosystem { .. })
-        | Some(Commands::Browser { .. }) => unreachable!(),
+        | Some(Commands::Browser { .. })
+        | Some(Commands::Plugins { .. }) => unreachable!(),
     }
 
+    Ok(())
+}
+
+fn run_plugins_cli(action: Option<&cli::PluginsCmd>) -> Result<()> {
+    use cli::PluginsCmd;
+    match action {
+        None | Some(PluginsCmd::List) => {
+            theme::print_info("plugin marketplace");
+            println!("{}", plugins::quick_status());
+            for r in plugins::marketplace_rows() {
+                println!(
+                    "  {:<16}  {:<14}  {}",
+                    r.id,
+                    r.status_badge(),
+                    r.name
+                );
+            }
+            println!("\n  nur plugins install <id>");
+            println!("  /plugins  in the TUI for the full picker");
+        }
+        Some(PluginsCmd::Install { id }) => {
+            theme::print_info(&format!("installing {id}…"));
+            match plugins::install_plugin(id) {
+                Ok(msg) => theme::print_ok(&msg),
+                Err(e) => return Err(error::MuseError::Other(e)),
+            }
+        }
+        Some(PluginsCmd::Enable { id }) => {
+            plugins::set_enabled(id, true).map_err(error::MuseError::Other)?;
+            theme::print_ok(&format!("enabled {id}"));
+        }
+        Some(PluginsCmd::Disable { id }) => {
+            plugins::set_enabled(id, false).map_err(error::MuseError::Other)?;
+            theme::print_ok(&format!("disabled {id}"));
+        }
+        Some(PluginsCmd::Uninstall { id }) => match plugins::uninstall_plugin(id) {
+            Ok(msg) => theme::print_ok(&msg),
+            Err(e) => return Err(error::MuseError::Other(e)),
+        },
+    }
     Ok(())
 }
 
@@ -563,6 +609,11 @@ fn run_doctor() -> Result<()> {
     println!();
     theme::print_info("ecosystem");
     print!("{}", ecosystem::quick_status());
+
+    // Plugins marketplace
+    println!();
+    theme::print_info("plugins");
+    print!("{}", plugins::quick_status());
 
     // Shell backend
     println!();
