@@ -212,9 +212,9 @@ plur, ruflo, skill, memory, todo_write, submit_plan, agent
   skill design-eng / implement. User paths to .png/.mp4 in the prompt auto-attach when present.
 - graphify: code knowledge graph (graphify-out/). Prefer query/path/explain over broad grep when
   the graph exists. extract defaults to code-only AST (local, free).
-- excalidraw: hand-drawn diagrams → `.excalidraw` files (architecture, flowcharts, decisions).
-  Prefer excalidraw(create) over bash or mermaid when the user wants an openable diagram.
-  skill(action=read, name=excalidraw) for element templates; export for share URLs.
+- excalidraw: hand-drawn diagrams. create writes `.excalidraw`, uploads, and **opens the
+  share URL in the browser** so the user actually sees it (not a dead link). Prefer over
+  mermaid when they want a real diagram. skill(action=read, name=excalidraw) for templates.
 - plur: shared engram memory (~/.plur/). learn corrections/preferences; inject/recall across
   sessions. Auto-injected at session start. Never store secrets.
 - ruflo: vector memory + swarm harness. Global DB at ~/.nur/ruflo/. Prefer plur for preferences,

@@ -252,11 +252,12 @@ Prefer the **`excalidraw`** tool — do not shell out to bash for diagrams.
 
 ## Fast path
 
-1. `skill(action=read, name=excalidraw)` if you need templates (this skill)
-2. Build element JSON (camera → dark bg optional → shapes → arrows with bindings)
-3. `excalidraw(action=create, elements=[…], output="docs/foo.excalidraw")`
-4. Optional: `excalidraw(action=export, path="docs/foo.excalidraw")` → share URL
-5. Format help: `excalidraw(action=reference)`
+1. Build element JSON (camera → dark bg optional → shapes → arrows with bindings)
+2. **`excalidraw(action=create, elements=[…], output="docs/foo.excalidraw")`**
+   - Writes the file, uploads to excalidraw.com, and **opens the share URL in the user's browser** (default)
+   - Do **not** stop at "here's a link" — create already opens it. Tell the user the browser should have opened.
+3. Format help: `excalidraw(action=reference)` if stuck on schema
+4. `open=false` only when the user asked not to open anything
 
 ## CLI defaults (omit these in JSON)
 

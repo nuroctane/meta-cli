@@ -39,15 +39,13 @@ impl Tool for Excalidraw {
     }
 
     fn description(&self) -> &str {
-        "Create hand-drawn Excalidraw diagrams (.excalidraw files) from element JSON. \
-         Prefer for architecture diagrams, flowcharts, and decision trees. \
-         action=status (default): CLI present?; \
-         action=create: elements JSON → .excalidraw file (output path required); \
-         action=export: upload file → excalidraw.com share URL; \
-         action=reference: element format cheat sheet; \
-         action=checkpoint: list|save|load|remove named diagram state. \
-         Requires `excalidraw` or `excalidraw-cli` on PATH (npm i -g excalidraw-cli). \
-         Prefer this tool over bash for diagrams; use skill(action=read, name=excalidraw) for templates."
+        "Create hand-drawn Excalidraw diagrams and OPEN them for the user. \
+         Prefer for architecture diagrams, flowcharts, Venn diagrams, decision trees. \
+         action=create: write .excalidraw, upload to excalidraw.com, OPEN the share URL in the default browser (default). \
+         action=export: upload existing file + open share URL; \
+         action=status | reference | checkpoint. \
+         ALWAYS use create for user-facing diagrams so they actually see it — do not only dump a dead link. \
+         open=false to skip browser. Requires excalidraw-cli on PATH (auto-installed by ecosystem)."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -74,6 +72,10 @@ impl Tool for Excalidraw {
                     "type": "boolean",
                     "description": "For create: pass --no-checkpoint (default false)"
                 },
+                "open": {
+                    "type": "boolean",
+                    "description": "Open share URL (and local file) in the default browser/app. Default true for create/export."
+                },
                 "checkpoint_action": {
                     "type": "string",
                     "enum": ["list", "save", "load", "remove"],
@@ -93,31 +95,17 @@ impl Tool for Excalidraw {
             "status" => status(),
             "reference" | "ref" => run_cli(&["reference", "--raw", "--no-banner"], None, 30_000),
             "create" => create(args, &ctx.cwd),
-            "export" => {
-                let path = arg_str(args, "path")
-                    .or_else(|_| arg_str(args, "output"))
-                    .map_err(|_| {
-                        MuseError::Tool("export requires path= to a .excalidraw file".into())
-                    })?;
-                let abs = resolve_path(&ctx.cwd, &path)?;
-                if !abs.is_file() {
-                    return Err(MuseError::Tool(format!(
-                        "file not found: {}",
-                        abs.display()
-                    )));
-                }
-                run_cli(
-                    &["export", &abs.to_string_lossy(), "--no-banner"],
-                    Some(&ctx.cwd),
-                    60_000,
-                )
-            }
+            "export" => export_file(args, &ctx.cwd),
             "checkpoint" => checkpoint(args, &ctx.cwd),
             other => Err(MuseError::Tool(format!(
                 "unknown excalidraw action '{other}' — use status|create|export|reference|checkpoint"
             ))),
         }
     }
+}
+
+fn want_open(args: &Value) -> bool {
+    args.get("open").and_then(|v| v.as_bool()).unwrap_or(true)
 }
 
 fn create(args: &Value, cwd: &Path) -> Result<String> {
@@ -158,8 +146,132 @@ fn create(args: &Value, cwd: &Path) -> Result<String> {
         s.push_str(result.trim());
         s.push('\n');
     }
-    s.push_str("open in Excalidraw (app or https://excalidraw.com) or use action=export for a share URL\n");
+
+    // Default: export + open so the user actually *sees* the diagram.
+    match export_and_maybe_open(&abs_out, cwd, want_open(args)) {
+        Ok(export_msg) => {
+            s.push_str(&export_msg);
+        }
+        Err(e) => {
+            s.push_str(&format!(
+                "export/open failed: {e}\n\
+                 file is still on disk — open manually: {}\n",
+                abs_out.display()
+            ));
+            if want_open(args) {
+                let _ = open_path(&abs_out);
+                s.push_str("opened local .excalidraw with the default app (if associated)\n");
+            }
+        }
+    }
     Ok(s)
+}
+
+fn export_file(args: &Value, cwd: &Path) -> Result<String> {
+    let path = arg_str(args, "path")
+        .or_else(|_| arg_str(args, "output"))
+        .map_err(|_| MuseError::Tool("export requires path= to a .excalidraw file".into()))?;
+    let abs = resolve_path(&cwd.to_path_buf(), &path)?;
+    if !abs.is_file() {
+        return Err(MuseError::Tool(format!(
+            "file not found: {}",
+            abs.display()
+        )));
+    }
+    export_and_maybe_open(&abs, cwd, want_open(args))
+}
+
+/// Upload to excalidraw.com and optionally open the share URL in the browser.
+fn export_and_maybe_open(abs: &Path, cwd: &Path, open: bool) -> Result<String> {
+    let out = run_cli(
+        &["export", &abs.to_string_lossy(), "--no-banner"],
+        Some(cwd),
+        60_000,
+    )?;
+    let mut s = out.clone();
+    if !s.ends_with('\n') {
+        s.push('\n');
+    }
+    if let Some(url) = extract_excalidraw_url(&out) {
+        s.push_str(&format!("share_url: {url}\n"));
+        if open {
+            match open_url(&url) {
+                Ok(()) => s.push_str("opened share URL in your default browser\n"),
+                Err(e) => s.push_str(&format!(
+                    "could not open browser automatically ({e}) — paste the share_url above\n"
+                )),
+            }
+        }
+    } else if open {
+        // No URL parsed — still try opening the local file.
+        let _ = open_path(abs);
+        s.push_str("no share URL parsed from export; opened local file instead\n");
+    }
+    Ok(s)
+}
+
+fn extract_excalidraw_url(text: &str) -> Option<String> {
+    // CLI prints a line like https://excalidraw.com/#json=…
+    for token in text.split_whitespace() {
+        let t = token.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c == ',' || c == ')');
+        if t.starts_with("https://excalidraw.com/") || t.starts_with("http://excalidraw.com/") {
+            return Some(t.to_string());
+        }
+        if t.starts_with("https://") && t.contains("excalidraw") {
+            return Some(t.to_string());
+        }
+    }
+    // Fallback: scan for https://…excalidraw…
+    if let Some(start) = text.find("https://excalidraw.com/") {
+        let rest = &text[start..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ')')
+            .unwrap_or(rest.len());
+        return Some(rest[..end].to_string());
+    }
+    None
+}
+
+fn open_url(url: &str) -> std::result::Result<(), String> {
+    open_with_default(url)
+}
+
+fn open_path(path: &Path) -> std::result::Result<(), String> {
+    open_with_default(&path.to_string_lossy())
+}
+
+fn open_with_default(target: &str) -> std::result::Result<(), String> {
+    #[cfg(windows)]
+    {
+        // `start` is a cmd built-in; empty title arg required when URL has &/#.
+        let status = std::process::Command::new("cmd.exe")
+            .args(["/C", "start", "", target])
+            .spawn()
+            .map_err(|e| e.to_string())?
+            .wait()
+            .map_err(|e| e.to_string())?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("start exited {status}"))
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(target)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
 }
 
 fn elements_to_json_string(args: &Value) -> Result<String> {
@@ -325,5 +437,15 @@ mod tests {
         let s = elements_to_json_string(&args).unwrap();
         assert!(s.starts_with('['));
         assert!(s.contains("rectangle"));
+    }
+
+    #[test]
+    fn extract_url_from_export_output() {
+        let sample = "Uploading…\nhttps://excalidraw.com/#json=abc123,keyXYZ\ndone\n";
+        assert_eq!(
+            extract_excalidraw_url(sample).as_deref(),
+            Some("https://excalidraw.com/#json=abc123,keyXYZ")
+        );
+        assert!(extract_excalidraw_url("no url here").is_none());
     }
 }
