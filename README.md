@@ -23,7 +23,7 @@ The harness is built to burn fewer tokens. Less waste, more work per dollar, acr
 nur          # interactive gold TUI
 ```
 
-[NurCLI]([https://github.com/nuroctane/nur-cli](https://www.nuroctane.xyz/cli))
+[NurCLI]([https://www.nuroctane.xyz/cli])
 
 ---
 
