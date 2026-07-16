@@ -275,6 +275,18 @@ impl AgentRunner {
                      enable failover_allow_downgrade or raise their privacy tags to allow",
                     active_privacy.as_str()
                 )));
+            } else if self.config.fallback_providers.is_empty() {
+                let _ = tx.send(AgentEvent::Status(
+                    "no failover chain — /failover to add backups (or set fallback_providers); \
+                     primary is the only route"
+                        .into(),
+                ));
+            } else {
+                let _ = tx.send(AgentEvent::Status(
+                    "failover chain has no usable credentials — save a key/OAuth for each \
+                     fallback via /failover (or that provider's env key)"
+                        .into(),
+                ));
             }
             return Err(primary_err);
         }

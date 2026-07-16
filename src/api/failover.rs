@@ -26,18 +26,59 @@ pub struct FailoverTarget {
     pub model: String,
 }
 
-/// Whether `err` is worth retrying against a *different* provider. Only
-/// server-side availability problems qualify: 5xx, 429, mid-stream provider
-/// errors (status 0), and transport failures. Auth/quota (401/403), bad
-/// requests (4xx), user interrupts, and local tool errors do not — another
-/// provider cannot fix a cancelled turn or a malformed request.
+/// Whether `err` is worth retrying against a *different* provider.
+///
+/// Always: 5xx, 429, 529, mid-stream (status 0), transport failures.
+///
+/// Also: **capacity / usage exhaustion** messages on 4xx (Claude/OpenAI often
+/// return 400/403 with `rate_limit` / `usage limit` / `overloaded` when the
+/// account is out of quota — not only HTTP 429). Another provider *can* fix
+/// that. Wrong keys, bad models, and validation errors still do **not** fail over.
 pub fn should_failover(err: &MuseError) -> bool {
     match err {
-        MuseError::Api { status, .. } => matches!(status, 0 | 429 | 500 | 502 | 503 | 504),
+        MuseError::Api { status, message } => {
+            if matches!(status, 0 | 429 | 500 | 502 | 503 | 504 | 529) {
+                return true;
+            }
+            // Quota / overload often arrives as 400/401/402/403 with a clear body.
+            if matches!(status, 400 | 401 | 402 | 403) && is_capacity_or_quota_message(message) {
+                return true;
+            }
+            false
+        }
         // Transport/connection/parse failures from the client layer.
         MuseError::Other(_) => true,
         _ => false,
     }
+}
+
+/// True when the API error text indicates rate/usage/capacity — not a bad request.
+fn is_capacity_or_quota_message(message: &str) -> bool {
+    let m = message.to_ascii_lowercase();
+    const NEEDLES: &[&str] = &[
+        "rate_limit",
+        "rate limit",
+        "ratelimit",
+        "too many requests",
+        "overloaded",
+        "overloaded_error",
+        "capacity",
+        "insufficient_quota",
+        "quota exceeded",
+        "quota_exceeded",
+        "usage limit",
+        "usage_limit",
+        "usage limit reached",
+        "reached its usage",
+        "out of credits",
+        "credit balance",
+        "billing hard limit",
+        "resource_exhausted",
+        "resource exhausted",
+        "tokens per day",
+        "requests per",
+    ];
+    NEEDLES.iter().any(|n| m.contains(n))
 }
 
 /// Whether a fallback at `target_rank` privacy is acceptable when the active
@@ -118,7 +159,7 @@ mod tests {
 
     #[test]
     fn should_failover_on_server_errors_only() {
-        for status in [0u16, 429, 500, 502, 503, 504] {
+        for status in [0u16, 429, 500, 502, 503, 504, 529] {
             assert!(
                 should_failover(&MuseError::Api { status, message: "x".into() }),
                 "status {status} should fail over"
@@ -133,6 +174,42 @@ mod tests {
         assert!(should_failover(&MuseError::Other("connection reset".into())));
         assert!(!should_failover(&MuseError::Interrupted));
         assert!(!should_failover(&MuseError::NotAuthenticated));
+    }
+
+    #[test]
+    fn should_failover_on_quota_and_usage_limit_bodies() {
+        // Claude/OpenAI often return 400/403 when the account is out of usage.
+        let cases = [
+            (400u16, "rate_limit_error: Your account has reached its usage limit"),
+            (403, "insufficient_quota: You exceeded your current quota"),
+            (400, "overloaded_error: The model is overloaded"),
+            (401, "billing hard limit has been reached"),
+            (429, "anything"), // still always
+        ];
+        for (status, message) in cases {
+            assert!(
+                should_failover(&MuseError::Api {
+                    status,
+                    message: message.into()
+                }),
+                "status {status} msg={message:?} should fail over"
+            );
+        }
+        // Real bad requests must still NOT fail over.
+        for (status, message) in [
+            (400u16, "invalid_request_error: model not found"),
+            (400, "messages: text content blocks must be non-empty"),
+            (401, "invalid x-api-key"),
+            (403, "permission denied for this organization"),
+        ] {
+            assert!(
+                !should_failover(&MuseError::Api {
+                    status,
+                    message: message.into()
+                }),
+                "status {status} msg={message:?} must NOT fail over"
+            );
+        }
     }
 
     #[test]
