@@ -12,10 +12,10 @@ The active provider, endpoint, and default model are stored in
 | Provider | API key | Browser / SSO |
 |----------|---------|----------------|
 | **Meta Model API** | [dev.meta.ai](https://dev.meta.ai/) | - |
-| **OpenAI** | `OPENAI_API_KEY` | Sign in with ChatGPT OAuth or import Codex session |
-| **xAI Grok** | `XAI_API_KEY` | Device code / Grok CLI session |
-| **Kimi Code (kimi.com)** | `KIMI_API_KEY` | Device code / Kimi CLI session |
-| **Anthropic Claude** | `ANTHROPIC_API_KEY` | Browser OAuth (Claude-style) or import Claude Code session |
+| **OpenAI** | `OPENAI_API_KEY` | - (OpenAI gates OAuth to its own CLI) |
+| **xAI Grok** | `XAI_API_KEY` | - (xAI gates OAuth to its own CLI) |
+| **Kimi Code (kimi.com)** | `KIMI_API_KEY` | - (Kimi gates OAuth to its own CLI) |
+| **Anthropic Claude** | `ANTHROPIC_API_KEY` | - (Anthropic gates OAuth to its own CLI) |
 | **Google Antigravity** | Gemini key fallback | `gcloud auth login` browser SSO |
 | **Hugging Face** | `HF_TOKEN` | Device code (`hf auth login` style) |
 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | `az login` / Entra device code |
@@ -41,31 +41,32 @@ What happens:
 3. If the provider supports browser auth, choose:
    - **Sign in with browser**: opens a URL (and may show a short code); approve in the browser; NurCLI stores tokens and refreshes when needed.
    - **Enter API key**: masked paste (classic path).
-   - **Use existing CLI session**: when a Codex, Grok, Kimi Code, or Claude Code login is already on disk.
 4. Config is updated: `provider`, `base_url`, and `model` (that provider’s
    default). The HTTP client is **hot-swapped** for the rest of the session.
 
 After browser sign-in, `/model` queries that provider with the OAuth credential and
-shows only models the account can use. OpenAI ChatGPT OAuth uses the Codex backend,
-including the account context from the ID token; an `OPENAI_API_KEY` login continues
-to use the public OpenAI API endpoint.
+shows only models the account can use.
 
 NurCLI resolves the current OAuth token before every model or inference request, keeps
 the active and per-provider session stores synchronized after token rotation, and
-forces one refresh/retry if a provider rejects an access token early. **Sign in with
-browser** always starts that provider's real OAuth flow; reuse of Codex, Grok, Kimi, or
-Claude Code credentials happens only through **Use existing CLI session**.
+forces one refresh/retry if a provider rejects an access token early.
 
-xAI browser/device sessions use the Grok Build Responses proxy and its account model
-catalog (currently defaulting to `grok-4.5`). `XAI_API_KEY` continues to use the public
-xAI API endpoint and its normal catalog style.
+## Why OpenAI, Anthropic, xAI, and Kimi are API-key only
 
-Kimi Code supports both Kimi membership OAuth and Kimi Code API keys at
-`https://api.kimi.com/coding/v1`. OAuth uses Kimi's device flow, refreshes rotated
-tokens automatically, sends the managed API's device-bound request headers, and
-discovers the account's live models from `/models`.
-The separate Moonshot Open Platform catalog entry remains available for
-`https://api.moonshot.ai/v1` keys.
+These vendors ship their own coding CLIs (Codex, Claude Code, Grok CLI, Kimi Code) and
+only issue subscription OAuth tokens to those first-party clients. There is no OAuth
+client a third-party CLI can register for, so NurCLI does not offer browser sign-in for
+them: `/login` goes straight to the API key prompt.
+
+Earlier NurCLI versions (≤ 0.15.2) reused those CLIs' OAuth client IDs and, for xAI,
+mirrored the Grok CLI version headers. That impersonated the vendors' own clients,
+violated their terms, and broke as soon as they tightened enforcement — the Claude
+redirect-URI rejection and xAI's HTTP 426 were exactly that. Those flows are removed
+rather than patched. Sessions stored by older builds are ignored on read, so upgrading
+prompts for an API key instead of failing with a confusing 401.
+
+Kimi Code API keys work against `https://api.kimi.com/coding/v1`. The separate Moonshot
+Open Platform catalog entry remains available for `https://api.moonshot.ai/v1` keys.
 
 `/logout` clears the stored key/tokens and blocks further turns until you `/login`
 again (environment-variable keys still apply on the next launch).
@@ -120,7 +121,7 @@ Self-hosted OpenAI-compatible servers (Ollama, vLLM, LiteLLM, custom gateways):
 export NUR_BASE_URL="http://localhost:11434/v1"   # overrides config base_url
 ```
 
-`NUR_BASE_URL` (legacy `META_BASE_URL`) wins over the catalog default after `/login` and on every startup, except that provider OAuth sessions with a fixed secure backend (OpenAI ChatGPT, xAI Grok Build, and Kimi Code OAuth) cannot be redirected by this override.
+`NUR_BASE_URL` (legacy `META_BASE_URL`) wins over the catalog default after `/login` and on every startup.
 
 !!! note "Legacy variables"
     `META_API_KEY`, `MODEL_API_KEY`, and `MUSE_API_KEY` are also accepted for backwards compatibility.
@@ -180,13 +181,12 @@ Each entry declares:
 - **API style**:
   - **Responses** (`POST /responses`) — OpenAI/Meta
   - **Chat Completions** (`POST /chat/completions`) — most OpenAI-compatible hosts
-  - **Anthropic Messages** (`POST /v1/messages`) — official Claude API (API keys **and** Claude OAuth). Anthropic is **not** OpenAI Chat Completions.
+  - **Anthropic Messages** (`POST /v1/messages`) — official Claude API. Anthropic is **not** OpenAI Chat Completions.
 
 NurCLI’s agent always speaks an internal Responses-shaped protocol. Adapters
 translate for Chat Completions (`src/api/chat.rs`) and Anthropic Messages
-(`src/api/anthropic.rs`), including streamed tool calls. Claude OAuth tokens
-(`sk-ant-oat…`) use `Authorization: Bearer` + `anthropic-beta: oauth-2025-04-20`;
-console API keys use `x-api-key`.
+(`src/api/anthropic.rs`), including streamed tool calls. Anthropic console API keys
+use `x-api-key`.
 
 ---
 

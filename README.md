@@ -53,7 +53,9 @@ nur doctor          # health check
 
 Or run `nur` and use **`/login`** in the TUI: pick any of **60+ providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, Meta Model API, and so on).
-For **OpenAI (ChatGPT), Grok, Kimi Code, Claude, Antigravity, Hugging Face, Azure, AWS Bedrock, and GitHub Models** you can **sign in with the browser** or paste an API key. OAuth sessions refresh before use, retry once after an authentication rejection, and `/model` detects the models available to the active credential. No credential on launch and login opens automatically.
+For **Antigravity, Hugging Face, Azure, AWS Bedrock, and GitHub Models** you can **sign in with the browser** or paste an API key. OAuth sessions refresh before use, retry once after an authentication rejection, and `/model` detects the models available to the active credential. No credential on launch and login opens automatically.
+
+OpenAI, Anthropic, xAI, and Kimi are **API key only** — those vendors issue subscription OAuth tokens exclusively to their own CLIs (Codex, Claude Code, Grok CLI, Kimi Code), so `/login` goes straight to the key prompt. See [docs/authentication.md](docs/authentication.md#why-openai-anthropic-xai-and-kimi-are-api-key-only).
 
 ### Update
 

@@ -9,14 +9,6 @@ use super::chat::build_response_value;
 use super::types::ResponseRequest;
 use serde_json::{json, Value};
 
-/// True for Claude Code / claude.ai OAuth access tokens (`sk-ant-oat…`).
-pub fn is_oauth_token(key: &str) -> bool {
-    let k = key.trim();
-    k.starts_with("sk-ant-oat") || k.starts_with("sk-ant-oat01-")
-}
-
-/// Anthropic beta header required for OAuth bearer tokens against the API.
-pub const OAUTH_BETA: &str = "oauth-2025-04-20";
 
 /// Default Sonnet on the Claude API (platform.claude.com, mid-2026).
 /// **Not** `claude-sonnet-4-20250514` — Sonnet 4 is retired on the first-party
@@ -511,14 +503,6 @@ mod tests {
             parallel_tool_calls: None,
             prompt_cache_key: None,
         }
-    }
-
-    #[test]
-    fn oauth_token_detection() {
-        assert!(is_oauth_token("sk-ant-oat01-abcdef"));
-        assert!(is_oauth_token("  sk-ant-oat-xyz  "));
-        assert!(!is_oauth_token("sk-ant-api03-abcdef"));
-        assert!(!is_oauth_token("xai-jwt-token"));
     }
 
     #[test]

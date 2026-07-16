@@ -13,12 +13,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use browser::open_browser;
-pub use flows::{import_existing_session, login_browser, BrowserLoginProgress, OAuthTokens};
-
-/// Kimi managed-API device headers bound to the current OAuth device identity.
-pub fn kimi_request_headers() -> Result<Vec<(&'static str, String)>> {
-    flows::kimi::request_headers()
-}
+pub use flows::{login_browser, BrowserLoginProgress, OAuthTokens};
 
 pub fn now_unix() -> u64 {
     SystemTime::now()
@@ -90,10 +85,9 @@ impl CancelFlag {
 /// Refresh an OAuth access token for the given provider.
 pub fn refresh_tokens(provider: &str, auth: &Auth, refresh: &str) -> Result<OAuthTokens> {
     match provider {
-        "openai" => flows::openai::refresh(auth, refresh),
-        "xai" => flows::xai::refresh(auth, refresh),
-        "kimi" => flows::kimi::refresh(auth, refresh),
-        "anthropic" => flows::claude::refresh(refresh),
+        "openai" | "xai" | "kimi" | "anthropic" => {
+            Err(MuseError::Other(flows::api_key_only_reason(provider)))
+        }
         "antigravity" | "google-oauth" => flows::antigravity::refresh(auth, refresh),
         "huggingface" => flows::huggingface::refresh(refresh),
         "azure" => flows::azure::refresh(),
@@ -119,11 +113,37 @@ mod tests {
 
     #[test]
     fn browser_supported_ids() {
-        assert!(supports_browser("openai"));
-        assert!(supports_browser("xai"));
-        assert!(supports_browser("kimi"));
-        assert!(supports_browser("anthropic"));
+        assert!(supports_browser("huggingface"));
+        assert!(supports_browser("azure"));
+        assert!(supports_browser("github-models"));
         assert!(!supports_browser("meta"));
+    }
+
+    /// Vendors that gate model access to their own first-party CLI must not
+    /// advertise browser login, must not have a refresh path, and must explain
+    /// the API-key route instead of dead-ending in a vendor rejection.
+    #[test]
+    fn first_party_only_vendors_route_to_api_keys() {
+        for id in ["openai", "anthropic", "xai", "kimi"] {
+            assert!(
+                !supports_browser(id),
+                "'{id}' must not advertise browser_auth — its vendor rejects third-party clients"
+            );
+            let auth = crate::auth::Auth {
+                api_key: "x".into(),
+                source: "oauth".into(),
+                auth_method: AuthMethod::Oauth,
+                provider: id.into(),
+                expires_at: None,
+                refresh_token: Some("r".into()),
+                oauth_meta: None,
+            };
+            let err = refresh_tokens(id, &auth, "r").unwrap_err().to_string();
+            assert!(
+                err.contains("API key"),
+                "'{id}' refresh should point at an API key, got: {err}"
+            );
+        }
     }
 
     #[test]
@@ -143,10 +163,6 @@ mod tests {
     fn every_browser_auth_provider_has_login_and_refresh_path() {
         // Mirrors match arms in flows::login_browser and refresh_tokens.
         const LOGIN: &[&str] = &[
-            "openai",
-            "xai",
-            "kimi",
-            "anthropic",
             "antigravity",
             "huggingface",
             "azure",
@@ -154,10 +170,6 @@ mod tests {
             "github-models",
         ];
         const REFRESH: &[&str] = &[
-            "openai",
-            "xai",
-            "kimi",
-            "anthropic",
             "antigravity",
             "google-oauth", // alias used by some stored sessions
             "huggingface",
