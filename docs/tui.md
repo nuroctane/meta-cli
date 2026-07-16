@@ -46,7 +46,7 @@ Mouse/keyboard interaction tips that used to live under the art are behind
 | Click the exact **click to peek** text | Opens stable dialogue (frozen position; Esc · outside · ✕ only) |
 | Click `▸` | Expand / collapse in place |
 | **Ctrl+C** (peek open, no selection) | Copy full thought / tool body |
-| **Right-click or double-click a prompt** | Prompt menu: **fork · revert · copy** (works on the sticky header too) |
+| **Right-click or double-click a prompt** | Prompt menu: **fork · edit · revert · copy** (works on the sticky header too) |
 | `Ctrl+P` / `Ctrl+N` · `Alt+↑`/`↓` | Previous / next prompt from history |
 
 !!! tip "Peek dialogue"
@@ -281,15 +281,27 @@ When a write tool requests approval, the TUI shows a compact diff preview of wha
 
 ### Transcript diffs
 
-Edit tools (`edit_file`, `write_file`, `multi_edit`, `apply_patch`) render a **green/red unified diff inline** in the transcript — added lines in green bands, removed in red, with a `+adds -dels` chip on the card header. The full diff is shown when the card is expanded and inside its peek box.
+Edit tools (`edit_file`, `write_file`, `multi_edit`, `apply_patch`) render a **green/red unified diff inline** in the transcript — added lines in green bands, removed in red, with a `+adds -dels` chip on the card header. Cards always show **click to peek**; the peek dialogue opens the **full path + content/diff** (not just the short card preview).
 
-### Prompt menu — fork · revert · copy
+### Queued follow-ups — send now
+
+While a turn is running, typing and sending queues a follow-up. The transcript shows a **queued** card with:
+
+| Action | What it does |
+|--------|--------------|
+| **send now** | Interjects next: cancels the current turn if busy, then runs this follow-up with full prior session context. |
+| **dismiss** | Drops the follow-up without sending. |
+
+If you do nothing, the queue still drains when the current turn finishes (unless you cancelled without **send now**).
+
+### Prompt menu — fork · edit · revert · copy
 
 **Right-click** or **double-click** any of your prompts (in the transcript or on the sticky header) to open a small menu — styled like every other dialogue:
 
 | Action | What it does |
 |--------|--------------|
 | **Fork** | Branch into a **new session** seeded with the conversation up to that prompt. The original session is kept intact on disk; the prompt lands in your input to continue the fork. |
+| **Edit** | Load the prompt into the input **without** rewinding history. Send to interject as a **new turn** with full prior context kept. |
 | **Revert** | **Rewind** the session to just before that prompt (transcript, messages, and the model's context are all truncated). The prompt returns to the input to edit and resend. |
 | **Copy** | Copy the prompt text to the clipboard. |
 
