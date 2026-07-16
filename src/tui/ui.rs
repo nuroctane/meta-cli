@@ -1315,6 +1315,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut line_cells: Vec<Option<usize>> = Vec::new();
     let mut line_cell_all: Vec<Option<usize>> = Vec::new();
     let mut hit_click_to_peek: Vec<Option<(usize, usize, usize)>> = Vec::new();
+    let mut hit_expand_phrase: Vec<Option<(usize, usize, usize)>> = Vec::new();
     let mut hit_queue_actions: Vec<Vec<(usize, usize, usize, u8)>> = Vec::new();
     let mut hit_urls: Vec<Vec<(usize, usize, String)>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
@@ -1331,6 +1332,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 line_cells.push(None);
                 line_cell_all.push(None);
                 hit_click_to_peek.push(None);
+                hit_expand_phrase.push(None);
                 hit_queue_actions.push(Vec::new());
                 hit_urls.push(Vec::new());
                 plain_lines.push(String::new());
@@ -1388,6 +1390,25 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             };
+            // Expand / collapse phrase on header (and "… · ▸ expands" body hint).
+            let exp = {
+                let phrases = [
+                    "▸ expands",
+                    "▾ collapse",
+                    "click ▾ to collapse",
+                    "▸ expand",
+                ];
+                let mut found = None;
+                for p in phrases {
+                    if let Some(byte_i) = plain.find(p) {
+                        let start = plain[..byte_i].chars().count();
+                        let end = start + p.chars().count();
+                        found = Some((cell_idx, start, end));
+                        break;
+                    }
+                }
+                found
+            };
             // Queued follow-up actions (send now + dismiss may share one line).
             let mut qa: Vec<(usize, usize, usize, u8)> = Vec::new();
             if matches!(cell, Cell::Queued { .. }) {
@@ -1418,6 +1439,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             });
             line_cell_all.push(if !empty { Some(cell_idx) } else { None });
             hit_click_to_peek.push(ctp);
+            hit_expand_phrase.push(exp);
             hit_queue_actions.push(qa);
             hit_urls.push(urls);
         }
@@ -1426,6 +1448,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     app.line_cells = line_cells;
     app.line_cell_all = line_cell_all;
     app.hit_click_to_peek = hit_click_to_peek;
+    app.hit_expand_phrase = hit_expand_phrase;
     app.hit_queue_actions = hit_queue_actions;
     app.hit_urls = hit_urls;
     app.plain_lines = plain_lines;
@@ -2007,35 +2030,80 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
             }
             out.push(Line::from(head_spans));
 
-            // Body. Edit tools → green/red diff bands (shown collapsed AND
-            // expanded so the change is always visible). Other tools → result
-            // text only when expanded.
+            // Body. Edit tools → green/red diff bands:
+            //   collapsed: compact (path + a few lines) so ▸ expand is obvious
+            //   expanded: full change (capped for huge writes; peek for rest)
+            // Other tools → result text only when expanded.
             if let Some(diff) = &diff {
-                let show = if *expanded { diff.len() } else { 8.min(diff.len()) };
-                for l in diff.iter().take(show) {
+                // Prefer full content when expanded (not the short approval cap).
+                let body_lines: Vec<String> = if *expanded {
+                    transcript_edit_diff(name, args)
+                } else {
+                    diff.clone()
+                };
+                // Collapsed: path + a few hunk rows (so ▸ expand is obvious).
+                // Expanded: full change up to 120 lines (peek for the rest).
+                let show = if *expanded {
+                    body_lines.len().min(120)
+                } else {
+                    body_lines.len().min(4)
+                };
+                for l in body_lines.iter().take(show) {
                     out.push(diff_line(l, 2, width));
                 }
-                if diff.len() > show {
+                if body_lines.len() > show {
+                    let more = body_lines.len() - show;
+                    let hint = if *expanded {
+                        format!("… +{more} more · click to peek for full file")
+                    } else {
+                        format!("… +{more} more · ▸ expands · peek for full")
+                    };
                     out.push(Line::from(vec![
                         Span::raw("  ".to_string()),
-                        Span::styled(
-                            format!("… +{} more diff lines · click ▸", diff.len() - show),
-                            theme::style_faint(),
-                        ),
+                        Span::styled(hint, theme::style_faint()),
                     ]));
                 }
-                // Surface a failure under the diff (e.g. hunk mismatch).
-                if *ok == Some(false) {
-                    if let Some(r) = result {
-                        let first = r.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-                        out.push(Line::from(vec![
-                            Span::raw("  ".to_string()),
-                            Span::styled(
-                                truncate(first, width.saturating_sub(4)),
-                                theme::style_error(),
-                            ),
-                        ]));
+                // Outcome under the card.
+                // Failed (e.g. old_string miss): clean failure line — not a TUI bug;
+                // the model tried an edit that didn't match the file.
+                // Success when expanded: show the short "edited path (N replacements)" note
+                // so expand/collapse is always visibly different even on tiny hunks.
+                match ok {
+                    Some(false) => {
+                        if let Some(r) = result {
+                            let first =
+                                r.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                            let clean = strip_tool_error_prefix(first);
+                            out.push(Line::from(vec![
+                                Span::raw("  ".to_string()),
+                                Span::styled("✗ ".to_string(), theme::style_error()),
+                                Span::styled(
+                                    truncate(
+                                        &format!("failed · {clean}"),
+                                        width.saturating_sub(6),
+                                    ),
+                                    theme::style_error(),
+                                ),
+                            ]));
+                        }
                     }
+                    Some(true) if *expanded => {
+                        if let Some(r) = result {
+                            let first =
+                                r.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+                            if !first.is_empty() {
+                                out.push(Line::from(vec![
+                                    Span::raw("  ".to_string()),
+                                    Span::styled("✓ ".to_string(), theme::style_success()),
+                                    Span::styled(
+                                        truncate(first, width.saturating_sub(6)),
+                                        theme::style_faint(),
+                                    ),
+                                ]));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             } else if *expanded {
                 match result {
@@ -3411,6 +3479,75 @@ fn is_edit_tool(name: &str) -> bool {
     matches!(name, "write_file" | "edit_file" | "multi_edit" | "apply_patch")
 }
 
+/// Full edit/write content for an **expanded** transcript card (vs short
+/// `approval_preview` used when collapsed / in the approval modal).
+fn transcript_edit_diff(tool: &str, args: &str) -> Vec<String> {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args) else {
+        return pretty_args(args)
+            .lines()
+            .map(|s| s.to_string())
+            .take(80)
+            .collect();
+    };
+    match tool {
+        "edit_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let old = v.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+            let new = v.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+            let mut out = vec![format!("path {path}")];
+            out.extend(mini_unified_diff(old, new, 80));
+            out
+        }
+        "write_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+            let n = content.lines().count();
+            let mut out = vec![format!("path {path}  (write · {n} lines)")];
+            for l in content.lines().take(100) {
+                out.push(format!("+{l}"));
+            }
+            if n > 100 {
+                out.push(format!("… +{} more lines", n - 100));
+            }
+            out
+        }
+        "multi_edit" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let mut out = vec![format!("path {path}  (multi_edit)")];
+            if let Some(edits) = v.get("edits").and_then(|e| e.as_array()) {
+                out.push(format!("@@ {} edit(s)", edits.len()));
+                for (i, e) in edits.iter().enumerate() {
+                    let old = e.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+                    let new = e.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+                    out.push(format!("── edit {} ──", i + 1));
+                    out.extend(mini_unified_diff(old, new, 24));
+                }
+            }
+            out
+        }
+        "apply_patch" => {
+            let patch = v
+                .get("patch")
+                .or_else(|| v.get("input"))
+                .and_then(|x| x.as_str())
+                .unwrap_or(args);
+            patch.lines().take(120).map(|s| s.to_string()).collect()
+        }
+        _ => approval_preview(tool, args),
+    }
+}
+
+/// `error: tool error: foo` → `foo` for a clean transcript failure line.
+fn strip_tool_error_prefix(s: &str) -> String {
+    let mut t = s.trim();
+    for p in ["error: tool error: ", "error: ", "tool error: "] {
+        if let Some(rest) = t.strip_prefix(p) {
+            t = rest.trim();
+        }
+    }
+    t.to_string()
+}
+
 /// Classify a unified-diff line.
 enum DiffKind {
     Add,
@@ -3784,6 +3921,28 @@ fn draw_ctx_menu(f: &mut Frame, app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_tool_error_prefix_cleans_double_prefix() {
+        assert_eq!(
+            strip_tool_error_prefix("error: tool error: old_string not found in file"),
+            "old_string not found in file"
+        );
+        assert_eq!(
+            strip_tool_error_prefix("tool error: path missing"),
+            "path missing"
+        );
+        assert_eq!(strip_tool_error_prefix("plain"), "plain");
+    }
+
+    #[test]
+    fn transcript_edit_diff_edit_file_includes_path_and_hunk() {
+        let args = r#"{"path":"a.rs","old_string":"foo","new_string":"bar"}"#;
+        let lines = transcript_edit_diff("edit_file", args);
+        assert!(lines.iter().any(|l| l.contains("path a.rs")));
+        assert!(lines.iter().any(|l| l.starts_with("-foo") || l == "-foo"));
+        assert!(lines.iter().any(|l| l.starts_with("+bar") || l == "+bar"));
+    }
 
     #[test]
     fn diff_kinds_and_counts() {

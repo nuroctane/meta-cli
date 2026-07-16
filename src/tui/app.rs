@@ -1132,6 +1132,9 @@ pub struct App {
     /// Absolute line → (`cell_idx`, display_col_start, display_col_end) for the
     /// exact `"click to peek"` text span. Only this hitbox opens the dialogue.
     pub hit_click_to_peek: Vec<Option<(usize, usize, usize)>>,
+    /// Absolute line → (`cell_idx`, col_lo, col_hi) for expand/collapse phrases
+    /// (`▸ expands` / `▾ collapse`) so clicks on those words toggle, not no-op.
+    pub hit_expand_phrase: Vec<Option<(usize, usize, usize)>>,
     /// Hitboxes for queued follow-up actions on each wrapped line.
     /// Entries: (cell_idx, col_lo, col_hi, action) where action 0 = send now, 1 = dismiss.
     /// Multiple actions can share a line (send now + dismiss).
@@ -1375,6 +1378,7 @@ pub async fn run_tui(
         line_cells: Vec::new(),
         line_cell_all: Vec::new(),
         hit_click_to_peek: Vec::new(),
+        hit_expand_phrase: Vec::new(),
         hit_queue_actions: Vec::new(),
         hit_urls: Vec::new(),
         transcript_top: 0,
@@ -5294,6 +5298,19 @@ impl App {
 
         let header = self.hit_headers.get(line_idx).copied().flatten();
         let chevron = local_x <= 3;
+        // Clicking the literal "▸ expands" / "▾ collapse" text also toggles.
+        let expand_phrase = self
+            .hit_expand_phrase
+            .get(line_idx)
+            .copied()
+            .flatten()
+            .and_then(|(cell, lo, hi)| {
+                if local_x >= lo && local_x < hi {
+                    Some(cell)
+                } else {
+                    None
+                }
+            });
         let click_to_peek = self
             .hit_click_to_peek
             .get(line_idx)
@@ -5306,6 +5323,12 @@ impl App {
                     None
                 }
             });
+
+        // Expand-phrase wins over peek when both appear on the same header line.
+        if let Some(i) = expand_phrase {
+            self.toggle_cell_expand(i);
+            return;
+        }
 
         match resolve_transcript_click(chevron, header, click_to_peek) {
             TranscriptClick::ToggleExpand(i) => {
