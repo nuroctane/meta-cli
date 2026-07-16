@@ -123,6 +123,49 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
             include_str!("../../skills/resume-grok/SKILL.md"),
         )],
     ),
+    // dmmulroy/skills (MIT) — baked in so a fresh install ships them.
+    (
+        "bro",
+        &[("SKILL.md", include_str!("../../skills/bro/SKILL.md"))],
+    ),
+    (
+        "coding-standards",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/coding-standards/SKILL.md"),
+        )],
+    ),
+    (
+        "tech-spec",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/tech-spec/SKILL.md"),
+        )],
+    ),
+    (
+        "herdr",
+        &[("SKILL.md", include_str!("../../skills/herdr/SKILL.md"))],
+    ),
+    (
+        "prelude",
+        &[
+            ("SKILL.md", include_str!("../../skills/prelude/SKILL.md")),
+            ("prelude.ts", include_str!("../../skills/prelude/prelude.ts")),
+        ],
+    ),
+    (
+        "cloudflare-composition-root",
+        &[
+            (
+                "SKILL.md",
+                include_str!("../../skills/cloudflare-composition-root/SKILL.md"),
+            ),
+            (
+                "EXAMPLES.md",
+                include_str!("../../skills/cloudflare-composition-root/EXAMPLES.md"),
+            ),
+        ],
+    ),
 ];
 
 const PLUR_SKILL: &str = r#"---

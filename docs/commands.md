@@ -19,6 +19,8 @@ nur <COMMAND> [ARGS]
 | `--mode <MODE>` | | Permission mode: `manual`, `plan`, or `auto` |
 | `--effort <LEVEL>` | | Reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh` |
 | `--max-turns <N>` | | Max agent turns per prompt |
+| `--continuous` | | Sovereign mode: loop headless turns toward the prompt (as a goal) until the model replies `DONE`, Ctrl+C, or `--max-iters`. Auto-approves tools (sandboxed). |
+| `--max-iters <N>` | | Continuous mode: stop after N iterations (`0` = unlimited) |
 | `--verbose` | `-v` | Verbose tool logging (headless mode) |
 | `--continue` | `-c` | Continue the most recent session for this cwd |
 | `--resume <ID>` | `-r` | Resume a specific session id (full UUID or unique prefix) |
@@ -281,6 +283,58 @@ Install the Orca agent hook for usage/status reporting.
 ```bash
 nur install-hook
 ```
+
+---
+
+### `nur gateway`
+
+Run headless as a **Telegram bot** — each inbound message is an agent turn in the
+current project, with the answer sent back (one session for continuity, tools
+auto-approved). Get a token from [@BotFather](https://t.me/BotFather).
+
+```bash
+nur gateway [--token <TOKEN>] [--chat <CHAT_ID>]
+# token also from $TELEGRAM_BOT_TOKEN · chat from $TELEGRAM_CHAT_ID
+```
+
+| Flag | Description |
+|------|-------------|
+| `--token` | Bot token (else `$TELEGRAM_BOT_TOKEN`) |
+| `--chat` | Restrict to a single chat id (else `$TELEGRAM_CHAT_ID`; unset = anyone) |
+
+---
+
+### `nur local`
+
+Managed **local models** — bundles llama.cpp (fetches a prebuilt `llama-server`
+for your platform on demand), downloads a GGUF sized to your RAM, and runs it on
+`127.0.0.1:8080` (the `llama.cpp (local)` catalog provider). No API key.
+
+```bash
+nur local up [<tier|url>]   # size to RAM (or a tier: small|medium|large, or a direct .gguf URL)
+nur local status            # server · downloaded models · running state
+nur local down              # stop the managed server
+nur local models            # list the built-in tiers
+```
+
+Also available in the TUI as **`/local`**.
+
+---
+
+### `nur bench`
+
+Benchmark models on **your own tasks**: record a task once, replay it across
+models in isolated **git worktrees**, and score them (pass/fail via a check
+command, wall time, tokens).
+
+```bash
+nur bench add <name> "<prompt>" [--check "<shell cmd>"]   # exit 0 of the check = pass
+nur bench list
+nur bench remove <name>
+nur bench run <name|all> [--models <m1,m2>]               # default: the active model
+```
+
+Also available in the TUI as **`/bench`**.
 
 ---
 

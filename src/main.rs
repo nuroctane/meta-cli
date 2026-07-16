@@ -2,11 +2,14 @@ mod ade;
 mod agent;
 mod api;
 mod auth;
+mod bench;
 mod bootstrap;
 mod cli;
 mod config;
 mod ecosystem;
 mod error;
+mod gateway;
+mod local;
 mod oauth;
 mod open_uri;
 mod plugins;
@@ -176,6 +179,11 @@ async fn real_main() -> Result<()> {
         }
         Some(Commands::Plugins { action }) => {
             run_plugins_cli(action.as_ref())?;
+            return Ok(());
+        }
+        Some(Commands::Local { action }) => {
+            // Local models need no API key/auth — handle before the auth path.
+            local::run_local(action).await?;
             return Ok(());
         }
         None => {
@@ -389,6 +397,32 @@ async fn real_main() -> Result<()> {
             )
             .await?;
         }
+        None if cli.continuous => {
+            let goal = cli
+                .prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let Some(goal) = goal else {
+                return Err(error::MuseError::Other(
+                    "--continuous needs a goal, e.g.  nur \"keep the tests green\" --continuous"
+                        .into(),
+                ));
+            };
+            run_continuous(
+                client,
+                cfg,
+                cwd,
+                session,
+                usage,
+                &goal,
+                permission_mode,
+                cli.verbose,
+                cli.max_iters,
+            )
+            .await?;
+        }
         None => {
             // Compact host tab title from first prompt (implementation detail, not marketing).
             let seed = cli
@@ -420,6 +454,12 @@ async fn real_main() -> Result<()> {
             )
             .await?;
         }
+        Some(Commands::Gateway { token, chat }) => {
+            gateway::run_gateway(client, cfg, cwd, session, usage, token.clone(), *chat).await?;
+        }
+        Some(Commands::Bench { action }) => {
+            bench::run_bench(action, client, cfg, cwd).await?;
+        }
         Some(Commands::Auth { .. })
         | Some(Commands::Usage)
         | Some(Commands::Sessions { .. })
@@ -430,6 +470,7 @@ async fn real_main() -> Result<()> {
         | Some(Commands::Doctor)
         | Some(Commands::Ecosystem { .. })
         | Some(Commands::Browser { .. })
+        | Some(Commands::Local { .. })
         | Some(Commands::Plugins { .. }) => unreachable!(),
     }
 
@@ -863,6 +904,165 @@ async fn run_headless(
             );
             eprintln!("status: {}", config::status_path().display());
         }
+    }
+    Ok(())
+}
+
+/// Continuous / sovereign mode: loop headless turns on one session toward a
+/// goal until the model replies `DONE`, Ctrl+C, or `--max-iters`. Ported from
+/// wizard's `--continuous`. Auto-approves tools (nur is sandboxed by default);
+/// the per-turn agent loop auto-compacts context so long missions stay bounded.
+#[allow(clippy::too_many_arguments)]
+async fn run_continuous(
+    client: ApiClient,
+    cfg: Config,
+    cwd: PathBuf,
+    mut session: Session,
+    mut usage: UsageTracker,
+    goal: &str,
+    permission_mode: SharedMode,
+    verbose: bool,
+    max_iters: u32,
+) -> Result<()> {
+    permission_mode.set(PermissionMode::Auto);
+    ade::set_terminal_title(&ade::session_window_title(goal));
+
+    let runner = Arc::new(AgentRunner {
+        client,
+        config: cfg,
+        cwd: cwd.clone(),
+        permission_mode,
+        verbose,
+        approved_tools: Arc::new(Mutex::new(HashSet::new())),
+        tools: tools::ToolHost::default(),
+        permissions: agent::SharedPermissions::load(&cwd),
+        hooks: agent::hooks::HooksConfig::load(),
+        is_subagent: false,
+    });
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    {
+        let c = cancel.clone();
+        tokio::spawn(async move {
+            let _ = tokio::signal::ctrl_c().await;
+            c.cancel();
+        });
+    }
+
+    theme::print_info(&format!("continuous · goal: {goal}"));
+    theme::print_info("auto-approving tools · Ctrl+C stops after the current step");
+    if max_iters > 0 {
+        theme::print_info(&format!("continuous · max {max_iters} steps"));
+    }
+
+    // Held in Options so the loop stays move-safe: each turn takes ownership and
+    // hands them back via `Done`. If a turn's task ever dies without `Done`, they
+    // stay `None` and the final save is simply skipped.
+    let mut session = Some(session);
+    let mut usage = Some(usage);
+    let mut iter = 0u32;
+    let mut errors_in_a_row = 0u32;
+
+    loop {
+        if cancel.is_cancelled() {
+            theme::print_info("continuous · stopped (Ctrl+C)");
+            break;
+        }
+        iter += 1;
+        if max_iters > 0 && iter > max_iters {
+            theme::print_info(&format!("continuous · reached max {max_iters} steps"));
+            break;
+        }
+        theme::print_info(&format!("── step {iter} ──"));
+
+        let prompt = agent::continuous::continuous_prompt(goal, iter);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (Some(sess), Some(usg)) = (session.take(), usage.take()) else {
+            break;
+        };
+        agent::spawn_turn(runner.clone(), sess, usg, prompt, tx, cancel.clone());
+
+        let mut midline = false;
+        let mut done: Option<(
+            Box<Session>,
+            Box<UsageTracker>,
+            std::result::Result<String, String>,
+            bool,
+        )> = None;
+        while let Some(ev) = rx.recv().await {
+            if midline && !matches!(ev, AgentEvent::TextDelta(_)) {
+                println!();
+                midline = false;
+            }
+            match ev {
+                AgentEvent::TextDelta(d) => {
+                    midline = !d.ends_with('\n');
+                    print!("{d}");
+                    let _ = std::io::stdout().flush();
+                }
+                AgentEvent::Status(s) => {
+                    if verbose {
+                        theme::print_info(&s);
+                    }
+                }
+                AgentEvent::ToolStart { name, args, .. } => {
+                    if verbose {
+                        theme::print_tool(&name, &truncate_line(&args, 120));
+                    }
+                }
+                AgentEvent::ToolEnd {
+                    name, result, ok, ..
+                } => {
+                    if verbose {
+                        let tag = if ok { "done" } else { "failed" };
+                        theme::print_info(&format!("{name} {tag}: {}", truncate_line(&result, 160)));
+                    }
+                }
+                AgentEvent::Done {
+                    session: s,
+                    usage: u,
+                    result,
+                    interrupted,
+                } => {
+                    done = Some((s, u, result, interrupted));
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let Some((s, u, result, interrupted)) = done else {
+            break;
+        };
+        session = Some(*s);
+        usage = Some(*u);
+
+        match result {
+            Ok(text) => {
+                errors_in_a_row = 0;
+                if interrupted {
+                    theme::print_info("continuous · interrupted");
+                    break;
+                }
+                if agent::continuous::is_done(&text) {
+                    theme::print_ok("continuous · goal complete (DONE)");
+                    break;
+                }
+            }
+            Err(e) => {
+                errors_in_a_row += 1;
+                theme::print_info(&format!("continuous · step error: {e}"));
+                if errors_in_a_row >= 3 {
+                    theme::print_info("continuous · 3 errors in a row — stopping");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(2 * errors_in_a_row as u64)).await;
+            }
+        }
+    }
+
+    if let Some(s) = session {
+        let _ = s.save();
     }
     Ok(())
 }

@@ -107,6 +107,59 @@ pub fn spawn_turn(
     })
 }
 
+/// Run one turn to completion **off the UI** and return the final answer text
+/// with the (restored) session + usage. Used by headless integrations — the
+/// Telegram gateway and `bench` — that need the answer, not a live stream.
+///
+/// Auto-approval is the caller's responsibility: build the runner with a
+/// permission mode of `Auto`, otherwise any tool that needs approval is denied
+/// (there is no interactive approver here).
+pub async fn run_collect(
+    runner: Arc<AgentRunner>,
+    session: Session,
+    usage: UsageTracker,
+    prompt: String,
+    cancel: CancellationToken,
+) -> (
+    Box<Session>,
+    Box<UsageTracker>,
+    std::result::Result<String, String>,
+    bool,
+) {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    spawn_turn(runner, session, usage, prompt, tx, cancel);
+    let mut acc = String::new();
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            AgentEvent::TextDelta(d) => acc.push_str(&d),
+            AgentEvent::AssistantMessage(m) => {
+                if acc.trim().is_empty() {
+                    acc = m;
+                }
+            }
+            // No interactive approver in headless integrations — deny anything
+            // that slips through (shouldn't happen: callers run in Auto mode).
+            AgentEvent::ApprovalRequest { respond, .. } => {
+                let _ = respond.send(ApprovalDecision::Deny);
+            }
+            AgentEvent::Done {
+                session,
+                usage,
+                result,
+                interrupted,
+            } => {
+                let result =
+                    result.map(|t| if t.trim().is_empty() { acc.clone() } else { t });
+                return (session, usage, result, interrupted);
+            }
+            _ => {}
+        }
+    }
+    // spawn_turn always emits Done as its last act, so the channel never closes
+    // before it — but stay honest if that invariant ever breaks.
+    unreachable!("agent turn ended without a Done event")
+}
+
 /// Which provider/model actually served a model request (for the receipt).
 struct Served {
     provider: String,

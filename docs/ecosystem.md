@@ -88,6 +88,11 @@ nur plugins install fable
 nur plugins install superpowers
 ```
 
+**Bundled on install:** the `bro`, `coding-standards`, `prelude`, `tech-spec`,
+`cloudflare-composition-root`, and `herdr` skills (from
+[dmmulroy/skills](https://github.com/dmmulroy/skills)) ship with NurCLI and are
+written to `~/.nur/skills` (mirrored to `~/.agents/skills`) on first run.
+
 ---
 
 ## Resume sessions (Claude · Codex · Cursor · Nur · Grok)

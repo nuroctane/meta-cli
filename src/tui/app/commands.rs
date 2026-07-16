@@ -13,6 +13,26 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Launch `nur <args>` in a **new console window** so a long job (a multi-GB
+/// `local up` download, a `bench run`) shows its own live progress without
+/// freezing or corrupting the TUI. Non-Windows: detached background process.
+fn spawn_console(exe: &std::path::Path, args: &[String]) -> std::io::Result<()> {
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0000_0010); // CREATE_NEW_CONSOLE
+    }
+    #[cfg(not(windows))]
+    {
+        cmd.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+    cmd.spawn().map(|_| ())
+}
+
 /// Spawn a command detached (null stdio, don't wait). Used for `cua autostart
 /// enable/disable`, which may pop a UAC prompt — we must not block the TUI on it.
 fn spawn_detached(bin: &str, args: &[&str]) -> std::io::Result<()> {
@@ -98,6 +118,9 @@ impl App {
             "/poor" => self.cmd_poor(),
             "/undo" => self.cmd_undo(),
             "/failover" => self.open_failover(),
+            "/fusion" => self.cmd_fusion(&arg),
+            "/local" => self.cmd_local(&arg),
+            "/bench" => self.cmd_bench(&arg),
             "/receipt" => self.cmd_receipt(),
             "/cua" => self.cmd_cua(&arg),
             "/permissions" => self.cmd_permissions(&arg),
@@ -610,6 +633,239 @@ impl App {
                     ),
                 );
             }
+        }
+    }
+
+    // ── /fusion — multi-model debate → one synthesized answer ────────────
+    fn cmd_fusion(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let mut it = arg.splitn(2, char::is_whitespace);
+        let kw = it.next().unwrap_or("");
+        let rest = it.next().unwrap_or("").trim();
+        match kw.to_ascii_lowercase().as_str() {
+            "" => self.fusion_status(),
+            "off" | "clear" | "none" | "reset" => {
+                self.cfg.fusion_panel.clear();
+                let _ = crate::config::save_config(&self.cfg);
+                self.push_note(Tone::Neutral, "fusion · panel cleared (off)".into());
+            }
+            "panel" | "set" | "add" => {
+                let adding = kw.eq_ignore_ascii_case("add");
+                let ids: Vec<String> = rest
+                    .split(|c: char| c == ',' || c.is_whitespace())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if ids.is_empty() {
+                    self.push_error(
+                        "usage: /fusion panel <ids>   e.g.  /fusion panel openai,anthropic,groq"
+                            .into(),
+                    );
+                    return;
+                }
+                let mut valid = if adding {
+                    self.cfg.fusion_panel.clone()
+                } else {
+                    Vec::new()
+                };
+                let mut unknown = Vec::new();
+                for id in ids {
+                    if crate::providers::by_id(&id).is_some() {
+                        if !valid.iter().any(|v| v == &id) {
+                            valid.push(id);
+                        }
+                    } else {
+                        unknown.push(id);
+                    }
+                }
+                self.cfg.fusion_panel = valid;
+                let _ = crate::config::save_config(&self.cfg);
+                if !unknown.is_empty() {
+                    self.push_error(format!(
+                        "skipped unknown provider id(s): {}  (see /login for ids)",
+                        unknown.join(", ")
+                    ));
+                }
+                self.fusion_status();
+            }
+            // Anything else is the question to fuse.
+            _ => self.start_fusion(arg),
+        }
+    }
+
+    fn fusion_status(&mut self) {
+        if self.cfg.fusion_panel.is_empty() {
+            self.push_note(
+                Tone::Neutral,
+                "fusion · panel empty (off)\n  \
+                 set one:  /fusion panel openai,anthropic,groq\n  \
+                 then ask: /fusion <question>\n  \
+                 the active model always joins the panel and writes the final answer"
+                    .into(),
+            );
+        } else {
+            self.push_note(
+                Tone::Neutral,
+                format!(
+                    "fusion panel: {active} (active · synthesizer) + {panel}\n  \
+                     ask:  /fusion <question>   ·   change:  /fusion panel <ids>   ·   off:  /fusion off",
+                    active = self.cfg.provider,
+                    panel = self.cfg.fusion_panel.join(", "),
+                ),
+            );
+        }
+    }
+
+    /// Fan the question out to [active model + panel], then synthesize one answer.
+    fn start_fusion(&mut self, question: &str) {
+        let question = question.trim();
+        if question.is_empty() {
+            self.fusion_status();
+            return;
+        }
+        if !self.authed {
+            self.push_error("signed out — run /login before /fusion".into());
+            return;
+        }
+        if self.cfg.fusion_panel.is_empty() {
+            self.push_error(
+                "no fusion panel set — /fusion panel openai,anthropic,groq  (then /fusion <question>)"
+                    .into(),
+            );
+            return;
+        }
+        if self.busy {
+            self.push_error("busy — wait for the current turn to finish".into());
+            return;
+        }
+        let (Some(session), Some(usage)) = (self.session.take(), self.usage.take()) else {
+            self.push_error("internal: session busy".into());
+            return;
+        };
+        self.cells.push(Cell::User(format!("/fusion {question}")));
+        if !self.title_from_prompt {
+            self.window_base = question.to_string();
+            self.title_from_prompt = true;
+        }
+        self.scroll_to_bottom();
+        self.scrollbar_drag = false;
+        self.selecting = false;
+        self.select_anchor = None;
+        self.mouse_left_down = false;
+        super::enable_mouse();
+        self.busy = true;
+        self.cancelling = false;
+        self.turn_kind = TurnMode::Chat;
+        self.turn_started = Instant::now();
+        self.thought_accum = Duration::ZERO;
+        self.status = "fusion · starting…".into();
+        let cancel = CancellationToken::new();
+        self.cancel = Some(cancel.clone());
+        crate::agent::fusion::spawn_fusion(
+            self.client.clone(),
+            self.cfg.provider.clone(),
+            self.cfg.model.clone(),
+            self.cfg.fusion_panel.clone(),
+            question.to_string(),
+            session,
+            usage,
+            self.tx.clone(),
+            cancel,
+        );
+    }
+
+    // ── /local — managed local models (llama.cpp + GGUF) ────────────────
+    fn cmd_local(&mut self, arg: &str) {
+        let mut it = arg.trim().splitn(2, char::is_whitespace);
+        let sub = it.next().unwrap_or("").to_ascii_lowercase();
+        let rest = it.next().unwrap_or("").trim();
+        match sub.as_str() {
+            "" | "status" => self.push_note(Tone::Neutral, crate::local::status_report()),
+            "models" => self.push_note(Tone::Neutral, crate::local::models_report()),
+            "down" | "stop" => self.push_note(Tone::Neutral, crate::local::stop_report()),
+            "up" => {
+                let mut args = vec!["local".to_string(), "up".to_string()];
+                if !rest.is_empty() {
+                    args.push(rest.to_string());
+                }
+                self.launch_console(args);
+            }
+            _ => self.push_error(
+                "usage: /local [status | models | up [tier|url] | down]".into(),
+            ),
+        }
+    }
+
+    // ── /bench — benchmark models on your tasks ─────────────────────────
+    fn cmd_bench(&mut self, arg: &str) {
+        let mut it = arg.trim().splitn(2, char::is_whitespace);
+        let sub = it.next().unwrap_or("").to_ascii_lowercase();
+        let rest = it.next().unwrap_or("").trim();
+        match sub.as_str() {
+            "" | "list" => self.push_note(Tone::Neutral, crate::bench::list_report()),
+            "add" => {
+                let mut p = rest.splitn(2, char::is_whitespace);
+                let name = p.next().unwrap_or("").trim();
+                let prompt = p.next().unwrap_or("").trim();
+                if name.is_empty() || prompt.is_empty() {
+                    self.push_error(
+                        "usage: /bench add <name> <prompt>   (add a pass/fail gate via CLI: nur bench add <name> \"...\" --check \"cargo test\")"
+                            .into(),
+                    );
+                } else {
+                    match crate::bench::add_task(name, prompt, None) {
+                        Ok(m) => self.push_note(Tone::Neutral, m),
+                        Err(e) => self.push_error(format!("bench add: {e}")),
+                    }
+                }
+            }
+            "remove" | "rm" => {
+                if rest.is_empty() {
+                    self.push_error("usage: /bench remove <name>".into());
+                } else {
+                    self.push_note(Tone::Neutral, crate::bench::remove_report(rest));
+                }
+            }
+            "run" => {
+                let mut p = rest.splitn(2, char::is_whitespace);
+                let name = p.next().unwrap_or("").trim();
+                if name.is_empty() {
+                    self.push_error("usage: /bench run <name|all> [model,model]".into());
+                    return;
+                }
+                let mut args = vec!["bench".to_string(), "run".to_string(), name.to_string()];
+                if let Some(models) = p.next().map(str::trim).filter(|s| !s.is_empty()) {
+                    args.push("--models".to_string());
+                    args.push(models.to_string());
+                }
+                self.launch_console(args);
+            }
+            _ => self.push_error(
+                "usage: /bench [list | add <name> <prompt> | remove <name> | run <name> [models]]"
+                    .into(),
+            ),
+        }
+    }
+
+    /// Launch `nur <args>` in a new console window (long jobs) + note it.
+    fn launch_console(&mut self, args: Vec<String>) {
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                self.push_error(format!("cannot locate the nur executable: {e}"));
+                return;
+            }
+        };
+        match spawn_console(&exe, &args) {
+            Ok(()) => self.push_note(
+                Tone::Neutral,
+                format!(
+                    "launched `nur {}` in a new window — watch progress there",
+                    args.join(" ")
+                ),
+            ),
+            Err(e) => self.push_error(format!("could not launch `nur {}`: {e}", args.join(" "))),
         }
     }
 

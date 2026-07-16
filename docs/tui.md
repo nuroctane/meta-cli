@@ -163,6 +163,9 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/btw` | One-off note for the next message only |
 | `/codesearch` `/cs` | Fast workspace ripgrep |
 | `/mc` `/mcp` | MCP servers via the Executor gateway |
+| `/fusion` | Multi-model debate → one synthesized answer. `/fusion panel <ids>` sets the panel, `/fusion <question>` asks it, `/fusion off` clears |
+| `/local` | Managed local model (bundled llama.cpp): `/local up [tier\|url]`, `status`, `models`, `down` |
+| `/bench` | Benchmark models on your tasks: `/bench add\|list\|run <name> [models]\|remove` |
 | `/feedback` | File a GitHub issue (`gh` or browser) |
 | `/tips` | Mouse + keyboard interaction tips (lean banner counterpart) |
 | `/bug` | Open GitHub issues page (report a bug) |

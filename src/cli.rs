@@ -48,6 +48,16 @@ pub struct Cli {
     #[arg(long)]
     pub max_turns: Option<u32>,
 
+    /// Continuous/sovereign mode: run headless turns toward the prompt as a goal,
+    /// looping until the model replies DONE, Ctrl+C, or --max-iters. Auto-approves
+    /// tools (sandboxed). Example: nur "keep the tests green" --continuous
+    #[arg(long)]
+    pub continuous: bool,
+
+    /// Continuous mode: stop after N iterations (0 = unlimited).
+    #[arg(long, default_value_t = 0)]
+    pub max_iters: u32,
+
     /// Verbose tool logging (headless)
     #[arg(long, short, global = true)]
     pub verbose: bool,
@@ -112,6 +122,70 @@ pub enum Commands {
     Plugins {
         #[command(subcommand)]
         action: Option<PluginsCmd>,
+    },
+    /// Run headless as a Telegram bot — each message is an agent turn in this project
+    Gateway {
+        /// Bot token (else $TELEGRAM_BOT_TOKEN)
+        #[arg(long)]
+        token: Option<String>,
+        /// Restrict to a single chat id (else $TELEGRAM_CHAT_ID; unset = allow anyone)
+        #[arg(long)]
+        chat: Option<i64>,
+    },
+    /// Managed local models — bundle llama.cpp + run a GGUF locally (no API key)
+    Local {
+        #[command(subcommand)]
+        action: LocalCmd,
+    },
+    /// Benchmark models on your own tasks (record trajectories, replay + score)
+    Bench {
+        #[command(subcommand)]
+        action: BenchCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LocalCmd {
+    /// Fetch llama.cpp + a GGUF sized to this machine, then start the local server
+    Up {
+        /// Tier (small|medium|large) or a direct .gguf URL. Default: sized to RAM.
+        model: Option<String>,
+    },
+    /// Stop the managed llama-server
+    Down,
+    /// Show managed-local status (server · model · llama.cpp)
+    Status,
+    /// List the built-in model tiers
+    Models,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum BenchCmd {
+    /// Record a task: nur bench add <name> "<prompt>" [--check "<cmd>"]
+    Add {
+        /// Short task name
+        name: String,
+        /// The task prompt (quote it)
+        #[arg(required = true)]
+        prompt: Vec<String>,
+        /// Shell check deciding pass/fail (exit 0 = pass), run in the worktree after the task
+        #[arg(long)]
+        check: Option<String>,
+    },
+    /// List recorded tasks
+    List,
+    /// Remove a recorded task
+    Remove {
+        /// Task name
+        name: String,
+    },
+    /// Replay a task across models in isolated git worktrees and score them
+    Run {
+        /// Task name (or "all")
+        name: String,
+        /// Models to compare (comma-separated); default = the active model
+        #[arg(long)]
+        models: Option<String>,
     },
 }
 

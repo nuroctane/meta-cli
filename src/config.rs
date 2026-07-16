@@ -105,6 +105,13 @@ pub struct Config {
     /// picker; overrides the built-in default.
     #[serde(default)]
     pub provider_privacy: std::collections::HashMap<String, String>,
+    /// Opt-in `/fusion` panel: catalog provider ids polled alongside the active
+    /// model. `/fusion <question>` asks the active model + each of these the same
+    /// question, then the active model synthesizes one answer. Empty = off.
+    /// Each panel provider uses its own key (env var or a key saved via the
+    /// picker). See `crate::api::fusion`.
+    #[serde(default)]
+    pub fusion_panel: Vec<String>,
 }
 
 fn default_model() -> String {
@@ -190,6 +197,7 @@ impl Default for Config {
             fallback_providers: Vec::new(),
             failover_allow_downgrade: false,
             provider_privacy: std::collections::HashMap::new(),
+            fusion_panel: Vec::new(),
         }
     }
 }

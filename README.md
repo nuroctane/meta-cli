@@ -199,6 +199,11 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 - `/model` opens a live model list for the active provider (or `/model <id>` to set one directly)
 - `/plugins` marketplace picker (same UX as `/login`): install Superpowers, Vercel, Firecrawl, Chrome DevTools, **Fable**, and more into `~/.nur/plugins`
 - **Natural-language skill activation**: plain phrases inject the skill body for the turn (Fable, TDD, systematic debugging, design-eng, resume-*, Excalidraw, …). Status chip confirms activation. [Docs](https://nuroctane.github.io/nur-cli/ecosystem/#natural-language-skill-activation)
+- **`/fusion`** — multi-model debate → one synthesized answer (panel of providers, active model judges)
+- **`--continuous`** — sovereign/autonomous mode: loop headless turns toward a goal until `DONE` or Ctrl+C
+- **`/local`** — run a model locally with **bundled llama.cpp** (auto-fetch `llama-server` + a GGUF sized to your RAM); no API key
+- **`/bench`** — benchmark models on your own tasks, replayed in isolated git worktrees and scored
+- **`nur gateway`** — run headless as a Telegram bot; each message is an agent turn in your project
 
 ### Tools (native)
 
@@ -326,6 +331,9 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/cd` `/pwd` `/doctor` `/status` | Workspace + health |
 | `/sessions` `/resume` | Session browser |
 | `/failover` | Cross-provider failover + privacy tiers (provider-picker; Space adds a fallback, Alt+P sets its privacy tier) |
+| `/fusion` | Multi-model debate → one synthesized answer (`/fusion panel <ids>`, then `/fusion <question>`) |
+| `/local` | Run a model locally via bundled llama.cpp: `/local up [tier\|url]` · `status` · `models` · `down` |
+| `/bench` | Benchmark models on your tasks: `/bench add\|list\|run <name> [models]\|remove` |
 | `/undo` | Revert the last file edit (write / edit / multi_edit) this session |
 | `/receipt` | Session receipt — verify what actually ran (models, tools, privacy tiers), hash-chained |
 | `/cua` | Computer-use desktop driver: `/cua on` = always-on background desktop control (elevated), `off` = on-demand only, `status` |
