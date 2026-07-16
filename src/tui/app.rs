@@ -125,6 +125,10 @@ pub enum Cell {
     /// System notice. `tone` picks the colour + glyph so a mode switch, a plan,
     /// a todo update and a usage dump don't all read as the same blue blob.
     Info { text: String, tone: Tone },
+    /// A follow-up the user typed while a turn was running. Shown in the
+    /// transcript with clickable **send now** / **dismiss** so it can interject
+    /// into context without retyping.
+    Queued { text: String },
     Error(String),
 }
 
@@ -242,6 +246,14 @@ impl Cell {
                 started,
                 ..
             } => {
+                // write/edit tools: full path + content/diff in the peek (not the
+                // short approval preview), so click-to-peek is useful for review.
+                if matches!(
+                    name.as_str(),
+                    "write_file" | "edit_file" | "multi_edit" | "apply_patch"
+                ) {
+                    return Some(super::ui::tool_file_peek_body(name, args, result.as_deref()));
+                }
                 let mut s = String::new();
                 s.push_str(&format!("tool: {name}\n"));
                 s.push_str(&format!("args: {args}\n"));
@@ -303,7 +315,7 @@ pub struct CtxMenu {
     /// menu's lifetime so wheeling through options doesn't drift the box.
     pub anchor: (u16, u16),
     /// Coalesce trackpad/OS wheel floods so one notch moves **one** row
-    /// (Fork → Revert → Copy) instead of jumping over Revert.
+    /// (Fork → Edit → Revert → Copy) instead of jumping over Revert.
     pub last_step_at: Instant,
 }
 
@@ -312,6 +324,7 @@ pub struct CtxMenu {
 /// the action it shows.
 pub const CTX_ACTIONS: &[(&str, &str)] = &[
     ("⑂", "Fork"),   // branch: a new session seeded up to this prompt
+    ("✎", "Edit"),   // load prompt into input (no rewind) — send interjects as a new turn
     ("↺", "Revert"), // rewind this session to just before this prompt
     ("⧉", "Copy"),   // copy the prompt text
 ];
@@ -1119,6 +1132,10 @@ pub struct App {
     /// Absolute line → (`cell_idx`, display_col_start, display_col_end) for the
     /// exact `"click to peek"` text span. Only this hitbox opens the dialogue.
     pub hit_click_to_peek: Vec<Option<(usize, usize, usize)>>,
+    /// Hitboxes for queued follow-up actions on each wrapped line.
+    /// Entries: (cell_idx, col_lo, col_hi, action) where action 0 = send now, 1 = dismiss.
+    /// Multiple actions can share a line (send now + dismiss).
+    pub hit_queue_actions: Vec<Vec<(usize, usize, usize, u8)>>,
     /// Absolute line → clickable `http(s)://` spans `(col_lo, col_hi, url)`.
     pub hit_urls: Vec<Vec<(usize, usize, String)>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
@@ -1145,6 +1162,9 @@ pub struct App {
 
     pub input: InputState,
     pub queue: VecDeque<String>,
+    /// When true, a cancel (send-now interject) keeps the queue so the follow-up
+    /// can start immediately after the interrupted turn ends.
+    preserve_queue_on_interrupt: bool,
 
     pub busy: bool,
     /// True after Esc/Ctrl+C until Done arrives — spinners show "cancelling…".
@@ -1355,6 +1375,7 @@ pub async fn run_tui(
         line_cells: Vec::new(),
         line_cell_all: Vec::new(),
         hit_click_to_peek: Vec::new(),
+        hit_queue_actions: Vec::new(),
         hit_urls: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
@@ -1369,6 +1390,7 @@ pub async fn run_tui(
         mouse_row: 0,
         input: InputState::new(),
         queue: VecDeque::new(),
+        preserve_queue_on_interrupt: false,
         busy: false,
         cancelling: false,
         turn_kind: TurnMode::Chat,
@@ -2007,14 +2029,29 @@ impl App {
 
     fn ctx_confirm(&mut self) {
         let sel = self.ctx_menu.as_ref().map(|m| m.selected).unwrap_or(0);
-        // Index order must match CTX_ACTIONS: 0 Fork · 1 Revert · 2 Copy.
+        // Index order must match CTX_ACTIONS: 0 Fork · 1 Edit · 2 Revert · 3 Copy.
         match sel {
             0 => self.ctx_fork(),
-            1 => self.ctx_revert(),
-            2 => self.ctx_copy(),
+            1 => self.ctx_edit(),
+            2 => self.ctx_revert(),
+            3 => self.ctx_copy(),
             _ => {}
         }
         self.close_ctx_menu();
+    }
+
+    /// Edit: load the prompt into the input **without** rewinding history.
+    /// Send interjects as a new user turn (full prior context stays in session).
+    fn ctx_edit(&mut self) {
+        let Some((prompt, _)) = self.ctx_prompt() else { return };
+        self.input.set_text(&prompt);
+        self.ensure_input_caret_visible();
+        self.input_scroll_top = 0;
+        self.push_note(
+            Tone::Neutral,
+            "edit — prompt loaded in input · send to interject as a new turn (history kept)"
+                .into(),
+        );
     }
 
     /// The selected prompt's text plus its position counted **from the end** of
@@ -4689,10 +4726,71 @@ impl App {
         }
         if self.busy {
             self.queue.push_back(text.clone());
-            self.push_info(format!("queued ({} waiting)", self.queue.len()));
+            // Transcript row with clickable send now / dismiss (not just a note).
+            self.cells.push(Cell::Queued {
+                text: text.clone(),
+            });
+            self.scroll_to_bottom();
+            self.push_note(
+                Tone::Mode,
+                format!(
+                    "queued · {} waiting · click send now to interject next (or after cancel)",
+                    self.queue.len()
+                ),
+            );
             return;
         }
         self.start_turn(&text);
+    }
+
+    /// Send a queued follow-up now: pull it out of the queue, drop its card, and
+    /// either start a turn (idle) or interrupt + queue front (busy) so it
+    /// becomes the next message with full prior context.
+    fn queue_send_now(&mut self, cell_idx: usize) {
+        let text = match self.cells.get(cell_idx) {
+            Some(Cell::Queued { text }) => text.clone(),
+            _ => return,
+        };
+        // Remove this occurrence from the queue (first match).
+        if let Some(i) = self.queue.iter().position(|t| t == &text) {
+            self.queue.remove(i);
+        }
+        // Drop the Queued card from the transcript.
+        if cell_idx < self.cells.len() {
+            self.cells.remove(cell_idx);
+        }
+        if self.busy {
+            // Interrupt current turn; keep this follow-up at the front so Done
+            // starts it next (full session context already on disk).
+            self.queue.push_front(text.clone());
+            self.preserve_queue_on_interrupt = true;
+            self.interrupt();
+            self.push_note(
+                Tone::Mode,
+                "send now — cancelling current turn; this follow-up goes next with full context"
+                    .into(),
+            );
+        } else {
+            self.start_turn(&text);
+        }
+    }
+
+    /// Drop a queued follow-up without sending.
+    fn queue_dismiss(&mut self, cell_idx: usize) {
+        let text = match self.cells.get(cell_idx) {
+            Some(Cell::Queued { text }) => text.clone(),
+            _ => return,
+        };
+        if let Some(i) = self.queue.iter().position(|t| t == &text) {
+            self.queue.remove(i);
+        }
+        if cell_idx < self.cells.len() {
+            self.cells.remove(cell_idx);
+        }
+        self.push_note(
+            Tone::Neutral,
+            format!("dismissed follow-up · {} still queued", self.queue.len()),
+        );
     }
 
     fn start_turn(&mut self, prompt: &str) {
@@ -5058,11 +5156,23 @@ impl App {
                     }
                 }
                 self.turn_kind = TurnMode::Chat;
-                // Drop queued prompts after cancel so we don't surprise-run them.
-                if interrupted {
+                // Drop queued prompts after cancel so we don't surprise-run them —
+                // unless send-now asked to preserve the queue for interjection.
+                if interrupted && !self.preserve_queue_on_interrupt {
                     self.queue.clear();
+                    self.cells
+                        .retain(|c| !matches!(c, Cell::Queued { .. }));
                 } else if let Some(next) = self.queue.pop_front() {
+                    self.preserve_queue_on_interrupt = false;
+                    // Drop matching Queued cards for this text.
+                    let next_clone = next.clone();
+                    self.cells.retain(|c| match c {
+                        Cell::Queued { text } => text != &next_clone,
+                        _ => true,
+                    });
                     self.submit_text(&next);
+                } else {
+                    self.preserve_queue_on_interrupt = false;
                 }
             }
         }
@@ -5144,6 +5254,20 @@ impl App {
         // body.x already includes the 1-col left margin from draw_transcript.
         let local_x = col.saturating_sub(body.x) as usize;
         let line_idx = self.transcript_top as usize + local_y;
+
+        // Queued follow-up: send now / dismiss (both may sit on the same line).
+        if let Some(actions) = self.hit_queue_actions.get(line_idx) {
+            for (cell_idx, lo, hi, action) in actions {
+                if local_x >= *lo && local_x < *hi {
+                    match action {
+                        0 => self.queue_send_now(*cell_idx),
+                        1 => self.queue_dismiss(*cell_idx),
+                        _ => {}
+                    }
+                    return;
+                }
+            }
+        }
 
         // Prefer opening URLs over expand/peek when the pointer is on a link.
         if let Some(spans) = self.hit_urls.get(line_idx) {
@@ -5700,6 +5824,8 @@ fn cells_to_ui_log(cells: &[Cell]) -> Vec<crate::agent::session::UiLogItem> {
                 thought_ms: None,
                 interrupted: false,
             }),
+            // Ephemeral — only meaningful while a turn is running.
+            Cell::Queued { .. } => {}
             Cell::Error(text) => out.push(UiLogItem {
                 kind: "error".into(),
                 text: text.clone(),
@@ -5997,10 +6123,10 @@ mod tests {
     fn ctx_action_indices_match_labels() {
         // The confirm handler switches on these indices; keep them pinned.
         assert_eq!(CTX_ACTIONS[0].1, "Fork");
-        assert_eq!(CTX_ACTIONS[1].1, "Revert");
-        assert_eq!(CTX_ACTIONS[2].1, "Copy");
-        // Three rows: wheel must be able to land on each (0/1/2), not skip 1.
-        assert_eq!(CTX_ACTIONS.len(), 3);
+        assert_eq!(CTX_ACTIONS[1].1, "Edit");
+        assert_eq!(CTX_ACTIONS[2].1, "Revert");
+        assert_eq!(CTX_ACTIONS[3].1, "Copy");
+        assert_eq!(CTX_ACTIONS.len(), 4);
     }
 
     /// Calls the same `decide_arrow_action` the App does — no mirrored logic,

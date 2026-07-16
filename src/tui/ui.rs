@@ -1315,6 +1315,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut line_cells: Vec<Option<usize>> = Vec::new();
     let mut line_cell_all: Vec<Option<usize>> = Vec::new();
     let mut hit_click_to_peek: Vec<Option<(usize, usize, usize)>> = Vec::new();
+    let mut hit_queue_actions: Vec<Vec<(usize, usize, usize, u8)>> = Vec::new();
     let mut hit_urls: Vec<Vec<(usize, usize, String)>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
 
@@ -1330,6 +1331,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 line_cells.push(None);
                 line_cell_all.push(None);
                 hit_click_to_peek.push(None);
+                hit_queue_actions.push(Vec::new());
                 hit_urls.push(Vec::new());
                 plain_lines.push(String::new());
             }
@@ -1386,6 +1388,20 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 None
             };
+            // Queued follow-up actions (send now + dismiss may share one line).
+            let mut qa: Vec<(usize, usize, usize, u8)> = Vec::new();
+            if matches!(cell, Cell::Queued { .. }) {
+                if let Some(byte_i) = plain.find("send now") {
+                    let start = plain[..byte_i].chars().count();
+                    let end = start + "send now".chars().count();
+                    qa.push((cell_idx, start, end, 0u8));
+                }
+                if let Some(byte_i) = plain.find("dismiss") {
+                    let start = plain[..byte_i].chars().count();
+                    let end = start + "dismiss".chars().count();
+                    qa.push((cell_idx, start, end, 1u8));
+                }
+            }
             // Clickable http(s) URLs on this visual line (after wrap).
             let urls = crate::open_uri::find_url_spans(&plain);
             plain_lines.push(plain);
@@ -1402,6 +1418,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             });
             line_cell_all.push(if !empty { Some(cell_idx) } else { None });
             hit_click_to_peek.push(ctp);
+            hit_queue_actions.push(qa);
             hit_urls.push(urls);
         }
     }
@@ -1409,6 +1426,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     app.line_cells = line_cells;
     app.line_cell_all = line_cell_all;
     app.hit_click_to_peek = hit_click_to_peek;
+    app.hit_queue_actions = hit_queue_actions;
     app.hit_urls = hit_urls;
     app.plain_lines = plain_lines;
 
@@ -1963,8 +1981,10 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                 ));
             }
             if !*expanded {
+                // Always expose "click to peek" so write/edit cards open a
+                // full-content dialogue (hit-test looks for that exact phrase).
                 let extra = if diff.is_some() {
-                    "  ·  click ▸ for full diff".to_string()
+                    "  ·  click to peek · ▸ expands".to_string()
                 } else {
                     match result {
                         Some(r) => {
@@ -1981,7 +2001,7 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                 head_spans.push(Span::styled(extra, Style::default().fg(theme::FAINT)));
             } else {
                 head_spans.push(Span::styled(
-                    "  ·  click ▾ to collapse".to_string(),
+                    "  ·  click to peek · ▾ collapse".to_string(),
                     Style::default().fg(theme::FAINT),
                 ));
             }
@@ -2114,6 +2134,46 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                     Span::styled(l.to_string(), style),
                 ]));
             }
+        }
+        Cell::Queued { text } => {
+            out.push(Line::default());
+            let hue = theme::WARN;
+            // Preview (one line) so the card stays compact.
+            let preview: String = text.chars().take(72).collect();
+            let ellip = if text.chars().count() > 72 { "…" } else { "" };
+            out.push(Line::from(vec![
+                Span::styled(
+                    "⏳ ".to_string(),
+                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    "queued follow-up  ".to_string(),
+                    Style::default().fg(hue).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{preview}{ellip}"),
+                    theme::style_status(),
+                ),
+            ]));
+            out.push(Line::from(vec![
+                Span::raw("  ".to_string()),
+                Span::styled(
+                    "send now".to_string(),
+                    Style::default()
+                        .fg(theme::BG)
+                        .bg(theme::META_BLUE)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ·  ".to_string(), theme::style_faint()),
+                Span::styled(
+                    "dismiss".to_string(),
+                    Style::default().fg(theme::MUTED).add_modifier(Modifier::UNDERLINED),
+                ),
+                Span::styled(
+                    "  ·  interjects next with full context".to_string(),
+                    theme::style_faint(),
+                ),
+            ]));
         }
         Cell::Error(text) => {
             out.push(Line::default());
@@ -3520,12 +3580,74 @@ fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
             // tone as discriminant
             format!("{tone:?}").hash(&mut h);
         }
+        Cell::Queued { text } => {
+            9u8.hash(&mut h);
+            text.hash(&mut h);
+        }
         Cell::Error(t) => {
             8u8.hash(&mut h);
             t.hash(&mut h);
         }
     }
     h.finish()
+}
+
+/// Full write/edit content for the peek dialogue (not the short card preview).
+pub fn tool_file_peek_body(name: &str, args: &str, result: Option<&str>) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(args) else {
+        return format!("tool: {name}\nargs: {args}\n---\n{}", result.unwrap_or(""));
+    };
+    let mut s = String::new();
+    s.push_str(&format!("tool: {name}\n"));
+    match name {
+        "write_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let content = v.get("content").and_then(|x| x.as_str()).unwrap_or("");
+            let n = content.lines().count();
+            s.push_str(&format!("path: {path}\nlines: {n}\n---\n"));
+            s.push_str(content);
+            if !content.ends_with('\n') {
+                s.push('\n');
+            }
+        }
+        "edit_file" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            let old = v.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+            let new = v.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+            s.push_str(&format!("path: {path}\n--- old ---\n{old}\n--- new ---\n{new}\n"));
+        }
+        "multi_edit" => {
+            let path = v.get("path").and_then(|x| x.as_str()).unwrap_or("?");
+            s.push_str(&format!("path: {path}\n"));
+            if let Some(edits) = v.get("edits").and_then(|e| e.as_array()) {
+                s.push_str(&format!("edits: {}\n", edits.len()));
+                for (i, e) in edits.iter().enumerate() {
+                    let old = e.get("old_string").and_then(|x| x.as_str()).unwrap_or("");
+                    let new = e.get("new_string").and_then(|x| x.as_str()).unwrap_or("");
+                    s.push_str(&format!("\n── edit {} ──\n- old:\n{old}\n+ new:\n{new}\n", i + 1));
+                }
+            }
+        }
+        "apply_patch" => {
+            let patch = v
+                .get("patch")
+                .or_else(|| v.get("input"))
+                .and_then(|x| x.as_str())
+                .unwrap_or(args);
+            s.push_str("---\n");
+            s.push_str(patch);
+        }
+        _ => {
+            s.push_str(&format!("args: {args}\n"));
+        }
+    }
+    if let Some(r) = result {
+        if !r.trim().is_empty() {
+            s.push_str("\n--- result ---\n");
+            s.push_str(r);
+        }
+    }
+    s
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────

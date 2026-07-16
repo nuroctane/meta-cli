@@ -444,7 +444,7 @@ impl App {
             ("drag text", "select transcript + auto-copy"),
             ("click ↓ End", "jump to latest"),
             ("click card  ·  ▸", "peek  ·  expand"),
-            ("right/2×-click prompt", "menu: fork · revert · copy"),
+            ("right/2×-click prompt", "menu: fork · edit · revert · copy"),
             ("Ctrl+A", "select all (input, or transcript if empty)"),
             ("Ctrl+C", "copy selection  ·  else cancel / double-tap quit"),
             ("Ctrl+V  ·  Ctrl+X", "paste (chips big blobs)  ·  cut"),
@@ -1490,7 +1490,7 @@ impl App {
              drag the scrollbar   scrub history (right edge)\n  \
              click a card  ·  ▸   peek  ·  expand\n  \
              click http(s) link   open in your default browser\n  \
-             right/2×-click prompt  fork · revert · copy\n  \
+             right/2×-click prompt  fork · edit · revert · copy\n  \
              ↓ End                jump to latest\n  \
              Shift+Tab            cycle manual → plan → auto\n  \
              Ctrl+A/C/V/X         select-all · copy · paste · cut\n  \
