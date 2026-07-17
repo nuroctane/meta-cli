@@ -166,6 +166,7 @@ impl App {
             "/login" => self.open_login(),
             "/logout" => self.cmd_logout(),
             "/goal" => self.cmd_goal(&arg),
+            "/bro" => self.cmd_bro(&arg),
             "/btw" => self.cmd_btw(&arg),
             "/codesearch" | "/cs" => self.cmd_codesearch(&arg),
             "/feedback" => self.cmd_feedback(&arg),
@@ -1105,11 +1106,12 @@ impl App {
             0.0
         };
         let auth = if self.authed { "signed in" } else { "no key — /login" };
+        let bro = if self.bro { "\n  bro      on · chill delivery" } else { "" };
         self.push_note(
             Tone::Session,
             format!(
                 "status\n  version  nur v{}\n  model    {}  · effort {}\n  mode     {}  ({})\n  \
-                 session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ${:.4}",
+                 session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ${:.4}{bro}",
                 env!("CARGO_PKG_VERSION"),
                 self.cfg.model,
                 self.cfg.reasoning_effort,
@@ -1349,6 +1351,25 @@ impl App {
                     format!("goal set · {arg}\n  every turn now carries this as context"),
                 );
             }
+        }
+    }
+
+    /// Toggle chill mode: every turn carries the `BRO_STYLE` rider so replies
+    /// come back in plain, low-jargon language. `on`/`off` force a state.
+    fn cmd_bro(&mut self, arg: &str) {
+        self.bro = match arg.trim().to_lowercase().as_str() {
+            "on" | "yes" | "1" => true,
+            "off" | "no" | "0" => false,
+            _ => !self.bro,
+        };
+        if self.bro {
+            self.push_note(
+                Tone::Mode,
+                "bro mode on · plain words, straight answers — same facts, chill delivery\n  \
+                 /bro again (or /bro off) to switch back".into(),
+            );
+        } else {
+            self.push_note(Tone::Mode, "bro mode off · back to normal".into());
         }
     }
 

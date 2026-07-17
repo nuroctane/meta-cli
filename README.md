@@ -1,4 +1,4 @@
-# NurCLI
+# [NurCLI](https://www.nuroctane.xyz/cli)
 
 <div align="center">
 
@@ -154,15 +154,15 @@ Older builds may still have data under `~/.meta` or `~/.muse`. On first run NurC
 
 Graphify · PLUR · Ruflo · Executor · omp · agent-browser-cli · skill packs. Installed when Node/uv/Bun are available.
 
-Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** · [docs/setup.md](./docs/setup.md)
+Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](./docs/setup.md)
 
 ---
 
-**v0.13.4**: Natural-language skill activation · Fable + Superpowers phrases · full skill mirror · NUR_* host-panel envs · plugins. **[Docs](https://nuroctane.github.io/nur-cli/)**
+**v0.13.4**: Natural-language skill activation · Fable + Superpowers phrases · full skill mirror · NUR_* host-panel envs · plugins. **[Docs](https://www.nuroctane.xyz/cli)**
 
 | Surface | What ships |
 |---------|------------|
-| **TUI** | Streaming · duration chips · thought/tool cards · peek · drag-select · scrollbar · sessions · multi-provider `/login` · **`/model` picker** · **`/plugins` marketplace** · `/goal` `/btw` `/codesearch` `/mc` `/feedback` `/tips` · budgets · doctor |
+| **TUI** | Streaming · duration chips · thought/tool cards · peek · drag-select · scrollbar · sessions · multi-provider `/login` · **`/model` picker** · **`/plugins` marketplace** · `/goal` `/bro` `/btw` `/codesearch` `/mc` `/feedback` `/tips` · budgets · doctor |
 | **Agent** | Manual / plan / auto · tools · subagents · todos · auto-compact · session $ / token budgets · Esc cancel · Shift+Tab mid-turn · **NL skill auto-activation** |
 | **Vision** | `look` · `extract_frames` · prompt auto-attach of media paths |
 | **Tools** | read · edit · bash · web · **browser** · git · knowledge · agent · **excalidraw** |
@@ -200,7 +200,7 @@ Docs: **[nuroctane.github.io/nur-cli](https://nuroctane.github.io/nur-cli/)** ·
 - Session resume: `-c`, `-r`, `/sessions`
 - `/model` opens a live model list for the active provider (or `/model <id>` to set one directly)
 - `/plugins` marketplace picker (same UX as `/login`): install Superpowers, Vercel, Firecrawl, Chrome DevTools, **Fable**, and more into `~/.nur/plugins`
-- **Natural-language skill activation**: plain phrases inject the skill body for the turn (Fable, TDD, systematic debugging, design-eng, resume-*, Excalidraw, …). Status chip confirms activation. [Docs](https://nuroctane.github.io/nur-cli/ecosystem/#natural-language-skill-activation)
+- **Natural-language skill activation**: plain phrases inject the skill body for the turn (Fable, TDD, systematic debugging, design-eng, resume-*, Excalidraw, …). Status chip confirms activation. [Docs](https://www.nuroctane.xyz/cli/ecosystem/#natural-language-skill-activation)
 - **`/fusion`** — multi-model debate → one synthesized answer (panel of providers, active model judges)
 - **`--continuous`** — sovereign/autonomous mode: loop headless turns toward a goal until `DONE` or Ctrl+C
 - **`/local`** — run a model locally with **bundled llama.cpp** (auto-fetch `llama-server` + a GGUF sized to your RAM); no API key
@@ -326,6 +326,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/model` | Show and switch models for the active provider |
 | `/plugins` | Browse and install marketplace plugins (provider-picker UX) |
 | `/goal` `/btw` | Session goal / one-off note |
+| `/bro` | Chill mode: plain words, straight answers (toggle) |
 | `/codesearch` `/cs` | Workspace ripgrep |
 | `/mc` `/mcp` | MCP via Executor |
 | `/feedback` `/tips` | Issue / interaction tips |

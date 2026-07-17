@@ -160,6 +160,7 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/login` | Multi-provider sign-in (see below) |
 | `/logout` | Clear stored API key |
 | `/goal` | Standing session goal (see below) |
+| `/bro` | Chill mode: plain words, no jargon, no preamble — toggle (see below) |
 | `/btw` | One-off note for the next message only |
 | `/codesearch` `/cs` | Fast workspace ripgrep |
 | `/mc` `/mcp` | MCP servers via the Executor gateway |
@@ -189,6 +190,7 @@ Full detail: [Authentication](authentication.md).
 | `/goal` | Show the current goal |
 | `/goal clear` | Drop the goal (`none` / `off` also work) |
 | `/btw <note>` | Queues a one-off note that rides along with your **next** message only (stackable) |
+| `/bro` | Toggle chill mode: every turn asks for plain, low-jargon, no-preamble replies. `/bro on` / `/bro off` force a state. Tone only — facts, caveats, and bad news stay complete and accurate. `/status` shows when it's on. |
 
 ### Code search
 

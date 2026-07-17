@@ -37,6 +37,41 @@ use tokio_util::sync::CancellationToken;
 // this file stays focused on state, rendering hooks, and the event loop.
 mod commands;
 
+/// `/bro` style rider, prepended to every turn while chill mode is on.
+/// Mirrors `skills/bro/SKILL.md`, but phrased as a standing style rather than a
+/// one-shot restate. Tone only — it must never soften what is actually true.
+pub const BRO_STYLE: &str = "[style] Talk like a friend who knows this stuff, \
+not like documentation. Plain words, no jargon — if a technical term is \
+unavoidable, say what it means in passing. Skip the preamble and the hedging; \
+lead with the answer, then explain if it needs it. Short sentences. Contractions \
+are fine. Being chill is about tone, not substance: keep every fact, caveat, and \
+piece of bad news exactly as accurate and complete as it would be otherwise. \
+Never soften a real problem or pad an answer to sound friendly.";
+
+/// Assemble the prompt the model actually receives: optional style rider,
+/// standing goal, and one-off notes prepended to the user's plain prompt (which
+/// is all the transcript shows). Pure so the ordering can be unit-tested.
+pub fn compose_turn_prompt(
+    bro: bool,
+    goal: Option<&str>,
+    notes: &[String],
+    prompt: &str,
+) -> String {
+    let mut out = String::new();
+    if bro {
+        out.push_str(BRO_STYLE);
+        out.push_str("\n\n");
+    }
+    if let Some(g) = goal {
+        out.push_str(&format!("[session goal] {g}\n\n"));
+    }
+    for note in notes {
+        out.push_str(&format!("[note] {note}\n\n"));
+    }
+    out.push_str(prompt);
+    out
+}
+
 pub const COMMANDS: &[(&str, &str)] = &[
     ("/help", "commands + keyboard shortcuts"),
     ("/commands", "commands + keyboard shortcuts"),
@@ -79,6 +114,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/resume", "browse & open past sessions  (same as /sessions)"),
     ("/init", "generate a NUR.md project guide"),
     ("/goal", "set a standing session goal (context on every turn)"),
+    ("/bro", "chill mode: plain words, no jargon, no preamble (toggle)"),
     ("/btw", "add a one-off note to your next message"),
     ("/codesearch", "fast ripgrep over the workspace  (/cs)"),
     ("/mc", "manage MCP servers via the executor gateway  (/mcp)"),
@@ -1076,6 +1112,8 @@ pub struct App {
     /// Standing session goal (`/goal`), prepended to every model turn as context
     /// without appearing in the transcript. Cleared with `/goal clear`.
     session_goal: Option<String>,
+    /// `/bro` — restate everything in plain, low-jargon language for this session.
+    bro: bool,
     /// One-off side notes (`/btw`) folded into the next turn only.
     pending_btw: Vec<String>,
     /// Transcript body area (excluding sticky banner) for scrollbar hit-testing.
@@ -1349,6 +1387,7 @@ pub async fn run_tui(
         last_raw_len: 0,
         last_raw_text: String::new(),
         session_goal: None,
+        bro: false,
         pending_btw: Vec::new(),
         transcript_body: ratatui::layout::Rect::default(),
         scrollbar_track: ratatui::layout::Rect::default(),
@@ -4791,14 +4830,13 @@ impl App {
         let runner = Arc::new(self.make_runner());
         // The model sees the standing goal + any one-off `/btw` notes prepended
         // as context; the transcript above shows only the plain prompt.
-        let mut effective = String::new();
-        if let Some(g) = &self.session_goal {
-            effective.push_str(&format!("[session goal] {g}\n\n"));
-        }
-        for note in self.pending_btw.drain(..) {
-            effective.push_str(&format!("[note] {note}\n\n"));
-        }
-        effective.push_str(prompt);
+        let notes: Vec<String> = self.pending_btw.drain(..).collect();
+        let effective = compose_turn_prompt(
+            self.bro,
+            self.session_goal.as_deref(),
+            &notes,
+            prompt,
+        );
         agent::spawn_turn(
             runner,
             *session,
@@ -5985,6 +6023,28 @@ fn extract_reasoning_summary(it: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::tui::input::InputState;
+
+    #[test]
+    fn bro_rider_leads_the_prompt_and_is_opt_in() {
+        // Off by default: the model sees only the plain prompt.
+        let plain = compose_turn_prompt(false, None, &[], "fix the bug");
+        assert_eq!(plain, "fix the bug");
+
+        // On: the style rider is prepended, ahead of goal and notes, and the
+        // user's actual words still come last.
+        let notes = vec!["watch the auth path".to_string()];
+        let composed =
+            compose_turn_prompt(true, Some("ship v1"), &notes, "fix the bug");
+        assert!(composed.starts_with(BRO_STYLE), "rider must lead");
+        let bro_at = composed.find(BRO_STYLE).unwrap();
+        let goal_at = composed.find("[session goal] ship v1").unwrap();
+        let note_at = composed.find("[note] watch the auth path").unwrap();
+        let prompt_at = composed.find("fix the bug").unwrap();
+        assert!(bro_at < goal_at && goal_at < note_at && note_at < prompt_at);
+
+        // The rider is tone-only: it must not license softening the facts.
+        assert!(BRO_STYLE.contains("never soften") || BRO_STYLE.contains("Never soften"));
+    }
 
     fn sess_with_turns(prompts: &[&str]) -> crate::agent::Session {
         let mut s = crate::agent::Session::new("m", "/tmp");
