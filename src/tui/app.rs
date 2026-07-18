@@ -2258,6 +2258,7 @@ impl App {
             self.cfg.model.clone(),
             self.cwd.clone(),
         );
+        usage.set_provider(self.cfg.provider.clone());
         usage.seed_session(forked.usage.clone());
         self.session = Some(Box::new(forked));
         self.usage = Some(Box::new(usage));
@@ -3891,12 +3892,14 @@ impl App {
             id.to_string()
         };
         self.cfg.model = id.clone();
+        crate::pricing::maybe_apply_context_window(&mut self.cfg);
         let _ = crate::config::save_config(&self.cfg);
         if let Some(s) = &mut self.session {
             s.model = id.clone();
         }
         if let Some(u) = &mut self.usage {
             u.set_model(id.to_string());
+            u.set_provider(self.cfg.provider.clone());
         }
         self.push_info(format!("model → {id}"));
     }
@@ -4884,7 +4887,10 @@ impl App {
         }
         if let Some(u) = &mut self.usage {
             u.set_model(self.cfg.model.clone());
+            u.set_provider(self.cfg.provider.clone());
         }
+        // Soft-update context window from models.dev when still on the default.
+        crate::pricing::maybe_apply_context_window(&mut self.cfg);
 
         match crate::api::ApiClient::for_provider(&self.cfg.base_url, &bearer, provider.id)
             .map(|c| c.with_style(provider.style))

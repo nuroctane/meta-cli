@@ -496,11 +496,12 @@ impl App {
         }
         let session = Session::new(&self.cfg.model, &self.cwd.display().to_string());
         self.session_id = session.id.clone();
-        let usage = UsageTracker::new(
+        let mut usage = UsageTracker::new(
             session.id.clone(),
             self.cfg.model.clone(),
             self.cwd.clone(),
         );
+        usage.set_provider(self.cfg.provider.clone());
         self.session = Some(Box::new(session));
         self.usage = Some(Box::new(usage));
         self.u_session = TokenUsage::default();
@@ -566,19 +567,41 @@ impl App {
         } else {
             self.cfg.max_turns.to_string()
         };
+        let rates = self
+            .usage
+            .as_ref()
+            .map(|t| t.active_rates())
+            .unwrap_or_else(|| {
+                crate::pricing::rates_for(&self.cfg.provider, &self.cfg.model)
+            });
+        let cost_tag = if rates.is_estimate() {
+            "list-price estimate"
+        } else {
+            "reported"
+        };
         self.push_note(
             Tone::Usage,
             format!(
             "session usage\n  input    {} tok ({} cached)\n  output   {} tok ({} reasoning)\n  \
-             total    {} tok  (cap {tok_cap})\n  est cost ${:.4}  (cap {cost_cap})\n  \
+             total    {} tok  (cap {tok_cap})\n  cost     ~${:.4}  ({cost_tag}, cap {cost_cap})\n  \
+             rates    ${:.4}/M in · ${:.4}/M out · ${:.4}/M cache-read\n  \
+             source   {} · {}/{}\n  note     {}\n  \
              turns    per-prompt cap {turn_cap}\n  status   {}\n  \
-             optional ceilings: /budget  ·  prompt saver: /poor",
+             optional ceilings: /budget  ·  prompt saver: /poor\n  \
+             tip  ~$ is published list price × tokens — not your invoice",
             fmt_num(u.input_tokens),
             fmt_num(u.cached_tokens),
             fmt_num(u.output_tokens),
             fmt_num(u.reasoning_tokens),
             fmt_num(u.total_tokens),
             u.estimated_cost_usd(),
+            rates.input_per_mtok_usd,
+            rates.output_per_mtok_usd,
+            rates.cache_read_per_mtok_usd,
+            rates.source,
+            rates.provider_id,
+            rates.model_id,
+            rates.note,
             crate::config::status_path().display(),
         ));
     }
@@ -1011,7 +1034,7 @@ impl App {
                 Tone::Usage,
                 format!(
                     "budget (defaults unlimited)\n  \
-                     cost     {cost}  · spent ${used_c:.4}\n  \
+                     cost     {cost}  · spent ~${used_c:.4} (list-price est · see /usage)\n  \
                      tokens   {toks}  · used {}\n  \
                      turns    {turns}  · agent rounds per prompt\n  \
                      poor     {poor}  · prompt saver (/poor)\n  \
@@ -1248,7 +1271,10 @@ impl App {
             Tone::Usage,
             format!(
                 "context window\n  {bar}  {pct:.0}%\n  used     {} tok (last turn: {} in · {} out)\n  \
-                 window   {} tok\n  cached   {} tok\n  /compact frees context when this climbs",
+                 window   {} tok  ·  meter = last-turn tokens / configured window\n  \
+                 cached   {} tok  (prompt-cache hits when the API reports them)\n  \
+                 tip  window comes from models.dev when known, else config.toml context_window\n  \
+                 /compact frees context when this climbs",
                 fmt_num(used),
                 fmt_num(self.u_last.input_tokens),
                 fmt_num(self.u_last.output_tokens),
@@ -1273,7 +1299,7 @@ impl App {
             Tone::Session,
             format!(
                 "status\n  version  nur v{}\n  model    {}  · effort {}\n  mode     {}  ({})\n  \
-                 session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ${:.4}{bro}",
+                 session  {}\n  cwd      {}\n  auth     {}\n  tokens   {} session · ctx {ctx_pct:.0}%  · ~${:.4}{bro}",
                 env!("CARGO_PKG_VERSION"),
                 self.cfg.model,
                 self.cfg.reasoning_effort,
@@ -1443,6 +1469,7 @@ impl App {
                     self.cfg.model.clone(),
                     self.cwd.clone(),
                 );
+                tracker.set_provider(self.cfg.provider.clone());
                 tracker.seed_session(loaded.usage.clone());
                 self.u_session = loaded.usage.clone();
                 // Window title = first user prompt of the resumed session.

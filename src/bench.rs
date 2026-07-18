@@ -284,7 +284,8 @@ async fn run_one(
         is_subagent: false,
     });
     let session = Session::new(model, &wt_str);
-    let usage = UsageTracker::new(session.id.clone(), model.to_string(), wt.clone());
+    let mut usage = UsageTracker::new(session.id.clone(), model.to_string(), wt.clone());
+    usage.set_provider(cfg.provider.clone());
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let start = Instant::now();

@@ -38,8 +38,9 @@ pub fn model_display_name(model_id: &str) -> String {
         .join(" ")
 }
 
-/// Approximate Meta Model API list prices (USD per 1M tokens) for usage/cost display.
-/// Update when Meta publishes new rates: https://dev.meta.ai/docs/getting-started/pricing-rate-limits
+/// Fallback Meta Model API list prices (USD per 1M tokens) when models.dev has
+/// no match. Prefer `crate::pricing::rates_for` for live estimates.
+/// Meta rates: https://dev.meta.ai/docs/getting-started/pricing-rate-limits
 pub const PRICE_INPUT_PER_MTOK: f64 = 1.25;
 pub const PRICE_OUTPUT_PER_MTOK: f64 = 4.25;
 

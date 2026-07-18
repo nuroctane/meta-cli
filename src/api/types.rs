@@ -110,6 +110,8 @@ impl From<&ApiUsage> for TokenUsage {
                 .as_ref()
                 .map(|d| d.cached_tokens)
                 .unwrap_or(0),
+            cost_usd: 0.0,
+            cost_known: false,
         }
     }
 }

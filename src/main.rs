@@ -13,6 +13,7 @@ mod local;
 mod oauth;
 mod open_uri;
 mod plugins;
+mod pricing;
 mod providers;
 mod theme;
 mod tools;
@@ -231,6 +232,10 @@ async fn real_main() -> Result<()> {
         cfg.max_turns = t;
     }
 
+    // models.dev list prices → status-line $ estimates (background refresh).
+    pricing::spawn_catalog_refresh();
+    pricing::maybe_apply_context_window(&mut cfg);
+
     // Interactive TUI can start without a key and prompt `/login`; headless
     // `run` still needs a key up front (no place to prompt).
     // Resolve against the *active* provider so a Grok OAuth session is not
@@ -316,6 +321,7 @@ async fn real_main() -> Result<()> {
     session.cwd = cwd_str.clone();
 
     let mut usage = UsageTracker::new(session.id.clone(), cfg.model.clone(), cwd.clone());
+    usage.set_provider(cfg.provider.clone());
     // Seed tracker with prior session usage so host panel totals stay cumulative
     if session.usage.total_tokens > 0 {
         usage.seed_session(session.usage.clone());

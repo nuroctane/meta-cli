@@ -3135,8 +3135,9 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
     let u = &app.u_session;
     let ctx_used = app.u_last.input_tokens + app.u_last.output_tokens;
-    let ctx_pct = if app.cfg.context_window > 0 {
-        (ctx_used as f64 / app.cfg.context_window as f64 * 100.0).min(100.0)
+    let ctx_win = app.cfg.context_window;
+    let ctx_pct = if ctx_win > 0 {
+        (ctx_used as f64 / ctx_win as f64 * 100.0).min(100.0)
     } else {
         0.0
     };
@@ -3170,20 +3171,44 @@ fn draw_statusline(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(theme::dim(theme::aurora_cell(statick, 0, 1, 4000), 0.25)),
         )
     };
+
+    // Dollar values are list-price estimates (~). Wide terminals also show
+    // context as used/window so the % isn't a black box.
+    let cost = u.estimated_cost_usd();
+    let cost_label = if cost > 0.0 || u.total_tokens > 0 {
+        format!("~${:.4}", cost)
+    } else {
+        "~$0".into()
+    };
+    let wide = area.width >= 96;
+    let tok_label = if wide && (u.input_tokens > 0 || u.output_tokens > 0) {
+        format!(
+            "{} tok ({}↑ {}↓)",
+            fmt_num(u.total_tokens),
+            fmt_num(u.input_tokens),
+            fmt_num(u.output_tokens)
+        )
+    } else {
+        format!("{} tok", fmt_num(u.total_tokens))
+    };
+    let ctx_label = if wide && ctx_win > 0 {
+        format!(
+            "ctx {ctx_pct:.0}% {}/{}",
+            fmt_num(ctx_used),
+            fmt_num(ctx_win)
+        )
+    } else {
+        format!("ctx {ctx_pct:.0}%")
+    };
+
     let left = vec![
         Span::raw(" ".to_string()),
         state_dot,
-        Span::styled(
-            format!("{} tok", fmt_num(u.total_tokens)),
-            Style::default().fg(theme::BLUE_200),
-        ),
+        Span::styled(tok_label, Style::default().fg(theme::BLUE_200)),
         sep(),
-        Span::styled(
-            format!("${:.4}", u.estimated_cost_usd()),
-            Style::default().fg(theme::TEAL),
-        ),
+        Span::styled(cost_label, Style::default().fg(theme::TEAL)),
         sep(),
-        Span::styled(format!("ctx {ctx_pct:.0}%"), ctx_style),
+        Span::styled(ctx_label, ctx_style),
     ];
 
     let quitting = app

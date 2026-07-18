@@ -58,7 +58,8 @@ pub async fn run_subagent(
 
     let session = Session::new(&cfg.model, &cwd.display().to_string());
     // Scoped: don't clobber the global status.json / Orca display.
-    let usage = UsageTracker::scoped(session.id.clone(), cfg.model.clone(), cwd);
+    let mut usage = UsageTracker::scoped(session.id.clone(), cfg.model.clone(), cwd);
+    usage.set_provider(cfg.provider.clone());
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
     let cancel = cancel.clone();

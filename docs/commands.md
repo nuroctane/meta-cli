@@ -130,7 +130,11 @@ Columns: **ID · UPDATED · MSGS · TOKENS · COST · CWD**.
 
 ### `nur usage`
 
-Show last known token usage and cost. Displays paths to status and usage log files.
+Show last known token usage and **estimated** cost. Displays paths to status and usage log files.
+
+Dollar values on the TUI status line and here are **list-price estimates** (per-model rates from [models.dev](https://models.dev) when available, else Meta fallback constants, else `$0` for local providers). They are **not** provider invoices. Cached prompt tokens are priced at the catalog’s cache-read rate when known.
+
+Opt out of the catalog fetch with `NUR_PRICING_OFF=1`. Cache lives at `~/.nur/cache/models-dev.json` (24h TTL).
 
 ```bash
 nur usage
