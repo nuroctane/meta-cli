@@ -172,6 +172,9 @@ impl App {
             "/login" => self.open_login(),
             "/logout" => self.cmd_logout(),
             "/goal" => self.cmd_goal(&arg),
+            "/graph" => self.cmd_graph(),
+            "/draw" => self.cmd_draw(&arg),
+            "/steer" => self.cmd_steer(&arg),
             "/bro" => self.cmd_bro(&arg),
             "/btw" => self.cmd_btw(&arg),
             "/codesearch" | "/cs" => self.cmd_codesearch(&arg),
@@ -1540,6 +1543,129 @@ impl App {
                     format!("goal set · {arg}\n  every turn now carries this as context"),
                 );
             }
+        }
+    }
+
+    /// `/draw` — manage the tldraw offline app and open/build interactive
+    /// `.tldraw` boards. No arg → status; `install` → fetch the app; a file path
+    /// → open it directly; anything else → seed a turn that builds a board.
+    fn cmd_draw(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            match crate::tools::tldraw::app_path() {
+                Some(p) => self.push_note(
+                    Tone::Neutral,
+                    format!(
+                        "tldraw offline · installed ({})\n  /draw <file.tldraw> open · \
+                         /draw <idea> build a board · /draw install reinstall",
+                        p.display()
+                    ),
+                ),
+                None => self.push_note(
+                    Tone::Mode,
+                    "tldraw offline · not installed\n  /draw install to fetch the official app, \
+                     then /draw <file.tldraw> to open"
+                        .into(),
+                ),
+            }
+            return;
+        }
+        if arg.eq_ignore_ascii_case("install") || arg.eq_ignore_ascii_case("setup") {
+            if !self.authed {
+                self.push_error("signed out — /login first".into());
+                return;
+            }
+            if self.busy {
+                self.push_error("busy — finish the current turn first".into());
+                return;
+            }
+            self.start_turn_labeled(
+                "/draw install",
+                "Install the tldraw offline desktop app by calling the `tldraw` tool with \
+                 action=install. Then call action=status and report whether it installed.",
+            );
+            return;
+        }
+        if arg.ends_with(".tldraw") || arg.ends_with(".tldr") {
+            self.draw_open_file(arg);
+            return;
+        }
+        if !self.authed {
+            self.push_error("signed out — /login first".into());
+            return;
+        }
+        if self.busy {
+            self.push_error("busy — finish the current turn first".into());
+            return;
+        }
+        let model_prompt = format!(
+            "Design and build an interactive tldraw board for this request, then open it for \
+             the user:\n{arg}\n\nUse the `tldraw` tool. If the app is not installed, call \
+             action=install first. Produce the board file and call action=open so the user sees it.",
+        );
+        self.start_turn_labeled(&format!("/draw {arg}"), &model_prompt);
+    }
+
+    /// Open a `.tldraw`/`.tldr` file directly in the installed app.
+    fn draw_open_file(&mut self, rel: &str) {
+        let abs = if std::path::Path::new(rel).is_absolute() {
+            std::path::PathBuf::from(rel)
+        } else {
+            self.cwd.join(rel)
+        };
+        if !abs.is_file() {
+            self.push_error(format!("no such file: {}", abs.display()));
+            return;
+        }
+        let Some(app) = crate::tools::tldraw::app_path() else {
+            self.push_note(
+                Tone::Mode,
+                "tldraw offline not installed — /draw install first".into(),
+            );
+            return;
+        };
+        match std::process::Command::new(&app).arg(&abs).spawn() {
+            Ok(_) => self.push_note(
+                Tone::Neutral,
+                format!("opened {} in tldraw offline", abs.display()),
+            ),
+            Err(e) => match crate::open_uri::open_path(&abs) {
+                Ok(()) => self.push_note(
+                    Tone::Neutral,
+                    format!("opened {} (via file association)", abs.display()),
+                ),
+                Err(e2) => {
+                    self.push_error(format!("could not open {}: {e2} / {e}", abs.display()))
+                }
+            },
+        }
+    }
+
+    /// Inject a message into the **running** turn without cancelling it
+    /// (steering). Idle → nothing to steer, so it sends normally.
+    fn cmd_steer(&mut self, arg: &str) {
+        let arg = arg.trim();
+        if arg.is_empty() {
+            self.push_info(
+                "steer · /steer <text> feeds a message into the running turn on its next round \
+                 (no cancel). While a turn runs you can also type a follow-up and click \
+                 'steer' on its queued card."
+                    .into(),
+            );
+            return;
+        }
+        if !self.authed {
+            self.push_error("signed out — run /login first".into());
+            return;
+        }
+        if self.busy {
+            self.steer_now(arg);
+        } else {
+            self.push_note(
+                Tone::Mode,
+                "no turn running — sending as a normal message".into(),
+            );
+            self.start_turn(arg);
         }
     }
 

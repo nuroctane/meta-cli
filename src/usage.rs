@@ -212,6 +212,25 @@ impl UsageTracker {
     pub fn set_state(&mut self, state: impl Into<String>) {
         self.state = state.into();
         let _ = self.write_status();
+        // Push the transition to ADEs. Only the top-level tracker owns the
+        // global status/manifest/hook; subagents stay session-scoped so they
+        // don't flip the host's idle/busy display out from under the run.
+        if self.global {
+            crate::ade::write_ade_manifest(
+                &self.session_id,
+                &self.model,
+                &self.cwd.display().to_string(),
+                &self.session,
+                &self.state,
+            );
+            crate::ade::notify_orca_state(
+                &self.session_id,
+                &self.model,
+                &self.provider,
+                self.turn,
+                &self.state,
+            );
+        }
     }
 
     pub fn session_usage(&self) -> &TokenUsage {
@@ -298,6 +317,7 @@ impl UsageTracker {
             &self.model,
             &self.cwd.display().to_string(),
             &self.session,
+            &self.state,
         );
         let payload = serde_json::json!({
             "type": "meta.usage",
@@ -305,6 +325,7 @@ impl UsageTracker {
             "model": self.model,
             "provider": self.provider,
             "turn": self.turn,
+            "state": self.state,
             "usage": self.session,
             "estimated_cost_usd": self.session.estimated_cost_usd(),
             "pricing_source": rates.source,

@@ -339,6 +339,11 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/undo` | Revert the last file edit (write / edit / multi_edit) this session |
 | `/receipt` | Session receipt — verify what actually ran (models, tools, privacy tiers), hash-chained |
 | `/cua` | Computer-use desktop driver: `/cua on` = always-on background desktop control (elevated), `off` = on-demand only, `status` |
+| `/graph` | Inline live execution-graph card for the current turn (tools · subagents · status) |
+| `/draw` | Open / build interactive **tldraw offline** boards: `/draw <file.tldraw>` opens · `/draw install` · `/draw <idea>` builds |
+| `/steer` | Inject a message into the running turn without cancelling it (or click **steer** on a queued follow-up) |
+
+Full list: **[docs/commands.md → TUI slash commands](./docs/commands.md#tui-slash-commands)**.
 
 ---
 

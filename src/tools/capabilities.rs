@@ -61,6 +61,7 @@ pub fn is_read_only(name: &str, args: &Value) -> bool {
         // Action helpers take the raw JSON string form used across the codebase.
         "graphify" => crate::tools::graphify::is_read_only_action(&args.to_string()),
         "excalidraw" => crate::tools::excalidraw::is_read_only_action(&args.to_string()),
+        "tldraw" => crate::tools::tldraw::is_read_only_action(&args.to_string()),
         "plur" => crate::tools::plur::is_read_only_action(&args.to_string()),
         "ruflo" => crate::tools::ruflo::is_read_only_action(&args.to_string()),
         "executor" => crate::tools::executor_is_read_only(&args.to_string()),
@@ -104,6 +105,7 @@ pub fn is_destructive(name: &str, args: &Value) -> bool {
         "memory" => !is_read_only("memory", args),
         "graphify" => !is_read_only("graphify", args),
         "excalidraw" => !is_read_only("excalidraw", args),
+        "tldraw" => !is_read_only("tldraw", args),
         "plur" => !is_read_only("plur", args),
         "ruflo" => !is_read_only("ruflo", args),
         "omp" => !is_read_only("omp", args),

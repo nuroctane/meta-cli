@@ -1432,6 +1432,11 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             // Queued follow-up actions (send now + dismiss may share one line).
             let mut qa: Vec<(usize, usize, usize, u8)> = Vec::new();
             if matches!(cell, Cell::Queued { .. }) {
+                if let Some(byte_i) = plain.find("steer") {
+                    let start = plain[..byte_i].chars().count();
+                    let end = start + "steer".chars().count();
+                    qa.push((cell_idx, start, end, 2u8));
+                }
                 if let Some(byte_i) = plain.find("send now") {
                     let start = plain[..byte_i].chars().count();
                     let end = start + "send now".chars().count();
@@ -2255,6 +2260,14 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
             out.push(Line::from(vec![
                 Span::raw("  ".to_string()),
                 Span::styled(
+                    "steer".to_string(),
+                    Style::default()
+                        .fg(theme::BG)
+                        .bg(theme::WARN)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("  ·  ".to_string(), theme::style_faint()),
+                Span::styled(
                     "send now".to_string(),
                     Style::default()
                         .fg(theme::BG)
@@ -2267,10 +2280,28 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                     Style::default().fg(theme::MUTED).add_modifier(Modifier::UNDERLINED),
                 ),
                 Span::styled(
-                    "  ·  interjects next with full context".to_string(),
+                    "  ·  inject mid-turn, or cancel + restart".to_string(),
                     theme::style_faint(),
                 ),
             ]));
+        }
+        Cell::Graph { lines, live } => {
+            out.push(Line::default());
+            let hue = theme::META_BLUE;
+            let head = if *live {
+                "◈ execution graph · live"
+            } else {
+                "◈ execution graph"
+            };
+            out.push(Line::from(Span::styled(
+                head.to_string(),
+                Style::default().fg(hue).add_modifier(Modifier::BOLD),
+            )));
+            for l in lines {
+                // Status glyphs already baked into the line text; render as-is so
+                // the tree keeps its shape. Dim connector/label rows a touch.
+                out.push(Line::from(Span::styled(l.clone(), theme::style_status())));
+            }
         }
         Cell::Error(text) => {
             out.push(Line::default());
@@ -3774,6 +3805,14 @@ fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
         Cell::Queued { text } => {
             9u8.hash(&mut h);
             text.hash(&mut h);
+        }
+        Cell::Graph { lines, live } => {
+            10u8.hash(&mut h);
+            lines.hash(&mut h);
+            live.hash(&mut h);
+            if *live {
+                spin_i.hash(&mut h);
+            }
         }
         Cell::Error(t) => {
             8u8.hash(&mut h);

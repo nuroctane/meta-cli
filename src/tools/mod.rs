@@ -25,6 +25,7 @@ mod sandbox;
 mod search_util;
 mod shell;
 pub mod spill;
+pub mod tldraw;
 mod skill_tool;
 pub mod undo;
 mod submit_plan;
@@ -48,6 +49,17 @@ pub use capabilities::{
 pub use sandbox::{is_dangerous_workspace, resolve_safe_workspace};
 pub use shell::shell_backend;
 pub use submit_plan::{SharedPlan, SubmitPlan};
+
+/// Shared mid-turn "steer" queue. The TUI pushes user messages here while a
+/// turn is running; the agent loop drains it at each round boundary and injects
+/// them into the live conversation **without cancelling** the turn (unlike the
+/// interrupt path). Empty for headless / subagent runs.
+pub type SharedSteer = Arc<Mutex<std::collections::VecDeque<String>>>;
+
+/// A fresh, empty steer queue.
+pub fn shared_steer() -> SharedSteer {
+    Arc::new(Mutex::new(std::collections::VecDeque::new()))
+}
 
 pub struct ToolContext {
     pub cwd: PathBuf,
@@ -86,10 +98,12 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// Stateful tool host (todos/plan share with TUI).
+/// Stateful tool host (todos/plan/steer share with TUI).
 pub struct ToolHost {
     pub todos: SharedTodos,
     pub plan: SharedPlan,
+    /// Mid-turn steering messages, drained by the agent loop each round.
+    pub steer: SharedSteer,
 }
 
 impl Default for ToolHost {
@@ -97,6 +111,7 @@ impl Default for ToolHost {
         Self {
             todos: shared_empty(),
             plan: Arc::new(Mutex::new(None)),
+            steer: shared_steer(),
         }
     }
 }
@@ -122,6 +137,7 @@ impl ToolHost {
             Box::new(git_diff::GitDiff),
             Box::new(graphify::Graphify),
             Box::new(excalidraw::Excalidraw),
+            Box::new(tldraw::Tldraw),
             Box::new(plur::Plur),
             Box::new(ruflo::Ruflo),
             Box::new(executor_tool::ExecutorTool),
@@ -198,6 +214,7 @@ impl ToolHost {
             "git_diff" => git_diff::GitDiff.execute(&args, ctx),
             "graphify" => graphify::Graphify.execute(&args, ctx),
             "excalidraw" => excalidraw::Excalidraw.execute(&args, ctx),
+            "tldraw" => tldraw::Tldraw.execute(&args, ctx),
             "plur" => plur::Plur.execute(&args, ctx),
             "ruflo" => ruflo::Ruflo.execute(&args, ctx),
             "executor" => executor_tool::ExecutorTool.execute(&args, ctx),
@@ -295,8 +312,9 @@ mod tests {
         let mut want = vec![
             "read_file", "list_dir", "write_file", "edit_file", "multi_edit", "apply_patch",
             "bash", "grep", "glob", "web_fetch", "web_search", "browser", "look",
-            "extract_frames", "git_status", "git_diff", "graphify", "excalidraw", "plur", "ruflo",
-            "executor", "omp", "skill", "memory", "todo_write", "submit_plan", "agent",
+            "extract_frames", "git_status", "git_diff", "graphify", "excalidraw", "tldraw",
+            "plur", "ruflo", "executor", "omp", "skill", "memory", "todo_write", "submit_plan",
+            "agent",
         ];
         want.sort();
 

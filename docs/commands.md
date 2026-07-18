@@ -342,6 +342,69 @@ Also available in the TUI as **`/bench`**.
 
 ---
 
+## TUI slash commands
+
+Type these inside the `nur` TUI. Aliases are shown in the same row.
+
+| Command | Purpose |
+|---------|---------|
+| `/help` · `/commands` | Keys + command list |
+| `/exit` · `/quit` | Quit |
+| `/clear` | Clear the transcript display |
+| `/new` | Start a fresh session |
+| `/compact` | Summarize the conversation to free context |
+| `/sessions` · `/resume` | Browse & open past sessions (`/resume <id>` also works) |
+| `/login` | Provider + API key or browser sign-in |
+| `/logout` | Clear the stored API key |
+| `/model` · `/models` | Show and switch models for the active provider |
+| `/plugins` · `/plugin` | Browse / install / enable marketplace plugins |
+| `/effort` | Reasoning effort: `minimal` → `xhigh` |
+| `/mode` | Permission mode: `manual` \| `plan` \| `auto` (or Shift+Tab) |
+| `/manual` | Switch to manual mode (approve writes/shell) |
+| `/plan` | Switch to plan mode (read-only explore) |
+| `/auto` | Switch to auto-approve mode |
+| `/cd` | Change working directory (tool sandbox root) |
+| `/pwd` | Print the working directory |
+| `/budget` | Session spend ceiling |
+| `/turns` | Per-session agent-turn ceiling (`0` = unlimited) |
+| `/poor` | Cost-saver lean prompt |
+| `/usage` · `/cost` | Token usage + estimated cost this session |
+| `/context` | Context-window utilization |
+| `/status` | Session snapshot: model · mode · cwd · tokens |
+| `/doctor` | Health check: version · auth · ecosystem · shell |
+| `/fusion` | Multi-model debate → one synthesized answer |
+| `/local` | Run a model locally via bundled llama.cpp |
+| `/bench` | Benchmark models on your tasks |
+| `/failover` | Cross-provider failover + privacy tiers |
+| `/undo` | Revert the last file edit this session |
+| `/receipt` | Session receipt — hash-chained verification |
+| `/cua` | Computer-use desktop driver: `on` \| `off` \| `status` |
+| `/graph` | Inline live execution-graph card for the current turn |
+| `/draw` | Open / build interactive **tldraw offline** boards (`/draw <file.tldraw>`, `/draw install`, `/draw <idea>`) |
+| `/steer` | Inject a message into the running turn without cancelling it |
+| `/scan` | Map the codebase → shareable foglamp scan |
+| `/goal` | Set a standing session goal |
+| `/btw` | One-off note attached to the next message |
+| `/bro` | Chill mode: plain words, straight answers (toggle) |
+| `/codesearch` · `/cs` | Fast ripgrep over the workspace |
+| `/mc` · `/mcp` | Manage MCP servers via Executor |
+| `/skills` | List installed skills |
+| `/memory` | Show the `~/.nur` memory excerpt |
+| `/graphify` | Knowledge graph: status / query / extract |
+| `/plur` | Shared engram memory |
+| `/ruflo` | Vector memory / swarm |
+| `/ecosystem` | Check / provision the ecosystem |
+| `/todos` | Show the session task list |
+| `/init` | Generate a `NUR.md` project guide |
+| `/config` | Show config + data paths |
+| `/permissions` | Show or reload allow/deny/ask rules |
+| `/hooks` | Show local tool hook status |
+| `/feedback` | File a GitHub issue from here |
+| `/bug` | Report an issue (GitHub link) |
+| `/tips` | Mouse + keyboard interaction tips |
+
+---
+
 ## Project instruction files
 
 NurCLI loads project-level instructions from your working directory at session start:

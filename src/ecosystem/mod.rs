@@ -218,6 +218,13 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
     status.excalidraw = ensure_excalidraw(status.node_ok);
     status.cua = ensure_cua();
 
+    // tldraw offline desktop app (official) — best-effort auto-install so `/draw`
+    // works out of the box. No-ops when already present; skips quietly offline.
+    match crate::tools::tldraw::ensure_installed() {
+        Ok(note) => status.notes.push(format!("tldraw offline: {}", note.lines().next().unwrap_or("ok"))),
+        Err(e) => status.notes.push(format!("tldraw offline: {e}")),
+    }
+
     // Third-party skill packs (network; markers skip re-download).
     let (packs_ok, pack_notes) = packs::install_skill_packs(&status.skills_cli);
     status.packs_installed = packs_ok;

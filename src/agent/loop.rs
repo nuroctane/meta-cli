@@ -432,6 +432,26 @@ impl AgentRunner {
                 }
             }
 
+            // Steering: fold in any messages the user pushed mid-turn *without*
+            // cancelling. Drained here (after auto-compact, before the request)
+            // so injected guidance rides the very next model round with full
+            // prior context instead of aborting and restarting the turn.
+            let steered: Vec<String> = self
+                .tools
+                .steer
+                .lock()
+                .map(|mut q| q.drain(..).collect())
+                .unwrap_or_default();
+            for msg in steered {
+                session.input_items.push(user_text_item(&msg));
+                let _ = session.save();
+                let preview: String = msg.chars().take(80).collect();
+                let ellip = if msg.chars().count() > 80 { "…" } else { "" };
+                let _ = tx.send(AgentEvent::Status(format!(
+                    "steered · injected mid-turn: {preview}{ellip}"
+                )));
+            }
+
             let mode_now = self.permission_mode.get();
             let instructions =
                 prompt_ctx.render(mode_now, &self.tools.todos_snapshot().render());
@@ -601,6 +621,7 @@ impl AgentRunner {
                         let host = ToolHost {
                             todos: self.tools.todos.clone(),
                             plan: self.tools.plan.clone(),
+                            steer: self.tools.steer.clone(),
                         };
                         let cwd = self.cwd.clone();
                         let name = call.name.clone();
@@ -780,6 +801,7 @@ impl AgentRunner {
                     let host = ToolHost {
                         todos: self.tools.todos.clone(),
                         plan: self.tools.plan.clone(),
+                        steer: self.tools.steer.clone(),
                     };
                     let cwd = self.cwd.clone();
                     let name = call.name.clone();

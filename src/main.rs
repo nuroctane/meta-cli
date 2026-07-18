@@ -373,7 +373,7 @@ async fn real_main() -> Result<()> {
         ecosystem::ruflo_home().display().to_string(),
     );
 
-    ade::write_ade_manifest(&session.id, &cfg.model, &cwd_str, usage.session_usage());
+    ade::write_ade_manifest(&session.id, &cfg.model, &cwd_str, usage.session_usage(), "idle");
     let _ = session.save();
 
     // First open already ran a full foreground install when needed. Background

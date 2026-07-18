@@ -73,7 +73,11 @@ pub fn abbreviate_for_title(prompt: &str, max_chars: usize) -> String {
 }
 
 /// Write ADE discovery file at ~/.nur/ade.json
-pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &TokenUsage) {
+///
+/// `state` is the live agent state (`idle`, `thinking (turn N)`, `tool:<name>`,
+/// …). Poll-based ADEs that read `ade.json` (rather than the push hook) rely on
+/// this field + `updated_at` to know when a turn has finished.
+pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &TokenUsage, state: &str) {
     let _ = crate::config::ensure_dirs();
     let body = json!({
         "schema_version": 1,
@@ -85,6 +89,9 @@ pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &Toke
         "session_id": session_id,
         "cwd": cwd,
         "pid": std::process::id(),
+        "state": state,
+        "busy": state != "idle",
+        "updated_at": chrono::Utc::now().to_rfc3339(),
         "status_path": status_path().display().to_string(),
         "usage_log_path": meta_home().join("usage.jsonl").display().to_string(),
         "latest_session_path": meta_home().join("latest_session.json").display().to_string(),
@@ -118,7 +125,7 @@ pub fn write_ade_manifest(session_id: &str, model: &str, cwd: &str, usage: &Toke
             "MODEL_API_KEY",
             "MUSE_API_KEY"
         ],
-        "note": "Poll status_path for live token usage. Prefer NUR_* env keys; META_*/MUSE_* are legacy aliases."
+        "note": "Poll status_path (or this file's `state`/`updated_at`) for live agent state + token usage. state=='idle' means the turn finished. Prefer NUR_* env keys; META_*/MUSE_* are legacy aliases."
     });
     let path = meta_home().join("ade.json");
     let _ = fs::write(path, serde_json::to_string_pretty(&body).unwrap_or_default());
@@ -139,6 +146,32 @@ pub fn notify_orca_hook(payload_json: &str) {
     }
     let payload = payload_json.to_string();
     std::thread::spawn(move || notify_orca_hook_blocking(&payload));
+}
+
+/// Push an agent **state transition** to Orca (working → tool → idle).
+///
+/// The usage hook (`meta.usage`) only fires when tokens are billed *mid*-turn,
+/// so a host that relied on it never saw the turn *finish*. This fires on every
+/// state change — critically the `idle` transition at turn end — so Orca learns
+/// a query completed instead of just going silent. No-ops outside Orca.
+pub fn notify_orca_state(session_id: &str, model: &str, provider: &str, turn: u32, state: &str) {
+    if std::env::var("ORCA_AGENT_HOOK_PORT")
+        .map(|p| p.is_empty())
+        .unwrap_or(true)
+    {
+        return;
+    }
+    let payload = json!({
+        "type": "meta.state",
+        "session_id": session_id,
+        "model": model,
+        "provider": provider,
+        "turn": turn,
+        "state": state,
+        "busy": state != "idle",
+        "status_path": status_path().display().to_string(),
+    });
+    notify_orca_hook(&payload.to_string());
 }
 
 fn notify_orca_hook_blocking(payload_json: &str) {

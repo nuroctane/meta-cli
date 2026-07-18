@@ -234,7 +234,43 @@ pub enum Cell {
     /// transcript with clickable **send now** / **dismiss** so it can interject
     /// into context without retyping.
     Queued { text: String },
+    /// Inline execution-graph card (`/graph`). A live tree of the current turn's
+    /// tools / subagents / todos, refreshed on each tool transition while `live`.
+    /// Ephemeral — not persisted to the session log.
+    Graph { lines: Vec<String>, live: bool },
     Error(String),
+}
+
+/// Concise node label for a tool in the execution graph (`name · <hint>`).
+fn graph_tool_label(name: &str, args: &str) -> String {
+    let v: serde_json::Value = serde_json::from_str(args).unwrap_or(serde_json::Value::Null);
+    let hint = [
+        "task",
+        "description",
+        "path",
+        "file",
+        "output",
+        "pattern",
+        "query",
+        "command",
+        "url",
+    ]
+    .iter()
+    .find_map(|k| v.get(*k).and_then(|x| x.as_str()))
+    .map(|s| {
+        let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+        let t: String = s.chars().take(40).collect();
+        if s.chars().count() > 40 {
+            format!("{t}…")
+        } else {
+            t
+        }
+    });
+    match (name, hint) {
+        ("agent", Some(h)) => format!("agent: {h}"),
+        (_, Some(h)) if !h.is_empty() => format!("{name} · {h}"),
+        _ => name.to_string(),
+    }
 }
 
 impl Cell {
@@ -5018,6 +5054,156 @@ impl App {
         }
     }
 
+    /// Steer a queued follow-up into the **running** turn: inject it as a
+    /// mid-turn user message the loop folds into its next round, without
+    /// cancelling. If idle, there's nothing to steer, so it just starts a turn.
+    fn queue_steer(&mut self, cell_idx: usize) {
+        let text = match self.cells.get(cell_idx) {
+            Some(Cell::Queued { text }) => text.clone(),
+            _ => return,
+        };
+        if let Some(i) = self.queue.iter().position(|t| t == &text) {
+            self.queue.remove(i);
+        }
+        if cell_idx < self.cells.len() {
+            self.cells.remove(cell_idx);
+        }
+        if self.busy {
+            self.steer_now(&text);
+        } else {
+            self.start_turn(&text);
+        }
+    }
+
+    /// Push a message into the live steer queue and echo it in the transcript.
+    /// The agent loop drains it at the next round boundary.
+    fn steer_now(&mut self, text: &str) {
+        if let Ok(mut q) = self.tool_host.steer.lock() {
+            q.push_back(text.to_string());
+        }
+        // Show it as a user turn so the transcript reflects what the model will
+        // see; a note explains it lands mid-run.
+        self.cells.push(Cell::User(text.to_string()));
+        self.scroll_to_bottom();
+        self.push_note(
+            Tone::Mode,
+            "steered · injected into the running turn (no cancel) — lands on the next model round"
+                .into(),
+        );
+    }
+
+    /// Render the current (or most recent) turn as an execution tree: the
+    /// tools/subagents that ran, their status + timing, and a rollup. Fed to the
+    /// inline `/graph` card and refreshed as tools transition.
+    fn build_graph_lines(&self) -> Vec<String> {
+        // Start after the last user prompt = the current turn's work.
+        let start = self
+            .cells
+            .iter()
+            .rposition(|c| matches!(c, Cell::User(_)))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let mut nodes: Vec<String> = Vec::new();
+        let mut tool_n = 0usize;
+        let mut ok_n = 0usize;
+        let mut running = 0usize;
+        for c in &self.cells[start..] {
+            match c {
+                Cell::Thinking {
+                    active, duration, started, ..
+                } => {
+                    let d = if *active {
+                        theme::fmt_elapsed_live(started.elapsed())
+                    } else {
+                        duration.map(theme::fmt_duration).unwrap_or_default()
+                    };
+                    let mark = if *active { "◐" } else { "○" };
+                    nodes.push(format!("{mark} thinking  {d}"));
+                }
+                Cell::Tool {
+                    name, args, ok, duration, started, ..
+                } => {
+                    tool_n += 1;
+                    let label = graph_tool_label(name, args);
+                    let node = match ok {
+                        None => {
+                            running += 1;
+                            format!("▸ {label}  {}", theme::fmt_elapsed_live(started.elapsed()))
+                        }
+                        Some(true) => {
+                            ok_n += 1;
+                            format!(
+                                "✓ {label}  {}",
+                                duration.map(theme::fmt_duration).unwrap_or_default()
+                            )
+                        }
+                        Some(false) => format!(
+                            "✗ {label}  {}",
+                            duration.map(theme::fmt_duration).unwrap_or_default()
+                        ),
+                    };
+                    nodes.push(node);
+                }
+                _ => {}
+            }
+        }
+        let mut lines = Vec::new();
+        let state = if self.busy { &self.status } else { "idle" };
+        lines.push(format!("● turn · {state}"));
+        let n = nodes.len();
+        for (i, node) in nodes.iter().enumerate() {
+            let branch = if i + 1 == n { "└─" } else { "├─" };
+            lines.push(format!("  {branch} {node}"));
+        }
+        if n == 0 {
+            lines.push("  └─ (no tools yet this turn)".into());
+        }
+        lines.push(format!(
+            "     Σ {tool_n} tool(s) · {ok_n} ok · {running} running"
+        ));
+        lines
+    }
+
+    /// Refresh any live `/graph` card in place (called on tool transitions).
+    fn refresh_graph(&mut self) {
+        if !self.cells.iter().any(|c| matches!(c, Cell::Graph { live: true, .. })) {
+            return;
+        }
+        let fresh = self.build_graph_lines();
+        for c in self.cells.iter_mut() {
+            if let Cell::Graph { lines, live: true } = c {
+                *lines = fresh.clone();
+            }
+        }
+    }
+
+    /// `/graph` — drop (or refresh) an inline live execution-graph card.
+    pub(crate) fn cmd_graph(&mut self) {
+        let fresh = self.build_graph_lines();
+        // If a graph card already exists, refresh + resurface it instead of piling up.
+        if let Some(c) = self
+            .cells
+            .iter_mut()
+            .find(|c| matches!(c, Cell::Graph { .. }))
+        {
+            if let Cell::Graph { lines, .. } = c {
+                *lines = fresh;
+            }
+            self.push_note(Tone::Neutral, "graph refreshed".into());
+            self.scroll_to_bottom();
+            return;
+        }
+        self.cells.push(Cell::Graph {
+            lines: fresh,
+            live: true,
+        });
+        self.scroll_to_bottom();
+        self.push_note(
+            Tone::Neutral,
+            "execution graph · updates live as tools run · /graph again to refresh".into(),
+        );
+    }
+
     /// Drop a queued follow-up without sending.
     fn queue_dismiss(&mut self, cell_idx: usize) {
         let text = match self.cells.get(cell_idx) {
@@ -5102,6 +5288,9 @@ impl App {
         let host = ToolHost {
             todos: self.todos.clone(),
             plan: self.tool_host.plan.clone(),
+            // Same steer queue the TUI pushes into, so mid-turn messages reach
+            // the running loop.
+            steer: self.tool_host.steer.clone(),
         };
         AgentRunner {
             client: self.client.clone(),
@@ -5300,6 +5489,7 @@ impl App {
                 });
                 self.tool_cells.insert(id, self.cells.len() - 1);
                 self.status = "running tool".into();
+                self.refresh_graph();
             }
             AgentEvent::ToolEnd {
                 id, result, ok, ..
@@ -5321,6 +5511,7 @@ impl App {
                         let _ = expanded;
                     }
                 }
+                self.refresh_graph();
             }
             AgentEvent::ApprovalRequest {
                 name,
@@ -5366,6 +5557,13 @@ impl App {
                 self.cancelling = false;
                 self.cancel = None;
                 self.status = "idle".into();
+                // Final graph snapshot for this turn, then stop it animating.
+                self.refresh_graph();
+                for c in self.cells.iter_mut() {
+                    if let Cell::Graph { live, .. } = c {
+                        *live = false;
+                    }
+                }
                 // Turn done — restore mouse modes in case title OSC / host dropped them.
                 enable_mouse();
                 match (&self.turn_kind, result, interrupted) {
@@ -5516,6 +5714,7 @@ impl App {
                     match action {
                         0 => self.queue_send_now(*cell_idx),
                         1 => self.queue_dismiss(*cell_idx),
+                        2 => self.queue_steer(*cell_idx),
                         _ => {}
                     }
                     return;
@@ -6099,6 +6298,7 @@ fn cells_to_ui_log(cells: &[Cell]) -> Vec<crate::agent::session::UiLogItem> {
             }),
             // Ephemeral — only meaningful while a turn is running.
             Cell::Queued { .. } => {}
+            Cell::Graph { .. } => {}
             Cell::Error(text) => out.push(UiLogItem {
                 kind: "error".into(),
                 text: text.clone(),
