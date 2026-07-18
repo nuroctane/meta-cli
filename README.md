@@ -51,7 +51,7 @@ nur                 # open the TUI
 nur doctor          # health check
 ```
 
-Or run `nur` and use **`/login`** in the TUI: pick any of **60+ providers**
+Or run `nur` and use **`/login`** in the TUI: pick any of **68 providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, OmniRoute, local Ollama/LM Studio, Meta Model API, and so on).
 For **OpenAI, Anthropic, xAI, Kimi, Antigravity, Hugging Face, Azure, AWS Bedrock, and GitHub Models** you can **sign in with the browser** (or import an existing Codex / Claude Code / Grok / Kimi CLI session) or paste an API key. OAuth sessions refresh before use, retry once after an authentication rejection, and `/model` detects the models available to the active credential. No credential on launch and login opens automatically. See [docs/authentication.md](docs/authentication.md).
 
@@ -188,7 +188,7 @@ Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](
 ## Feature map
 
 ### Agent harness
-- **Multi-provider** via `/login` (60+); Responses or Chat Completions adapter
+- **Multi-provider** via `/login` (68); Responses or Chat Completions adapter
 - Manual / plan / auto · Shift+Tab mid-turn
 - Tool loop, approvals, Esc cancel, subagents, todos, plan mode
 - Session budgets (`/budget`), tool-result spill, smarter auto-compact

@@ -37,7 +37,7 @@ The active provider, endpoint, and default model are stored in
 What happens:
 
 1. Prior credentials are cleared so you start from a clean slate.
-2. A **scrollable, type-to-filter** picker lists **60+ providers** (frontier APIs,
+2. A **scrollable, type-to-filter** picker lists **68 providers** (frontier APIs,
    inference clouds, Chinese labs, OpenAI-compatible routers, local servers).
    Providers with browser sign-in show a 🌐 hint.
 3. If the provider supports browser auth, choose:
