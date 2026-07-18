@@ -115,7 +115,12 @@ impl App {
             }
             "/usage" | "/cost" => self.cmd_usage(),
             "/budget" => self.cmd_budget(&arg),
-            "/poor" => self.cmd_poor(),
+            "/turns" => self.cmd_budget(&if arg.is_empty() {
+                "turns".into()
+            } else {
+                format!("turns {arg}")
+            }),
+            "/poor" => self.cmd_poor(&arg),
             "/undo" => self.cmd_undo(),
             "/failover" => self.open_failover(),
             "/fusion" => self.cmd_fusion(&arg),
@@ -556,12 +561,18 @@ impl App {
             .max_session_tokens
             .map(|t| fmt_num(t))
             .unwrap_or_else(|| "∞".into());
+        let turn_cap = if self.cfg.max_turns == 0 {
+            "∞".into()
+        } else {
+            self.cfg.max_turns.to_string()
+        };
         self.push_note(
             Tone::Usage,
             format!(
             "session usage\n  input    {} tok ({} cached)\n  output   {} tok ({} reasoning)\n  \
-             total    {} tok  (cap {tok_cap})\n  est cost ${:.4}  (cap {cost_cap})\n  status   {}\n  \
-             set a ceiling with /budget",
+             total    {} tok  (cap {tok_cap})\n  est cost ${:.4}  (cap {cost_cap})\n  \
+             turns    per-prompt cap {turn_cap}\n  status   {}\n  \
+             optional ceilings: /budget  ·  prompt saver: /poor",
             fmt_num(u.input_tokens),
             fmt_num(u.cached_tokens),
             fmt_num(u.output_tokens),
@@ -570,6 +581,26 @@ impl App {
             u.estimated_cost_usd(),
             crate::config::status_path().display(),
         ));
+    }
+
+    /// One-line summary of optional stop valves (all unlimited by default).
+    fn budget_status_line(&self) -> String {
+        let cost = self
+            .cfg
+            .max_session_cost_usd
+            .map(|c| format!("${c:.2}"))
+            .unwrap_or_else(|| "∞".into());
+        let toks = self
+            .cfg
+            .max_session_tokens
+            .map(|t| fmt_num(t))
+            .unwrap_or_else(|| "∞".into());
+        let turns = if self.cfg.max_turns == 0 {
+            "∞".into()
+        } else {
+            self.cfg.max_turns.to_string()
+        };
+        format!("cost {cost} · tokens {toks} · turns {turns}")
     }
 
     fn cmd_receipt(&mut self) {
@@ -881,18 +912,52 @@ impl App {
         }
     }
 
-    fn cmd_poor(&mut self) {
-        self.cfg.poor_mode = !self.cfg.poor_mode;
+    /// Cost-saver for the **prompt** (not spend caps). Optional args:
+    /// `status` / `show` — report poor + budget without toggling.
+    fn cmd_poor(&mut self, arg: &str) {
+        let a = arg.trim().to_ascii_lowercase();
+        if a == "status" || a == "show" {
+            let poor = if self.cfg.poor_mode { "ON" } else { "OFF" };
+            self.push_note(
+                Tone::Usage,
+                format!(
+                    "poor mode {poor}  ·  budgets {}\n  \
+                     /poor           toggle prompt saver (PLUR/skills/memory off)\n  \
+                     /budget …       optional spend/turn ceilings (default ∞)\n  \
+                     /budget clear   unlimited everything this process",
+                    self.budget_status_line()
+                ),
+            );
+            return;
+        }
+        if !a.is_empty() && a != "on" && a != "off" && a != "toggle" {
+            self.push_error("usage: /poor  |  /poor on|off  |  /poor status".into());
+            return;
+        }
+        match a.as_str() {
+            "on" => self.cfg.poor_mode = true,
+            "off" => self.cfg.poor_mode = false,
+            _ => self.cfg.poor_mode = !self.cfg.poor_mode,
+        }
         if self.cfg.poor_mode {
             self.push_note(
                 Tone::Usage,
-                "poor mode ON · skipping PLUR auto-inject, skills catalog, and long memory in the system prompt \
-                 (tools still available). /poor again to restore. /budget save does not persist this — \
-                 set poor_mode=true in config.toml if you want it permanent."
-                    .into(),
+                format!(
+                    "poor mode ON · skipping PLUR auto-inject, skills catalog, and long memory \
+                     (tools still full). budgets {}\n  \
+                     /poor again to restore · /budget cost|tokens|turns for optional ceilings \
+                     (all default unlimited) · set poor_mode=true in config.toml to persist",
+                    self.budget_status_line()
+                ),
             );
         } else {
-            self.push_note(Tone::Usage, "poor mode OFF · full prompt context restored".into());
+            self.push_note(
+                Tone::Usage,
+                format!(
+                    "poor mode OFF · full prompt context restored · budgets {}",
+                    self.budget_status_line()
+                ),
+            );
         }
     }
 
@@ -919,10 +984,11 @@ impl App {
         );
     }
 
-    /// Session spend ceiling: show, set cost/tokens, clear, or save to config.toml.
+    /// Optional session ceilings (all unlimited by default): cost, tokens, turns.
+    /// Show, set, clear, or save to config.toml. `0` / `off` / `∞` clears a cap.
     fn cmd_budget(&mut self, arg: &str) {
         let arg = arg.trim();
-        if arg.is_empty() || arg == "show" {
+        if arg.is_empty() || arg == "show" || arg == "status" {
             let cost = self
                 .cfg
                 .max_session_cost_usd
@@ -933,16 +999,28 @@ impl App {
                 .max_session_tokens
                 .map(|t| fmt_num(t))
                 .unwrap_or_else(|| "unlimited".into());
+            let turns = if self.cfg.max_turns == 0 {
+                "unlimited".into()
+            } else {
+                self.cfg.max_turns.to_string()
+            };
             let used_c = self.u_session.estimated_cost_usd();
             let used_t = self.u_session.total_tokens;
+            let poor = if self.cfg.poor_mode { "ON" } else { "OFF" };
             self.push_note(
                 Tone::Usage,
                 format!(
-                    "budget\n  cost    {cost}  · spent ${used_c:.4}\n  tokens  {toks}  · used {}\n  \
-                     /budget cost <usd>   e.g. /budget cost 2.5\n  \
-                     /budget tokens <n>   e.g. /budget tokens 500000\n  \
-                     /budget clear        remove ceilings this process\n  \
-                     /budget save         write current ceilings to config.toml",
+                    "budget (defaults unlimited)\n  \
+                     cost     {cost}  · spent ${used_c:.4}\n  \
+                     tokens   {toks}  · used {}\n  \
+                     turns    {turns}  · agent rounds per prompt\n  \
+                     poor     {poor}  · prompt saver (/poor)\n  \
+                     /budget cost <usd>     e.g. /budget cost 2.5  ·  0|off = ∞\n  \
+                     /budget tokens <n>     e.g. /budget tokens 500000  ·  0|off = ∞\n  \
+                     /budget turns <n>      e.g. /budget turns 80  ·  0|off = ∞\n  \
+                     /turns <n>             short for /budget turns\n  \
+                     /budget clear          unlimited everything this process\n  \
+                     /budget save           write ceilings to config.toml",
                     fmt_num(used_t),
                 ),
             );
@@ -954,13 +1032,18 @@ impl App {
             "clear" => {
                 self.cfg.max_session_cost_usd = None;
                 self.cfg.max_session_tokens = None;
-                self.push_note(Tone::Usage, "budget cleared (unlimited for this process)".into());
+                self.cfg.max_turns = 0;
+                self.push_note(
+                    Tone::Usage,
+                    "budget cleared · cost ∞ · tokens ∞ · turns ∞ (this process)".into(),
+                );
             }
             "save" => match crate::config::save_config(&self.cfg) {
                 Ok(()) => self.push_note(
                     Tone::Usage,
                     format!(
-                        "budget saved to {}",
+                        "budget saved ({}) → {}",
+                        self.budget_status_line(),
                         crate::config::config_path().display()
                     ),
                 ),
@@ -968,27 +1051,62 @@ impl App {
             },
             "cost" => {
                 let Some(v) = parts.next() else {
-                    self.push_error("usage: /budget cost <usd>".into());
+                    self.push_error("usage: /budget cost <usd>|0|off".into());
                     return;
                 };
+                if is_unlimited_token(v) {
+                    self.cfg.max_session_cost_usd = None;
+                    self.push_note(
+                        Tone::Usage,
+                        "budget cost unlimited (this process · /budget save to persist)".into(),
+                    );
+                    return;
+                }
                 match v.parse::<f64>() {
-                    Ok(n) if n.is_finite() && n >= 0.0 => {
+                    Ok(n) if n.is_finite() && n > 0.0 => {
                         self.cfg.max_session_cost_usd = Some(n);
                         self.push_note(
                             Tone::Usage,
-                            format!("budget cost set to ${n:.4} (this process · /budget save to persist)"),
+                            format!(
+                                "budget cost set to ${n:.4} (this process · /budget save to persist)"
+                            ),
                         );
                     }
-                    _ => self.push_error("cost must be a non-negative number".into()),
+                    Ok(n) if n == 0.0 => {
+                        self.cfg.max_session_cost_usd = None;
+                        self.push_note(
+                            Tone::Usage,
+                            "budget cost unlimited (this process · /budget save to persist)"
+                                .into(),
+                        );
+                    }
+                    _ => self.push_error("cost must be a non-negative number, 0, or off".into()),
                 }
             }
             "tokens" => {
                 let Some(v) = parts.next() else {
-                    self.push_error("usage: /budget tokens <n>".into());
+                    self.push_error("usage: /budget tokens <n>|0|off".into());
                     return;
                 };
+                if is_unlimited_token(v) {
+                    self.cfg.max_session_tokens = None;
+                    self.push_note(
+                        Tone::Usage,
+                        "budget tokens unlimited (this process · /budget save to persist)"
+                            .into(),
+                    );
+                    return;
+                }
                 match v.parse::<u64>() {
-                    Ok(n) if n > 0 => {
+                    Ok(0) => {
+                        self.cfg.max_session_tokens = None;
+                        self.push_note(
+                            Tone::Usage,
+                            "budget tokens unlimited (this process · /budget save to persist)"
+                                .into(),
+                        );
+                    }
+                    Ok(n) => {
                         self.cfg.max_session_tokens = Some(n);
                         self.push_note(
                             Tone::Usage,
@@ -998,11 +1116,54 @@ impl App {
                             ),
                         );
                     }
-                    _ => self.push_error("tokens must be a positive integer".into()),
+                    _ => self.push_error("tokens must be a non-negative integer, 0, or off".into()),
+                }
+            }
+            "turns" => {
+                // bare `/budget turns` or `/turns` with no arg → show status
+                let Some(v) = parts.next() else {
+                    let turns = if self.cfg.max_turns == 0 {
+                        "unlimited".into()
+                    } else {
+                        self.cfg.max_turns.to_string()
+                    };
+                    self.push_note(
+                        Tone::Usage,
+                        format!(
+                            "turns per prompt  {turns}\n  \
+                             /budget turns <n>   cap agent rounds (0|off = unlimited)\n  \
+                             /turns <n>          same"
+                        ),
+                    );
+                    return;
+                };
+                if is_unlimited_token(v) {
+                    self.cfg.max_turns = 0;
+                    self.push_note(
+                        Tone::Usage,
+                        "turns unlimited (this process · /budget save to persist)".into(),
+                    );
+                    return;
+                }
+                match v.parse::<u32>() {
+                    Ok(n) if n <= 1_000_000 => {
+                        self.cfg.max_turns = n;
+                        let msg = if n == 0 {
+                            "turns unlimited (this process · /budget save to persist)".into()
+                        } else {
+                            format!(
+                                "turns set to {n} per prompt (this process · /budget save to persist)"
+                            )
+                        };
+                        self.push_note(Tone::Usage, msg);
+                    }
+                    _ => self.push_error(
+                        "turns must be 0..1000000, or off (0 = unlimited)".into(),
+                    ),
                 }
             }
             _ => self.push_error(
-                "usage: /budget [cost <usd>|tokens <n>|clear|save]".into(),
+                "usage: /budget [cost|tokens|turns] <n>|0|off · clear · save".into(),
             ),
         }
     }
@@ -1600,4 +1761,12 @@ fn open_in_browser(url: &str) -> bool {
     #[cfg(all(unix, not(target_os = "macos")))]
     let r = std::process::Command::new("xdg-open").arg(url).spawn();
     r.is_ok()
+}
+
+/// Tokens that mean "no cap" for /budget cost|tokens|turns.
+fn is_unlimited_token(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "0" | "off" | "none" | "unlimited" | "inf" | "infinity" | "8" | "-"
+    )
 }

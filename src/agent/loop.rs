@@ -1285,14 +1285,14 @@ pub fn session_budget_exceeded(cfg: &Config, usage: &UsageTracker) -> Option<Str
         let cost = u.estimated_cost_usd();
         if cost >= max {
             return Some(format!(
-                "session cost ${cost:.4} ≥ budget ${max:.4} — raise with /budget cost <n> or max_session_cost_usd in config"
+                "session cost ${cost:.4} ≥ budget ${max:.4} — raise with /budget cost <n> (or 0/off) · /budget clear"
             ));
         }
     }
     if let Some(max) = cfg.max_session_tokens {
         if u.total_tokens >= max {
             return Some(format!(
-                "session tokens {} ≥ budget {} — raise with /budget tokens <n> or max_session_tokens in config",
+                "session tokens {} ≥ budget {} — raise with /budget tokens <n> (or 0/off) · /budget clear",
                 u.total_tokens, max
             ));
         }

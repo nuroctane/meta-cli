@@ -46,12 +46,12 @@ auto_update = true
 | `model` | string | `muse-spark-1.1` | Model id for the active provider |
 | `base_url` | string | `https://api.meta.ai/v1` | API base (no trailing path); providers use Responses or Chat Completions under this base |
 | `reasoning_effort` | string | `high` | Reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `max_turns` | integer | `0` | Max agent tool/model rounds per user prompt. **`0` = unlimited** (default). Optional positive cap if you want a hard stop; prefer `max_session_cost_usd` / `max_session_tokens` for overnight budgets |
+| `max_turns` | integer | `0` | Max agent tool/model rounds per user prompt. **`0` = unlimited** (default). Set via config or `/budget turns` / `/turns` |
+| `max_session_cost_usd` | float? | unset (∞) | Optional session $ hard-stop. `/budget cost <usd>` · `/budget clear` |
+| `max_session_tokens` | integer? | unset (∞) | Optional session token hard-stop. `/budget tokens <n>` · `/budget clear` |
 | `stream` | bool | `true` | Stream API responses |
 | `context_window` | integer | `1000000` | Model context window in tokens (range: 1000–2000000) |
 | `tool_result_max_chars` | integer | `12000` | Max inline tool output chars; larger results spill to disk (`0` = unlimited) |
-| `max_session_cost_usd` | float? | unset | Hard stop when session estimated cost reaches this USD amount |
-| `max_session_tokens` | integer? | unset | Hard stop when session `total_tokens` reaches this value |
 | `compact_keep_user_turns` | integer | `4` | Recent user turns kept after compaction |
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |
 | `poor_mode` | bool | `false` | Skip PLUR auto-inject, skills catalog, and long memory in the system prompt |

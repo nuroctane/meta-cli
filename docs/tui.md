@@ -140,8 +140,9 @@ The note is appended to your persistent memory file and recalled automatically i
 | `/effort` | Change reasoning effort |
 | `/compact` | Manually compact context (thins old tool bodies; keeps recent turns; writes `.precompact.bak`) |
 | `/usage` | Show token usage and cost (`/cost`) — includes budget caps when set |
-| `/budget` | Session spend ceiling: `/budget [cost <usd>\|tokens <n>\|clear\|save]` |
-| `/poor` | Toggle cost-saver prompt (skip PLUR inject / skills catalog / long memory; **tools stay full**) |
+| `/budget` | Optional caps (all **unlimited by default**): `/budget [cost\|tokens\|turns] <n>\|0\|off · clear · save` |
+| `/turns` | Agent rounds per prompt (`0` = unlimited). Alias of `/budget turns` |
+| `/poor` | Toggle cost-saver prompt (skip PLUR/skills/memory; tools full). `/poor status` shows poor + budget. Does **not** set spend caps |
 | `/context` | Context-window utilization (bar + tokens) |
 | `/status` | Session snapshot: model · mode · cwd · tokens · cost |
 
@@ -231,9 +232,13 @@ version, OS, and model in the body footer.
 ### Cost control (quick)
 
 ```text
-/budget cost 5          # hard-stop this session around $5
+/budget cost 5          # optional $ hard-stop (default is unlimited)
+/budget turns 80        # optional rounds-per-prompt cap (0 = unlimited)
+/turns 0                # unlimited agent rounds
+/budget clear           # cost ∞ · tokens ∞ · turns ∞
 /budget save            # persist ceilings to config.toml
 /poor                   # leaner system prompt (tools unchanged)
+/poor status            # poor + budget one-liner
 ```
 
 Oversized tool results automatically spill under `~/.nur/tool-results/` with a short preview for the model — see [Configuration](configuration.md).
