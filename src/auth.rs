@@ -642,11 +642,8 @@ fn oauth_auth(
 
 /// Whether an OAuth session is meaningful for this provider at all.
 ///
-/// Only providers the catalog still marks `browser_auth` have a login flow that
-/// can mint or refresh a token. Sessions for anything else are leftovers from an
-/// older build (nur-cli used to sign in to OpenAI/Anthropic/xAI/Kimi by reusing
-/// their first-party CLI clients, which those vendors reject) and would fail at
-/// request time with a confusing 401 instead of a clear "use an API key".
+/// Only providers the catalog marks `browser_auth` have a login/refresh flow.
+/// Sessions for anything else are leftovers and would fail at request time.
 pub fn oauth_session_supported(provider_id: &str) -> bool {
     crate::providers::by_id(provider_id)
         .map(|p| p.browser_auth)
@@ -1092,9 +1089,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("provider_sessions.json");
 
-        assert!(load_provider_oauth_token_at(&path, "huggingface").is_none());
+        assert!(load_provider_oauth_token_at(&path, "xai").is_none());
         let auth = oauth_auth(
-            "huggingface",
+            "xai",
             "oauth-access-token-xxxxx",
             Some("refresh-yyyy".into()),
             Some(now_unix() + 3600),
@@ -1103,14 +1100,14 @@ mod tests {
         .unwrap();
         save_provider_session_at(&path, &auth).unwrap();
         assert_eq!(
-            load_provider_oauth_token_at(&path, "huggingface").as_deref(),
+            load_provider_oauth_token_at(&path, "xai").as_deref(),
             Some("oauth-access-token-xxxxx")
         );
         // A refreshed active session must replace the provider copy as one
         // complete credential set; mixing rotated access/refresh tokens causes
         // an immediate provider-side 401.
         let refreshed = oauth_auth(
-            "huggingface",
+            "xai",
             "oauth-access-token-newxx",
             Some("refresh-new-yyyy".into()),
             Some(now_unix() + 7200),
@@ -1118,23 +1115,23 @@ mod tests {
         )
         .unwrap();
         save_provider_session_at(&path, &refreshed).unwrap();
-        assert_eq!(read_sessions_at(&path).get("huggingface"), Some(&refreshed));
+        assert_eq!(read_sessions_at(&path).get("xai"), Some(&refreshed));
         // Second provider coexists.
-        let auth2 = oauth_auth("azure", "azure-token-zzzzzzzz", None, None, None).unwrap();
+        let auth2 = oauth_auth("anthropic", "claude-token-zzzzzzzz", None, None, None).unwrap();
         save_provider_session_at(&path, &auth2).unwrap();
         assert_eq!(read_sessions_at(&path).len(), 2);
         assert_eq!(
-            load_provider_oauth_token_at(&path, "azure").as_deref(),
-            Some("azure-token-zzzzzzzz")
+            load_provider_oauth_token_at(&path, "anthropic").as_deref(),
+            Some("claude-token-zzzzzzzz")
         );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Sessions written by older builds (which signed in via the vendors' own
-    /// CLI clients) must be ignored, not replayed into a vendor 401.
+    /// OAuth sessions for browser-auth providers (incl. xAI / Claude / OpenAI /
+    /// Kimi) must survive read — they are first-class login paths again.
     #[test]
-    fn stale_first_party_oauth_sessions_are_dropped_on_read() {
+    fn first_party_oauth_sessions_are_kept_on_read() {
         use std::sync::atomic::{AtomicU64, Ordering};
         static N: AtomicU64 = AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
@@ -1142,30 +1139,27 @@ mod tests {
             .map(|d| d.as_nanos())
             .unwrap_or(0);
         let dir = std::env::temp_dir().join(format!(
-            "nur_stale_{nanos}_{}",
+            "nur_oauth_keep_{nanos}_{}",
             N.fetch_add(1, Ordering::Relaxed)
         ));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("provider_sessions.json");
 
         let mut map: BTreeMap<String, Auth> = BTreeMap::new();
-        for id in ["openai", "anthropic", "xai", "kimi"] {
+        for id in ["openai", "anthropic", "xai", "kimi", "azure"] {
             map.insert(
                 id.to_string(),
-                oauth_auth(id, "stale-first-party-token", None, None, None).unwrap(),
+                oauth_auth(id, &format!("{id}-token"), None, None, None).unwrap(),
             );
         }
-        let keep = oauth_auth("azure", "azure-token-zzzzzzzz", None, None, None).unwrap();
-        map.insert("azure".to_string(), keep.clone());
         write_sessions_at(&path, &map).unwrap();
 
         let read = read_sessions_at(&path);
-        assert_eq!(read.len(), 1, "only supported OAuth sessions survive");
-        assert_eq!(read.get("azure"), Some(&keep));
-        for id in ["openai", "anthropic", "xai", "kimi"] {
+        assert_eq!(read.len(), 5, "all browser_auth OAuth sessions survive");
+        for id in ["openai", "anthropic", "xai", "kimi", "azure"] {
             assert!(
-                load_provider_oauth_token_at(&path, id).is_none(),
-                "'{id}' must not resolve a stale first-party OAuth token"
+                load_provider_oauth_token_at(&path, id).is_some(),
+                "'{id}' OAuth session must resolve"
             );
         }
 

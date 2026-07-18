@@ -118,7 +118,7 @@ fn draw_login(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// Stage: browser vs API key.
+/// Stage: browser vs API key (and optional import of existing CLI session).
 fn draw_login_method(f: &mut Frame, app: &App, area: Rect) {
     let Some(m) = &app.login else { return };
     let provider = crate::providers::by_id(&m.provider_id)
@@ -152,13 +152,19 @@ fn draw_login_method(f: &mut Frame, app: &App, area: Rect) {
         "  ↑↓  ·  ↵ choose  ·  esc back  ",
     );
     let inner = modal_inner(rect);
-    let options: Vec<(&str, String)> = vec![
+    let mut options: Vec<(&str, String)> = vec![
         (
             "Sign in with browser",
             "URL + code / SSO — no API key to manage".into(),
         ),
         ("Enter API key", format!("env {}", provider.env_key)),
     ];
+    if m.can_import {
+        options.push((
+            "Use existing CLI session",
+            "import from Codex / Grok / Kimi / Claude login".into(),
+        ));
+    }
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!("  {}", provider.note),

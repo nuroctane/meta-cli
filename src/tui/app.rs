@@ -551,6 +551,7 @@ pub struct LoginModal {
     /// Method stage selection: 0 = browser, 1 = API key, 2 = import existing (if any).
     pub method_sel: usize,
     /// Whether an existing first-party CLI session can be imported.
+    pub can_import: bool,
     /// The key characters typed/pasted so far (rendered as dots).
     pub buf: String,
     /// Transient error to show under the field (e.g. "key too short").
@@ -3652,6 +3653,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             provider_id: self.cfg.provider.clone(),
             method_sel: 0,
+            can_import: false,
             buf: String::new(),
             error: None,
             browser_status: String::new(),
@@ -3680,6 +3682,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             provider_id: self.cfg.provider.clone(),
             method_sel: 0,
+            can_import: false,
             buf: String::new(),
             error: None,
             browser_status: String::new(),
@@ -3757,6 +3760,10 @@ impl App {
                 m.fallback_key = true;
                 m.error = None;
                 if provider.browser_auth {
+                    m.can_import = crate::oauth::import_existing_session(provider.id)
+                        .ok()
+                        .flatten()
+                        .is_some();
                     m.method_sel = 0;
                     m.stage = LoginStage::Method;
                 } else {
@@ -4246,6 +4253,10 @@ impl App {
             m.error = None;
             m.buf.clear();
             if p.browser_auth {
+                m.can_import = crate::oauth::import_existing_session(p.id)
+                    .ok()
+                    .flatten()
+                    .is_some();
                 m.method_sel = 0;
                 m.stage = LoginStage::Method;
             } else {
@@ -4254,8 +4265,12 @@ impl App {
         }
     }
 
-    fn method_option_count(_m: &LoginModal) -> usize {
-        2
+    fn method_option_count(m: &LoginModal) -> usize {
+        if m.can_import {
+            3
+        } else {
+            2
+        }
     }
 
     fn on_login_method_key(&mut self, key: event::KeyEvent, _ctrl: bool) {
@@ -4298,8 +4313,13 @@ impl App {
     }
 
     fn login_method_confirm(&mut self) {
-        let (provider_id, sel) = match &self.login {
-            Some(m) => (m.provider_id.clone(), m.method_sel),
+        let (provider_id, sel, can_import, is_fallback) = match &self.login {
+            Some(m) => (
+                m.provider_id.clone(),
+                m.method_sel,
+                m.can_import,
+                m.fallback_key,
+            ),
             None => return,
         };
         match sel {
@@ -4309,6 +4329,60 @@ impl App {
                     m.stage = LoginStage::Key;
                     m.buf.clear();
                     m.error = None;
+                }
+            }
+            2 if can_import => {
+                match crate::oauth::import_existing_session(&provider_id) {
+                    Ok(Some(tokens)) => {
+                        if is_fallback {
+                            if let Err(e) = crate::auth::save_provider_oauth(
+                                &provider_id,
+                                &tokens.access_token,
+                                tokens.refresh_token,
+                                tokens.expires_at,
+                                tokens.meta,
+                            ) {
+                                if let Some(m) = &mut self.login {
+                                    m.error = Some(e.to_string());
+                                }
+                                return;
+                            }
+                            let name = crate::providers::by_id(&provider_id)
+                                .map(|p| p.name)
+                                .unwrap_or(provider_id.as_str());
+                            self.finish_fallback_credential(format!(
+                                "failover · {name} · browser session saved"
+                            ));
+                            return;
+                        }
+                        if let Err(e) = crate::auth::save_oauth_session(
+                            &provider_id,
+                            &tokens.access_token,
+                            tokens.refresh_token,
+                            tokens.expires_at,
+                            tokens.meta,
+                        ) {
+                            if let Some(m) = &mut self.login {
+                                m.error = Some(e.to_string());
+                            }
+                            return;
+                        }
+                        self.apply_provider_login(
+                            &provider_id,
+                            &{ crate::auth::resolve_api_key().unwrap_or_default() },
+                            true,
+                        );
+                    }
+                    Ok(None) => {
+                        if let Some(m) = &mut self.login {
+                            m.error = Some("no existing session found".into());
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(m) = &mut self.login {
+                            m.error = Some(e.to_string());
+                        }
+                    }
                 }
             }
             _ => {}
@@ -4667,9 +4741,22 @@ impl App {
             .unwrap_or(*crate::providers::default_provider());
 
         self.cfg.provider = provider.id.to_string();
-        self.cfg.base_url = provider.base_url.to_string();
-        self.cfg.model = provider.default_model.to_string();
-        crate::config::apply_base_url_env(&mut self.cfg);
+        let fixed_oauth_base = via_oauth
+            .then(|| crate::providers::oauth_base_url(provider.id))
+            .flatten();
+        self.cfg.base_url = fixed_oauth_base
+            .unwrap_or(provider.base_url)
+            .to_string();
+        self.cfg.model = if via_oauth && provider.id == "xai" {
+            "grok-4.5".to_string()
+        } else {
+            provider.default_model.to_string()
+        };
+        // Self-hosted overrides apply only when the access token is not bound
+        // to a first-party OAuth inference backend.
+        if fixed_oauth_base.is_none() {
+            crate::config::apply_base_url_env(&mut self.cfg);
+        }
         // OAuth tokens may be refreshed while the login result is persisted.
         // Always use the canonical stored token for model detection and the
         // hot-swapped client instead of the raw pre-refresh login result.

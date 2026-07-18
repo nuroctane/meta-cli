@@ -136,6 +136,19 @@ fn model_list_urls(base_url: &str, provider_id: &str, is_oauth: bool) -> Vec<Str
     let base = base_url.trim_end_matches('/').to_string();
     let mut urls = Vec::new();
     match provider_id {
+        "openai" if is_oauth => {
+            urls.push(format!(
+                "{}/models?client_version={}",
+                crate::providers::OPENAI_OAUTH_BASE_URL,
+                openai_codex_client_version()
+            ));
+        }
+        "xai" if is_oauth => {
+            urls.push(format!("{}/models", crate::providers::XAI_OAUTH_BASE_URL));
+        }
+        "kimi" if is_oauth => {
+            urls.push(format!("{}/models", crate::providers::KIMI_CODE_BASE_URL));
+        }
         "antigravity" if is_oauth => {
             // Google's OAuth quickstart documents this endpoint; the
             // OpenAI-compatible base does not consistently expose /models.
@@ -148,11 +161,48 @@ fn model_list_urls(base_url: &str, provider_id: &str, is_oauth: bool) -> Vec<Str
             urls.push(format!("{base}/models"));
             urls.push("https://models.github.ai/inference/models".into());
         }
+        "anthropic" => {
+            urls.push(format!("{base}/models"));
+            // Some OAuth sessions expect the unversioned host path.
+            if !base.contains("api.anthropic.com") {
+                urls.push("https://api.anthropic.com/v1/models".into());
+            }
+        }
         _ => {
             urls.push(format!("{base}/models"));
         }
     }
     urls
+}
+
+/// The ChatGPT model catalog gates entries by Codex compatibility version.
+/// Nur's own semver is unrelated (and can hide every model), so prefer the
+/// locally installed Codex metadata and keep a current protocol fallback.
+fn openai_codex_client_version() -> String {
+    if let Ok(value) = std::env::var("NUR_CODEX_CLIENT_VERSION") {
+        let value = value.trim();
+        if !value.is_empty() {
+            return value.to_string();
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        for (file, field) in [
+            ("models_cache.json", "client_version"),
+            ("version.json", "latest_version"),
+        ] {
+            let path = home.join(".codex").join(file);
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                    if let Some(version) = value.get(field).and_then(|value| value.as_str()) {
+                        if !version.trim().is_empty() {
+                            return version.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    "0.144.5".to_string()
 }
 
 fn fetch_once(
@@ -171,9 +221,15 @@ fn fetch_once(
     if !api_key.is_empty() {
         match provider_id {
             "anthropic" => {
-                req = req
-                    .header("anthropic-version", "2023-06-01")
-                    .header("x-api-key", api_key);
+                // Console API keys → x-api-key. Claude OAuth (sk-ant-oat*) → Bearer + beta.
+                req = req.header("anthropic-version", "2023-06-01");
+                if oauth.is_some() || crate::api::anthropic::is_oauth_token(api_key) {
+                    req = req
+                        .bearer_auth(api_key)
+                        .header("anthropic-beta", crate::api::anthropic::OAUTH_BETA);
+                } else {
+                    req = req.header("x-api-key", api_key);
+                }
             }
             "github-models" => {
                 req = req
@@ -181,11 +237,36 @@ fn fetch_once(
                     .header("Accept", "application/vnd.github+json")
                     .header("X-GitHub-Api-Version", "2026-03-10");
             }
+            "openai" if oauth.is_some() => {
+                req = req.bearer_auth(api_key);
+                if let Some(account_id) = oauth.and_then(|context| context.account_id.as_deref()) {
+                    req = req.header("ChatGPT-Account-ID", account_id);
+                }
+                if oauth.is_some_and(|context| context.is_fedramp) {
+                    req = req.header("X-OpenAI-Fedramp", "true");
+                }
+            }
             "antigravity" if oauth.is_some() => {
                 req = req.bearer_auth(api_key);
                 if let Some(project_id) = oauth.and_then(|context| context.project_id.as_deref()) {
                     req = req.header("x-goog-user-project", project_id);
                 }
+            }
+            "kimi" if oauth.is_some() => {
+                req = req.bearer_auth(api_key);
+                if let Ok(headers) = crate::oauth::kimi_request_headers() {
+                    for (name, value) in headers {
+                        req = req.header(name, value);
+                    }
+                }
+            }
+            "xai" if oauth.is_some() => {
+                let ver = crate::providers::xai_grok_cli_version();
+                req = req
+                    .bearer_auth(api_key)
+                    .header("x-grok-client-version", ver.as_str())
+                    .header("X-XAI-Token-Auth", "xai-grok-cli")
+                    .header("User-Agent", format!("xai-grok-workspace/{ver}"));
             }
             _ => {
                 req = req.bearer_auth(api_key);
@@ -203,24 +284,9 @@ fn fetch_once(
         let snippet: String = body.trim().chars().take(160).collect();
         let mut msg = format!("HTTP {} · {}", status.as_u16(), snippet);
         if matches!(status.as_u16(), 400 | 401 | 403) {
-            // Name the exact key and only mention browser sign-in where it still
-            // exists — after v0.16 the four first-party CLIs are API-key only.
-            let tip = crate::providers::by_id(provider_id)
-                .map(|p| {
-                    if p.browser_auth {
-                        format!(
-                            " · tip: run /login for {} (API key or browser sign-in)",
-                            p.name
-                        )
-                    } else {
-                        format!(
-                            " · tip: set {} or run /login with an API key for {}",
-                            p.env_key, p.name
-                        )
-                    }
-                })
-                .unwrap_or_else(|| " · tip: check this provider's API key".into());
-            msg.push_str(&tip);
+            msg.push_str(
+                " · tip: use this provider's /login (key or OAuth) — wrong host credentials hide the real plan list",
+            );
         }
         return Err(ModelFetchError {
             message: msg,
@@ -414,8 +480,20 @@ mod tests {
     }
 
     #[test]
-    fn kimi_model_list_follows_the_catalog_base_url() {
-        let urls = model_list_urls(crate::providers::KIMI_CODE_BASE_URL, "kimi", false);
+    fn openai_oauth_uses_chatgpt_model_endpoint_with_client_version() {
+        let urls = model_list_urls("https://api.openai.com/v1", "openai", true);
+        assert_eq!(urls.len(), 1);
+        assert!(urls[0].starts_with(crate::providers::OPENAI_OAUTH_BASE_URL));
+        assert!(urls[0].contains("client_version="));
+        assert!(!urls[0].contains(&format!(
+            "client_version={}",
+            env!("CARGO_PKG_VERSION")
+        )));
+    }
+
+    #[test]
+    fn kimi_oauth_uses_managed_coding_model_endpoint() {
+        let urls = model_list_urls("https://example.invalid/v1", "kimi", true);
         assert_eq!(
             urls,
             vec![format!("{}/models", crate::providers::KIMI_CODE_BASE_URL)]

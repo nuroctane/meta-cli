@@ -3,12 +3,18 @@
 use super::{expires_in_to_at, open_browser, CancelFlag};
 use crate::auth::{Auth, OauthMeta};
 use crate::error::{MuseError, Result};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use serde::Deserialize;
-use std::io::Read;
+use sha2::{Digest, Sha256};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Sender};
 use std::thread;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
+use uuid::Uuid;
 
 /// Tokens returned by a successful browser login.
 #[derive(Debug, Clone)]
@@ -44,12 +50,18 @@ fn send(tx: &ProgressTx, ev: BrowserLoginProgress) {
 /// Blocks until success, failure, cancel, or timeout.
 pub fn login_browser(provider_id: &str, tx: ProgressTx, cancel: CancelFlag) {
     let result = match provider_id {
+        "openai" => openai::login(&tx, &cancel),
+        "xai" => xai::login(&tx, &cancel),
+        "kimi" => kimi::login(&tx, &cancel),
+        "anthropic" => claude::login(&tx, &cancel),
         "antigravity" => antigravity::login(&tx, &cancel),
         "huggingface" => huggingface::login(&tx, &cancel),
         "azure" => azure::login(&tx, &cancel),
         "bedrock" => bedrock::login(&tx, &cancel),
         "github-models" => github::login(&tx, &cancel),
-        other => Err(MuseError::Other(api_key_only_reason(other))),
+        other => Err(MuseError::Other(format!(
+            "browser login not supported for '{other}'"
+        ))),
     };
     // Do not persist here — the TUI decides active login vs failover-only
     // storage so a `/failover` browser capture never overwrites auth.json.
@@ -59,25 +71,29 @@ pub fn login_browser(provider_id: &str, tx: ProgressTx, cancel: CancelFlag) {
     }
 }
 
-/// Providers whose vendor gates model access to their own first-party CLI.
-///
-/// These have no third-party OAuth client we can register, so `/login` routes
-/// straight to an API key instead of opening a browser flow that the vendor
-/// will reject at the authorize step.
-pub fn api_key_only_reason(provider_id: &str) -> String {
-    let vendor = match provider_id {
-        "openai" => Some(("OpenAI", "https://platform.openai.com/api-keys")),
-        "anthropic" => Some(("Anthropic", "https://console.anthropic.com/settings/keys")),
-        "xai" => Some(("xAI", "https://console.x.ai")),
-        "kimi" => Some(("Kimi", "https://platform.moonshot.cn/console/api-keys")),
-        _ => None,
-    };
-    match vendor {
-        Some((name, url)) => format!(
-            "{name} does not offer OAuth sign-in to third-party CLIs — use an API key instead: {url}"
-        ),
-        None => format!("browser login not supported for '{provider_id}'"),
+/// Import tokens from a first-party CLI session file when present.
+pub fn import_existing_session(provider_id: &str) -> Result<Option<OAuthTokens>> {
+    match provider_id {
+        "openai" => openai::import_codex_cli(),
+        "xai" => xai::import_grok_cli(),
+        "kimi" => kimi::import_kimi_cli(),
+        "anthropic" => claude::import_claude_cli(),
+        _ => Ok(None),
     }
+}
+
+fn random_urlsafe(nbytes: usize) -> String {
+    let mut raw = Vec::with_capacity(nbytes);
+    while raw.len() < nbytes {
+        raw.extend_from_slice(Uuid::new_v4().as_bytes());
+    }
+    raw.truncate(nbytes);
+    URL_SAFE_NO_PAD.encode(&raw)
+}
+
+fn pkce_challenge(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    URL_SAFE_NO_PAD.encode(digest)
 }
 
 fn http() -> Result<reqwest::blocking::Client> {
@@ -88,6 +104,1204 @@ fn http() -> Result<reqwest::blocking::Client> {
         .map_err(|e| MuseError::Other(e.to_string()))
 }
 
+/// Minimal localhost OAuth callback: waits for `?code=` (and optional state).
+fn wait_localhost_code(
+    port: u16,
+    expected_state: Option<&str>,
+    cancel: &CancelFlag,
+    timeout: Duration,
+) -> Result<String> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .map_err(|e| MuseError::Other(format!("cannot bind localhost:{port}: {e}")))?;
+    wait_localhost_code_on(listener, expected_state, cancel, timeout)
+}
+
+fn wait_localhost_code_on(
+    listener: TcpListener,
+    expected_state: Option<&str>,
+    cancel: &CancelFlag,
+    timeout: Duration,
+) -> Result<String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| MuseError::Other(e.to_string()))?;
+    let start = std::time::Instant::now();
+    loop {
+        if cancel.is_cancelled() {
+            return Err(MuseError::Other("login cancelled".into()));
+        }
+        if start.elapsed() > timeout {
+            return Err(MuseError::Other("browser login timed out".into()));
+        }
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let mut buf = [0u8; 4096];
+                let n = stream.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                let line = req.lines().next().unwrap_or("");
+                // GET /callback?code=...&state=... HTTP/1.1
+                let path = line.split_whitespace().nth(1).unwrap_or("");
+                let q = path.split('?').nth(1).unwrap_or("");
+                let mut code = None;
+                let mut state = None;
+                for pair in q.split('&') {
+                    let mut it = pair.splitn(2, '=');
+                    let k = it.next().unwrap_or("");
+                    let v = it.next().unwrap_or("");
+                    match k {
+                        "code" => code = Some(urlencoding_decode(v)),
+                        "state" => state = Some(urlencoding_decode(v)),
+                        _ => {}
+                    }
+                }
+                let body = if code.is_some() {
+                    "<html><body><h2>Signed in — you can close this tab and return to NurCLI.</h2></body></html>"
+                } else {
+                    "<html><body><h2>Missing code — try again from NurCLI.</h2></body></html>"
+                };
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(resp.as_bytes());
+                if let Some(c) = code {
+                    if let (Some(exp), Some(got)) = (expected_state, state.as_deref()) {
+                        if exp != got {
+                            return Err(MuseError::Other("OAuth state mismatch".into()));
+                        }
+                    }
+                    return Ok(c);
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(150));
+            }
+            Err(e) => return Err(MuseError::Other(format!("callback accept: {e}"))),
+        }
+    }
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'+' => {
+                out.push(' ');
+                i += 1;
+            }
+            b'%' if i + 2 < b.len() => {
+                let hex = &s[i + 1..i + 3];
+                if let Ok(v) = u8::from_str_radix(hex, 16) {
+                    out.push(v as char);
+                    i += 3;
+                } else {
+                    out.push('%');
+                    i += 1;
+                }
+            }
+            c => {
+                out.push(c as char);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = URL_SAFE_NO_PAD.decode(payload).ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+fn jwt_expiration(token: &str) -> Option<u64> {
+    jwt_claims(token)?.get("exp")?.as_u64()
+}
+
+fn chatgpt_account_meta(id_token: &str) -> (Option<String>, bool) {
+    let Some(claims) = jwt_claims(id_token) else {
+        return (None, false);
+    };
+    let auth = claims
+        .get("https://api.openai.com/auth")
+        .and_then(|value| value.as_object());
+    let account_id = auth
+        .and_then(|value| value.get("chatgpt_account_id"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let is_fedramp = auth
+        .and_then(|value| value.get("chatgpt_account_is_fedramp"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    (account_id, is_fedramp)
+}
+
+// ── OpenAI (ChatGPT OAuth / Codex backend) ─────────────────────────────────
+
+pub mod openai {
+    use super::*;
+
+    pub const CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+    const ISSUER: &str = "https://auth.openai.com";
+    const CALLBACK_PORTS: &[u16] = &[1455, 1457];
+
+    #[derive(Deserialize)]
+    struct TokenResp {
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+        id_token: Option<String>,
+        expires_in: Option<u64>,
+        error: Option<serde_json::Value>,
+    }
+
+    #[derive(Deserialize)]
+    struct CodexAuthFile {
+        tokens: CodexTokenSet,
+    }
+
+    #[derive(Deserialize)]
+    struct CodexTokenSet {
+        access_token: String,
+        refresh_token: Option<String>,
+        id_token: Option<String>,
+        account_id: Option<String>,
+    }
+
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        let (listener, port) = CALLBACK_PORTS
+            .iter()
+            .find_map(|port| {
+                TcpListener::bind(("127.0.0.1", *port))
+                    .ok()
+                    .map(|listener| (listener, *port))
+            })
+            .ok_or_else(|| {
+                MuseError::Other(
+                    "OpenAI login needs localhost port 1455 or 1457, but both are in use".into(),
+                )
+            })?;
+        let redirect = format!("http://localhost:{port}/auth/callback");
+        let verifier = random_urlsafe(64);
+        let challenge = pkce_challenge(&verifier);
+        let state = random_urlsafe(32);
+        let scope =
+            "openid profile email offline_access api.connectors.read api.connectors.invoke";
+        let auth_url = format!(
+            "{ISSUER}/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&scope={}&code_challenge={challenge}&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state={state}&originator=nur_cli",
+            urlencoding_encode(&redirect),
+            urlencoding_encode(scope),
+        );
+
+        send(tx, BrowserLoginProgress::OpenUrl(auth_url.clone()));
+        send(
+            tx,
+            BrowserLoginProgress::Status("complete OpenAI sign-in in your browser…".into()),
+        );
+        let _ = open_browser(&auth_url);
+        let code = wait_localhost_code_on(
+            listener,
+            Some(&state),
+            cancel,
+            Duration::from_secs(600),
+        )?;
+        send(
+            tx,
+            BrowserLoginProgress::Status("exchanging OpenAI authorization code…".into()),
+        );
+
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", redirect.as_str()),
+            ("client_id", CLIENT_ID),
+            ("code_verifier", verifier.as_str()),
+        ];
+        let response = http()?
+            .post(format!("{ISSUER}/oauth/token"))
+            .form(&form)
+            .send()
+            .map_err(|error| {
+                MuseError::Other(format!("OpenAI token exchange failed: {error}"))
+            })?;
+        parse_token_response(response, None, None)
+    }
+
+    pub fn refresh(auth: &Auth, refresh_token: &str) -> Result<OAuthTokens> {
+        let body = serde_json::json!({
+            "client_id": CLIENT_ID,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        });
+        let response = http()?
+            .post(format!("{ISSUER}/oauth/token"))
+            .json(&body)
+            .send()
+            .map_err(|error| MuseError::Other(format!("OpenAI token refresh failed: {error}")))?;
+        parse_token_response(response, Some(refresh_token), auth.oauth_meta.clone())
+    }
+
+    /// Reuse the official Codex CLI login when present. This reads only the
+    /// first-party token cache and converts it into Nur's normal OAuth shape.
+    pub fn import_codex_cli() -> Result<Option<OAuthTokens>> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let path = home.join(".codex").join("auth.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(path)?;
+        let mut tokens = codex_tokens_from_json(&text)?;
+        if tokens
+            .expires_at
+            .is_some_and(|expiry| expiry <= super::super::now_unix().saturating_add(300))
+        {
+            if let Some(refresh_token) = tokens.refresh_token.clone() {
+                let auth = Auth {
+                    api_key: tokens.access_token.clone(),
+                    source: "oauth".into(),
+                    auth_method: crate::auth::AuthMethod::Oauth,
+                    provider: "openai".into(),
+                    refresh_token: Some(refresh_token.clone()),
+                    expires_at: tokens.expires_at,
+                    oauth_meta: tokens.meta.clone(),
+                };
+                tokens = refresh(&auth, &refresh_token)?;
+            }
+        }
+        Ok(Some(tokens))
+    }
+
+    pub(super) fn codex_tokens_from_json(text: &str) -> Result<OAuthTokens> {
+        let parsed: CodexAuthFile = serde_json::from_str(text)
+            .map_err(|error| MuseError::Other(format!("invalid Codex auth file: {error}")))?;
+        let access_token = parsed.tokens.access_token.trim().to_string();
+        if access_token.is_empty() {
+            return Err(MuseError::Other(
+                "Codex auth file has no access token; run `codex login` again".into(),
+            ));
+        }
+        let (claim_account_id, is_fedramp) = parsed
+            .tokens
+            .id_token
+            .as_deref()
+            .map(chatgpt_account_meta)
+            .unwrap_or((None, false));
+        let account_id = parsed
+            .tokens
+            .account_id
+            .filter(|value| !value.trim().is_empty())
+            .or(claim_account_id);
+        Ok(OAuthTokens {
+            expires_at: jwt_expiration(&access_token),
+            access_token,
+            refresh_token: parsed.tokens.refresh_token,
+            meta: Some(OauthMeta {
+                issuer: ISSUER.into(),
+                client_id: CLIENT_ID.into(),
+                extra: serde_json::json!({
+                    "account_id": account_id,
+                    "is_fedramp": is_fedramp,
+                    "imported_from": "codex-cli",
+                }),
+            }),
+        })
+    }
+
+    fn parse_token_response(
+        response: reqwest::blocking::Response,
+        previous_refresh: Option<&str>,
+        previous_meta: Option<OauthMeta>,
+    ) -> Result<OAuthTokens> {
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        let parsed: TokenResp = serde_json::from_str(&body).map_err(|error| {
+            MuseError::Other(format!(
+                "OpenAI returned an invalid token response ({status}): {error}"
+            ))
+        })?;
+        if !status.is_success() {
+            let detail = parsed
+                .error
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| format!("HTTP {}", status.as_u16()));
+            return Err(MuseError::Other(format!("OpenAI OAuth failed: {detail}")));
+        }
+        let access_token = parsed
+            .access_token
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| {
+                MuseError::Other("OpenAI OAuth response did not include an access token".into())
+            })?;
+        let refresh_token = parsed
+            .refresh_token
+            .or_else(|| previous_refresh.map(str::to_string));
+        let mut meta = previous_meta.unwrap_or(OauthMeta {
+            issuer: ISSUER.into(),
+            client_id: CLIENT_ID.into(),
+            extra: serde_json::json!({}),
+        });
+        if let Some(id_token) = parsed.id_token.as_deref() {
+            let (account_id, is_fedramp) = chatgpt_account_meta(id_token);
+            meta.extra = serde_json::json!({
+                "account_id": account_id,
+                "is_fedramp": is_fedramp,
+            });
+        }
+        let expires_at =
+            expires_in_to_at(parsed.expires_in).or_else(|| jwt_expiration(&access_token));
+        Ok(OAuthTokens {
+            access_token,
+            refresh_token,
+            expires_at,
+            meta: Some(meta),
+        })
+    }
+}
+
+// ── xAI Grok (device code / Grok CLI import) ───────────────────────────────
+
+pub mod xai {
+    use super::*;
+
+    /// Public Grok CLI OIDC client (same as ~/.grok/auth.json entries).
+    pub const CLIENT_ID: &str = "b1a00492-073a-47ea-816f-4c329264a828";
+    pub const ISSUER: &str = "https://auth.x.ai";
+
+    #[derive(Deserialize)]
+    struct DeviceCodeResp {
+        device_code: String,
+        user_code: String,
+        verification_uri: Option<String>,
+        verification_uri_complete: Option<String>,
+        #[serde(default)]
+        expires_in: u64,
+        #[serde(default = "default_interval")]
+        interval: u64,
+    }
+    fn default_interval() -> u64 {
+        5
+    }
+
+    #[derive(Deserialize)]
+    struct TokenResp {
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+        expires_in: Option<u64>,
+        error: Option<String>,
+        error_description: Option<String>,
+    }
+
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        send(
+            tx,
+            BrowserLoginProgress::Status("requesting xAI device code…".into()),
+        );
+        let client = http()?;
+        // OIDC device authorization endpoint (Grok / auth.x.ai).
+        let endpoints = [
+            format!("{ISSUER}/oauth/device/code"),
+            format!("{ISSUER}/oauth2/device/code"),
+            "https://accounts.x.ai/oauth/device/code".to_string(),
+        ];
+        let mut device: Option<DeviceCodeResp> = None;
+        let mut last_err = String::new();
+        for url in &endpoints {
+            let form = [
+                ("client_id", CLIENT_ID),
+                (
+                    "scope",
+                    "openid profile email offline_access grok-cli:access api:access",
+                ),
+            ];
+            match client.post(url).form(&form).send() {
+                Ok(res) => {
+                    let status = res.status();
+                    let body = res.text().unwrap_or_default();
+                    if status.is_success() {
+                        match serde_json::from_str::<DeviceCodeResp>(&body) {
+                            Ok(d) => {
+                                device = Some(d);
+                                break;
+                            }
+                            Err(e) => last_err = format!("parse device code: {e} · body={body}"),
+                        }
+                    } else {
+                        last_err = format!("{url} → {status}: {body}");
+                    }
+                }
+                Err(e) => last_err = e.to_string(),
+            }
+        }
+        let device = device.ok_or_else(|| {
+            MuseError::Other(format!(
+                "xAI device code failed ({last_err}). Paste an XAI_API_KEY or sign in with the Grok CLI first."
+            ))
+        })?;
+
+        let verify = device
+            .verification_uri_complete
+            .clone()
+            .or_else(|| {
+                device
+                    .verification_uri
+                    .clone()
+                    .map(|u| format!("{u}?user_code={}", device.user_code))
+            })
+            .unwrap_or_else(|| format!("https://accounts.x.ai/connect?user_code={}", device.user_code));
+
+        send(
+            tx,
+            BrowserLoginProgress::DeviceCode {
+                verification_url: verify.clone(),
+                user_code: device.user_code.clone(),
+            },
+        );
+        let _ = open_browser(&verify);
+
+        let token_urls = [
+            format!("{ISSUER}/oauth/token"),
+            format!("{ISSUER}/oauth2/token"),
+            "https://accounts.x.ai/oauth/token".to_string(),
+        ];
+        let deadline = std::time::Instant::now()
+            + Duration::from_secs(if device.expires_in > 0 {
+                device.expires_in
+            } else {
+                900
+            });
+        let base_interval = device.interval.max(3);
+        let mut attempt = 0u32;
+        let mut slow = false;
+
+        while std::time::Instant::now() < deadline {
+            if cancel.is_cancelled() {
+                return Err(MuseError::Other("login cancelled".into()));
+            }
+            thread::sleep(crate::oauth::device_poll_sleep(base_interval, slow, attempt));
+            attempt = attempt.saturating_add(1);
+            slow = false;
+            for turl in &token_urls {
+                let form = [
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                    ("device_code", device.device_code.as_str()),
+                    ("client_id", CLIENT_ID),
+                ];
+                let Ok(res) = client.post(turl).form(&form).send() else {
+                    continue;
+                };
+                let body = res.text().unwrap_or_default();
+                let parsed: TokenResp = serde_json::from_str(&body).unwrap_or(TokenResp {
+                    access_token: None,
+                    refresh_token: None,
+                    expires_in: None,
+                    error: Some("parse".into()),
+                    error_description: Some(body.clone()),
+                });
+                if let Some(err) = parsed.error.as_deref() {
+                    if err == "authorization_pending" {
+                        continue;
+                    }
+                    if err == "slow_down" {
+                        slow = true;
+                        continue;
+                    }
+                    if err == "parse" {
+                        continue;
+                    }
+                    return Err(MuseError::Other(format!(
+                        "xAI token error: {err} {}",
+                        parsed.error_description.unwrap_or_default()
+                    )));
+                }
+                if let Some(access) = parsed.access_token {
+                    return Ok(OAuthTokens {
+                        access_token: access,
+                        refresh_token: parsed.refresh_token,
+                        expires_at: expires_in_to_at(parsed.expires_in),
+                        meta: Some(OauthMeta {
+                            issuer: ISSUER.into(),
+                            client_id: CLIENT_ID.into(),
+                            extra: serde_json::json!({}),
+                        }),
+                    });
+                }
+            }
+            send(
+                tx,
+                BrowserLoginProgress::Status("waiting for browser approval…".into()),
+            );
+        }
+        Err(MuseError::Other("xAI device login timed out".into()))
+    }
+
+    pub fn refresh(auth: &Auth, refresh: &str) -> Result<OAuthTokens> {
+        let client = http()?;
+        let client_id = auth
+            .oauth_meta
+            .as_ref()
+            .map(|m| m.client_id.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(CLIENT_ID);
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh),
+            ("client_id", client_id),
+        ];
+        let res = client
+            .post(format!("{ISSUER}/oauth/token"))
+            .form(&form)
+            .send()
+            .map_err(|e| MuseError::Other(e.to_string()))?;
+        let body = res.text().unwrap_or_default();
+        let parsed: TokenResp =
+            serde_json::from_str(&body).map_err(|e| MuseError::Other(format!("{e}: {body}")))?;
+        let access = parsed
+            .access_token
+            .ok_or_else(|| MuseError::Other(format!("refresh failed: {body}")))?;
+        Ok(OAuthTokens {
+            access_token: access,
+            refresh_token: parsed.refresh_token.or_else(|| Some(refresh.to_string())),
+            expires_at: expires_in_to_at(parsed.expires_in),
+            meta: auth.oauth_meta.clone(),
+        })
+    }
+
+    pub fn import_grok_cli() -> Result<Option<OAuthTokens>> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let path = home.join(".grok").join("auth.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        // Map of "issuer::client_id" → session object.
+        if let Some(map) = v.as_object() {
+            for (_k, sess) in map {
+                let access = sess
+                    .get("key")
+                    .or_else(|| sess.get("access_token"))
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("");
+                if access.is_empty() {
+                    continue;
+                }
+                let refresh = sess
+                    .get("refresh_token")
+                    .and_then(|x| x.as_str())
+                    .map(|s| s.to_string());
+                let expires_at = sess
+                    .get("expires_at")
+                    .and_then(|x| x.as_str())
+                    .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                    .map(|dt| dt.timestamp() as u64);
+                let client_id = sess
+                    .get("oidc_client_id")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(CLIENT_ID)
+                    .to_string();
+                let issuer = sess
+                    .get("oidc_issuer")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or(ISSUER)
+                    .to_string();
+                return Ok(Some(OAuthTokens {
+                    access_token: access.to_string(),
+                    refresh_token: refresh,
+                    expires_at,
+                    meta: Some(OauthMeta {
+                        issuer,
+                        client_id,
+                        extra: serde_json::json!({"imported_from": "grok-cli"}),
+                    }),
+                }));
+            }
+        }
+        Ok(None)
+    }
+}
+
+// ── Kimi Code (RFC 8628 device authorization / Kimi CLI import) ────────────
+
+// Kimi uses the same managed bearer for model discovery and inference.
+pub mod kimi {
+    use super::*;
+    use reqwest::blocking::RequestBuilder;
+
+    /// Public client used by the first-party Kimi Code CLI. No secret is used.
+    pub const CLIENT_ID: &str = "17e5f671-d194-4dfb-9706-5516cb48c098";
+    pub const ISSUER: &str = "https://auth.kimi.com";
+
+    #[derive(Deserialize)]
+    struct DeviceCodeResp {
+        device_code: String,
+        user_code: String,
+        #[serde(default)]
+        verification_uri: String,
+        #[serde(default)]
+        verification_uri_complete: String,
+        #[serde(default)]
+        expires_in: u64,
+        #[serde(default = "default_interval")]
+        interval: u64,
+    }
+
+    fn default_interval() -> u64 {
+        5
+    }
+
+    #[derive(Deserialize)]
+    struct TokenResp {
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+        expires_in: Option<u64>,
+        #[serde(default)]
+        scope: String,
+        #[serde(default)]
+        token_type: String,
+        error: Option<String>,
+        error_description: Option<String>,
+    }
+
+    fn oauth_host() -> String {
+        ["KIMI_CODE_OAUTH_HOST", "KIMI_OAUTH_HOST"]
+            .into_iter()
+            .find_map(|name| {
+                std::env::var(name)
+                    .ok()
+                    .map(|value| value.trim().trim_end_matches('/').to_string())
+                    .filter(|value| !value.is_empty() && value.starts_with("https://"))
+            })
+            .unwrap_or_else(|| ISSUER.to_string())
+    }
+
+    fn kimi_share_dir() -> PathBuf {
+        std::env::var("KIMI_SHARE_DIR")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|home| home.join(".kimi")))
+            .unwrap_or_else(|| PathBuf::from(".kimi"))
+    }
+
+    fn device_id() -> Result<String> {
+        // Reuse the first-party CLI identity when present. Otherwise keep a
+        // Nur-specific stable id so polls and refreshes describe one device.
+        let kimi_path = kimi_share_dir().join("device_id");
+        if let Ok(value) = std::fs::read_to_string(&kimi_path) {
+            let value = value.trim();
+            if let Ok(id) = Uuid::parse_str(value) {
+                return Ok(id.to_string());
+            }
+        }
+        let path = crate::config::nur_home().join("kimi_device_id");
+        if let Ok(value) = std::fs::read_to_string(&path) {
+            let value = value.trim();
+            if let Ok(id) = Uuid::parse_str(value) {
+                return Ok(id.to_string());
+            }
+        }
+        let value = Uuid::new_v4().to_string();
+        crate::config::atomic_write(&path, value.as_bytes())
+            .map_err(|e| MuseError::Other(format!("failed to save Kimi device id: {e}")))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+        Ok(value)
+    }
+
+    /// Device identity headers required by Kimi's managed OAuth API for token,
+    /// model, and inference requests.
+    pub fn request_headers() -> Result<Vec<(&'static str, String)>> {
+        let device_name = std::env::var("COMPUTERNAME")
+            .or_else(|_| std::env::var("HOSTNAME"))
+            .unwrap_or_else(|_| "unknown".to_string());
+        let device_model = format!("{} {}", std::env::consts::OS, std::env::consts::ARCH);
+        let os_version = std::env::var("OS").unwrap_or_else(|_| std::env::consts::OS.to_string());
+        let ascii = |value: String| {
+            value
+                .chars()
+                .take(256)
+                .map(|ch| {
+                    if ch.is_ascii_graphic() || ch == ' ' {
+                        ch
+                    } else {
+                        '_'
+                    }
+                })
+                .collect::<String>()
+        };
+        Ok(vec![
+            ("X-Msh-Platform", "kimi_cli".to_string()),
+            ("X-Msh-Version", env!("CARGO_PKG_VERSION").to_string()),
+            ("X-Msh-Device-Name", ascii(device_name)),
+            ("X-Msh-Device-Model", ascii(device_model)),
+            ("X-Msh-Os-Version", ascii(os_version)),
+            ("X-Msh-Device-Id", device_id()?),
+        ])
+    }
+
+    fn with_device_headers(mut req: RequestBuilder) -> Result<RequestBuilder> {
+        for (name, value) in request_headers()? {
+            req = req.header(name, value);
+        }
+        Ok(req)
+    }
+
+    fn token_error(parsed: &TokenResp, status: u16) -> String {
+        parsed
+            .error_description
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(parsed.error.as_deref())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("HTTP {status}"))
+    }
+
+    fn into_tokens(
+        parsed: TokenResp,
+        previous_refresh: Option<&str>,
+        meta: Option<OauthMeta>,
+    ) -> Result<OAuthTokens> {
+        let access_token = parsed
+            .access_token
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| MuseError::Other("Kimi token response omitted access_token".into()))?;
+        let refresh_token = parsed
+            .refresh_token
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| previous_refresh.map(str::to_string));
+        Ok(OAuthTokens {
+            access_token,
+            refresh_token,
+            expires_at: expires_in_to_at(parsed.expires_in),
+            meta,
+        })
+    }
+
+    fn meta(extra: serde_json::Value) -> OauthMeta {
+        OauthMeta {
+            issuer: oauth_host(),
+            client_id: CLIENT_ID.into(),
+            extra,
+        }
+    }
+
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        send(
+            tx,
+            BrowserLoginProgress::Status("requesting Kimi device code…".into()),
+        );
+        let client = http()?;
+        let host = oauth_host();
+        let request = with_device_headers(
+            client
+                .post(format!("{host}/api/oauth/device_authorization"))
+                .form(&[("client_id", CLIENT_ID)]),
+        )?;
+        let response = request
+            .send()
+            .map_err(|e| MuseError::Other(format!("Kimi device authorization failed: {e}")))?;
+        let status = response.status();
+        let body = response.text().unwrap_or_default();
+        if !status.is_success() {
+            return Err(MuseError::Other(format!(
+                "Kimi device authorization failed (HTTP {})",
+                status.as_u16()
+            )));
+        }
+        let device: DeviceCodeResp = serde_json::from_str(&body)
+            .map_err(|e| MuseError::Other(format!("invalid Kimi device response: {e}")))?;
+        if device.device_code.trim().is_empty() || device.user_code.trim().is_empty() {
+            return Err(MuseError::Other(
+                "Kimi device response omitted the authorization code".into(),
+            ));
+        }
+        let verification_url = if !device.verification_uri_complete.trim().is_empty() {
+            device.verification_uri_complete.clone()
+        } else {
+            device.verification_uri.clone()
+        };
+        if verification_url.trim().is_empty() {
+            return Err(MuseError::Other(
+                "Kimi device response omitted the verification URL".into(),
+            ));
+        }
+        send(
+            tx,
+            BrowserLoginProgress::DeviceCode {
+                verification_url: verification_url.clone(),
+                user_code: device.user_code.clone(),
+            },
+        );
+        let _ = open_browser(&verification_url);
+
+        let deadline = std::time::Instant::now()
+            + Duration::from_secs(if device.expires_in > 0 {
+                device.expires_in
+            } else {
+                900
+            });
+        let interval = device.interval.max(1);
+        let mut attempt = 0u32;
+        let mut slow_down = false;
+        while std::time::Instant::now() < deadline {
+            if cancel.is_cancelled() {
+                return Err(MuseError::Other("login cancelled".into()));
+            }
+            thread::sleep(crate::oauth::device_poll_sleep(
+                interval, slow_down, attempt,
+            ));
+            attempt = attempt.saturating_add(1);
+            slow_down = false;
+            let request =
+                with_device_headers(client.post(format!("{host}/api/oauth/token")).form(&[
+                    ("client_id", CLIENT_ID),
+                    ("device_code", device.device_code.as_str()),
+                    ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ]))?;
+            let Ok(response) = request.send() else {
+                continue;
+            };
+            let status = response.status().as_u16();
+            let body = response.text().unwrap_or_default();
+            let Ok(parsed) = serde_json::from_str::<TokenResp>(&body) else {
+                if status >= 500 {
+                    continue;
+                }
+                return Err(MuseError::Other(format!(
+                    "invalid Kimi token response (HTTP {status})"
+                )));
+            };
+            if parsed.access_token.is_some() {
+                let extra = serde_json::json!({
+                    "scope": parsed.scope,
+                    "token_type": parsed.token_type,
+                });
+                return into_tokens(parsed, None, Some(meta(extra)));
+            }
+            match parsed.error.as_deref() {
+                Some("authorization_pending") | None => {}
+                Some("slow_down") => slow_down = true,
+                Some("expired_token") => {
+                    return Err(MuseError::Other(
+                        "Kimi device code expired; start browser sign-in again".into(),
+                    ));
+                }
+                Some("access_denied") => {
+                    return Err(MuseError::Other("Kimi authorization was denied".into()));
+                }
+                Some(_) if status >= 500 || status == 429 => continue,
+                Some(_) => {
+                    return Err(MuseError::Other(format!(
+                        "Kimi token error: {}",
+                        token_error(&parsed, status)
+                    )));
+                }
+            }
+            send(
+                tx,
+                BrowserLoginProgress::Status("waiting for Kimi browser approval…".into()),
+            );
+        }
+        Err(MuseError::Other("Kimi device login timed out".into()))
+    }
+
+    pub fn refresh(auth: &Auth, refresh: &str) -> Result<OAuthTokens> {
+        let client = http()?;
+        let host = oauth_host();
+        let request = with_device_headers(client.post(format!("{host}/api/oauth/token")).form(&[
+            ("client_id", CLIENT_ID),
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh),
+        ]))?;
+        let response = request
+            .send()
+            .map_err(|e| MuseError::Other(format!("Kimi token refresh failed: {e}")))?;
+        let status = response.status().as_u16();
+        let body = response.text().unwrap_or_default();
+        let parsed: TokenResp = serde_json::from_str(&body).map_err(|_| {
+            MuseError::Other(format!("invalid Kimi refresh response (HTTP {status})"))
+        })?;
+        if !(200..300).contains(&status) || parsed.access_token.is_none() {
+            return Err(MuseError::Other(format!(
+                "Kimi token refresh failed: {}",
+                token_error(&parsed, status)
+            )));
+        }
+        into_tokens(parsed, Some(refresh), auth.oauth_meta.clone())
+    }
+
+    pub fn import_kimi_cli() -> Result<Option<OAuthTokens>> {
+        let path = kimi_share_dir().join("credentials").join("kimi-code.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let body = std::fs::read_to_string(path)?;
+        let value: serde_json::Value = serde_json::from_str(&body)?;
+        let access_token = value
+            .get("access_token")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .trim();
+        if access_token.is_empty() {
+            return Ok(None);
+        }
+        let refresh_token = value
+            .get("refresh_token")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let expires_at = value
+            .get("expires_at")
+            .and_then(|value| value.as_u64().or_else(|| value.as_f64().map(|v| v as u64)))
+            .filter(|value| *value > 0);
+        Ok(Some(OAuthTokens {
+            access_token: access_token.to_string(),
+            refresh_token,
+            expires_at,
+            meta: Some(meta(serde_json::json!({"imported_from": "kimi-cli"}))),
+        }))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn token_conversion_keeps_rotated_refresh_and_expiry() {
+            let parsed = TokenResp {
+                access_token: Some("new-access".into()),
+                refresh_token: Some("new-refresh".into()),
+                expires_in: Some(900),
+                scope: "kimi-code".into(),
+                token_type: "Bearer".into(),
+                error: None,
+                error_description: None,
+            };
+            let before = crate::oauth::now_unix();
+            let tokens = into_tokens(parsed, Some("old-refresh"), None).unwrap();
+            assert_eq!(tokens.access_token, "new-access");
+            assert_eq!(tokens.refresh_token.as_deref(), Some("new-refresh"));
+            assert!(tokens.expires_at.unwrap() >= before + 900);
+        }
+
+        #[test]
+        fn token_conversion_preserves_refresh_when_server_omits_rotation() {
+            let parsed = TokenResp {
+                access_token: Some("new-access".into()),
+                refresh_token: None,
+                expires_in: Some(900),
+                scope: String::new(),
+                token_type: String::new(),
+                error: None,
+                error_description: None,
+            };
+            let tokens = into_tokens(parsed, Some("old-refresh"), None).unwrap();
+            assert_eq!(tokens.refresh_token.as_deref(), Some("old-refresh"));
+        }
+    }
+}
+
+// ── Anthropic Claude (PKCE + Claude CLI import) ────────────────────────────
+
+pub mod claude {
+    use super::*;
+
+    /// Public Claude Code OAuth client id.
+    pub const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
+    const REDIRECT: &str = "http://localhost:54545/callback";
+    const PORT: u16 = 54545;
+
+    #[derive(Deserialize)]
+    struct TokenResp {
+        access_token: Option<String>,
+        refresh_token: Option<String>,
+        expires_in: Option<u64>,
+        error: Option<String>,
+        error_description: Option<String>,
+    }
+
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        let verifier = random_urlsafe(32);
+        let challenge = pkce_challenge(&verifier);
+        let state = random_urlsafe(16);
+        // Prefer platform.claude.com / claude.ai authorize endpoints.
+        let auth_url = format!(
+            "https://claude.ai/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&state={state}&code_challenge={challenge}&code_challenge_method=S256",
+            urlencoding_encode(REDIRECT),
+            urlencoding_encode("org:create_api_key user:profile user:inference"),
+        );
+        // Fallback-friendly: also try console host if user has console login.
+        let _alt = format!(
+            "https://console.anthropic.com/oauth/authorize?client_id={CLIENT_ID}&response_type=code&redirect_uri={}&scope={}&state={state}&code_challenge={challenge}&code_challenge_method=S256",
+            urlencoding_encode(REDIRECT),
+            urlencoding_encode("org:create_api_key user:profile user:inference"),
+        );
+
+        send(tx, BrowserLoginProgress::OpenUrl(auth_url.clone()));
+        send(
+            tx,
+            BrowserLoginProgress::Status("complete sign-in in the browser…".into()),
+        );
+        let _ = open_browser(&auth_url);
+
+        let code = wait_localhost_code(PORT, Some(&state), cancel, Duration::from_secs(600))?;
+        send(
+            tx,
+            BrowserLoginProgress::Status("exchanging code for tokens…".into()),
+        );
+
+        let client = http()?;
+        let token_urls = [
+            "https://platform.claude.com/v1/oauth/token",
+            "https://console.anthropic.com/v1/oauth/token",
+        ];
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code.as_str()),
+            ("redirect_uri", REDIRECT),
+            ("client_id", CLIENT_ID),
+            ("code_verifier", verifier.as_str()),
+            ("state", state.as_str()),
+        ];
+        let mut last = String::new();
+        for url in token_urls {
+            let res = match client.post(url).form(&form).send() {
+                Ok(r) => r,
+                Err(e) => {
+                    last = e.to_string();
+                    continue;
+                }
+            };
+            let body = res.text().unwrap_or_default();
+            let parsed: TokenResp = match serde_json::from_str(&body) {
+                Ok(p) => p,
+                Err(e) => {
+                    last = format!("{e}: {body}");
+                    continue;
+                }
+            };
+            if let Some(err) = parsed.error {
+                last = format!("{err} {}", parsed.error_description.unwrap_or_default());
+                continue;
+            }
+            if let Some(access) = parsed.access_token {
+                return Ok(OAuthTokens {
+                    access_token: access,
+                    refresh_token: parsed.refresh_token,
+                    expires_at: expires_in_to_at(parsed.expires_in),
+                    meta: Some(OauthMeta {
+                        issuer: "https://claude.ai".into(),
+                        client_id: CLIENT_ID.into(),
+                        extra: serde_json::json!({}),
+                    }),
+                });
+            }
+            last = body;
+        }
+        Err(MuseError::Other(format!(
+            "Claude token exchange failed: {last}"
+        )))
+    }
+
+    pub fn refresh(refresh: &str) -> Result<OAuthTokens> {
+        let client = http()?;
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh),
+            ("client_id", CLIENT_ID),
+        ];
+        for url in [
+            "https://platform.claude.com/v1/oauth/token",
+            "https://console.anthropic.com/v1/oauth/token",
+        ] {
+            let Ok(res) = client.post(url).form(&form).send() else {
+                continue;
+            };
+            let body = res.text().unwrap_or_default();
+            if let Ok(parsed) = serde_json::from_str::<TokenResp>(&body) {
+                if let Some(access) = parsed.access_token {
+                    return Ok(OAuthTokens {
+                        access_token: access,
+                        refresh_token: parsed.refresh_token.or_else(|| Some(refresh.to_string())),
+                        expires_at: expires_in_to_at(parsed.expires_in),
+                        meta: Some(OauthMeta {
+                            issuer: "https://claude.ai".into(),
+                            client_id: CLIENT_ID.into(),
+                            extra: serde_json::json!({}),
+                        }),
+                    });
+                }
+            }
+        }
+        Err(MuseError::Other("Claude token refresh failed".into()))
+    }
+
+    pub fn import_claude_cli() -> Result<Option<OAuthTokens>> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let path = home.join(".claude").join(".credentials.json");
+        if !path.exists() {
+            return Ok(None);
+        }
+        let text = std::fs::read_to_string(&path)?;
+        let v: serde_json::Value = serde_json::from_str(&text)?;
+        let oauth = v
+            .get("claudeAiOauth")
+            .ok_or_else(|| MuseError::Other("no claudeAiOauth".into()))
+            .ok();
+        let Some(oauth) = oauth else {
+            return Ok(None);
+        };
+        let access = oauth
+            .get("accessToken")
+            .and_then(|x| x.as_str())
+            .unwrap_or("");
+        if access.is_empty() {
+            return Ok(None);
+        }
+        let refresh = oauth
+            .get("refreshToken")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        // Claude stores expiresAt as ms epoch sometimes.
+        let expires_at = oauth.get("expiresAt").and_then(|x| {
+            if let Some(n) = x.as_u64() {
+                Some(if n > 10_000_000_000 { n / 1000 } else { n })
+            } else {
+                None
+            }
+        });
+        Ok(Some(OAuthTokens {
+            access_token: access.to_string(),
+            refresh_token: refresh,
+            expires_at,
+            meta: Some(OauthMeta {
+                issuer: "https://claude.ai".into(),
+                client_id: CLIENT_ID.into(),
+                extra: serde_json::json!({"imported_from": "claude-code"}),
+            }),
+        }))
+    }
+}
+
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
 
 // ── Google Antigravity (browser SSO via gcloud — no embedded OAuth secrets) ─
 
@@ -843,4 +2057,74 @@ pub mod bedrock {
             "AWS Bedrock refresh: re-run /login browser (aws sso login)".into(),
         ))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unsigned_jwt(payload: serde_json::Value) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&payload).unwrap());
+        format!("header.{payload}.signature")
+    }
+
+    #[test]
+    fn openai_id_token_yields_expiry_and_account_context() {
+        let token = unsigned_jwt(serde_json::json!({
+            "exp": 1_900_000_000_u64,
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_test",
+                "chatgpt_account_is_fedramp": true
+            }
+        }));
+
+        assert_eq!(jwt_expiration(&token), Some(1_900_000_000));
+        assert_eq!(
+            chatgpt_account_meta(&token),
+            (Some("acct_test".to_string()), true)
+        );
+    }
+
+    #[test]
+    fn malformed_openai_id_token_has_no_account_context() {
+        assert_eq!(jwt_expiration("not-a-jwt"), None);
+        assert_eq!(chatgpt_account_meta("not-a-jwt"), (None, false));
+    }
+
+    #[test]
+    fn imports_current_codex_auth_shape_without_exposing_api_key_field() {
+        let access = unsigned_jwt(serde_json::json!({"exp": 1_900_000_000_u64}));
+        let id = unsigned_jwt(serde_json::json!({
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "claim-account",
+                "chatgpt_account_is_fedramp": false
+            }
+        }));
+        let text = serde_json::json!({
+            "auth_mode": "chatgpt",
+            "OPENAI_API_KEY": null,
+            "tokens": {
+                "id_token": id,
+                "access_token": access,
+                "refresh_token": "refresh-test",
+                "account_id": "file-account"
+            }
+        })
+        .to_string();
+
+        let tokens = openai::codex_tokens_from_json(&text).unwrap();
+        assert_eq!(tokens.expires_at, Some(1_900_000_000));
+        assert_eq!(tokens.refresh_token.as_deref(), Some("refresh-test"));
+        assert_eq!(
+            tokens.meta.unwrap().extra["account_id"],
+            serde_json::json!("file-account")
+        );
+    }
+}
+
+// silence unused import warning for mpsc in some builds
+#[allow(dead_code)]
+fn _channel_ty() -> mpsc::Sender<u8> {
+    let (tx, _) = mpsc::channel();
+    tx
 }

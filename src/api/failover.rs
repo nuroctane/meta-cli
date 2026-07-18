@@ -111,12 +111,28 @@ pub fn plan_targets(
         let Some(key) = resolve_key(p) else {
             continue;
         };
+        let is_oauth = crate::auth::oauth_request_context(p.id, &key).is_some();
+        let base_url = if is_oauth {
+            crate::providers::oauth_base_url(p.id).unwrap_or(p.base_url)
+        } else {
+            p.base_url
+        };
+        let style = if is_oauth && p.id == "xai" {
+            ApiStyle::Responses
+        } else {
+            p.style
+        };
+        let model = if is_oauth && p.id == "xai" {
+            "grok-4.5"
+        } else {
+            p.default_model
+        };
         out.push(FailoverTarget {
             provider_id: p.id.to_string(),
-            base_url: p.base_url.trim_end_matches('/').to_string(),
+            base_url: base_url.trim_end_matches('/').to_string(),
             api_key: key,
-            style: p.style,
-            model: p.default_model.to_string(),
+            style,
+            model: model.to_string(),
         });
     }
     out

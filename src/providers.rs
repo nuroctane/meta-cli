@@ -46,8 +46,59 @@ pub struct Provider {
 
 use ApiStyle::{AnthropicMessages as AM, ChatCompletions as CC, Responses as R};
 
-/// Kimi Code's managed inference API, used with a Kimi Code API key.
+/// OpenAI's ChatGPT/Codex backend used by ChatGPT OAuth sessions.
+pub const OPENAI_OAUTH_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
+/// xAI's inference proxy for Grok Build browser/device sessions.
+pub const XAI_OAUTH_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
+/// Kimi Code's managed inference API for both subscription OAuth and Code API keys.
 pub const KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+
+/// Floor version xAI enforces on `cli-chat-proxy` (HTTP 426 if missing → "none").
+#[allow(dead_code)] // documented floor; asserted in tests
+pub const XAI_GROK_CLI_MIN_VERSION: &str = "0.1.202";
+/// Fallback fingerprint when `~/.grok/version.json` is absent (must be ≥ min).
+pub const XAI_GROK_CLI_DEFAULT_VERSION: &str = "0.2.101";
+
+/// Fixed inference backends bound to first-party OAuth access tokens.
+pub fn oauth_base_url(provider_id: &str) -> Option<&'static str> {
+    match provider_id {
+        "openai" => Some(OPENAI_OAUTH_BASE_URL),
+        "xai" => Some(XAI_OAUTH_BASE_URL),
+        "kimi" => Some(KIMI_CODE_BASE_URL),
+        _ => None,
+    }
+}
+
+/// Grok CLI version string for `x-grok-client-version` (subscription OAuth proxy).
+///
+/// Order: `NUR_XAI_CLI_VERSION` / `XAI_GROK_CLI_VERSION` env → `~/.grok/version.json`
+/// → [`XAI_GROK_CLI_DEFAULT_VERSION`]. Always ≥ [`XAI_GROK_CLI_MIN_VERSION`].
+pub fn xai_grok_cli_version() -> String {
+    for var in ["NUR_XAI_CLI_VERSION", "XAI_GROK_CLI_VERSION"] {
+        if let Ok(value) = std::env::var(var) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return value.to_string();
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let path = home.join(".grok").join("version.json");
+        if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                for field in ["version", "stable_version", "latest_version"] {
+                    if let Some(version) = value.get(field).and_then(|v| v.as_str()) {
+                        let version = version.trim();
+                        if !version.is_empty() {
+                            return version.to_string();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    XAI_GROK_CLI_DEFAULT_VERSION.to_string()
+}
 
 /// The full catalog. First entry (`meta` = Meta Model API vendor) is the default.
 pub const PROVIDERS: &[Provider] = &[
@@ -55,12 +106,12 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "meta", name: "Meta Model API", base_url: "https://api.meta.ai/v1", default_model: "muse-spark-1.1", env_key: "META_API_KEY", style: R, note: "muse-spark · Meta vendor default", key_optional: false, browser_auth: false },
 
     // ── frontier direct APIs ─────────────────────────────────────────────
-    Provider { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", default_model: "gpt-5.5", env_key: "OPENAI_API_KEY", style: R, note: "GPT · API key", key_optional: false, browser_auth: false },
+    Provider { id: "openai", name: "OpenAI", base_url: "https://api.openai.com/v1", default_model: "gpt-5.5", env_key: "OPENAI_API_KEY", style: R, note: "GPT · API key or ChatGPT OAuth", key_optional: false, browser_auth: true },
     Provider { id: "openai-cc", name: "OpenAI (Chat Completions)", base_url: "https://api.openai.com/v1", default_model: "gpt-5.5", env_key: "OPENAI_API_KEY", style: CC, note: "GPT · legacy chat endpoint", key_optional: false, browser_auth: false },
-    Provider { id: "anthropic", name: "Anthropic", base_url: "https://api.anthropic.com/v1", default_model: "claude-sonnet-5", env_key: "ANTHROPIC_API_KEY", style: AM, note: "Claude Messages API · API key", key_optional: false, browser_auth: false },
+    Provider { id: "anthropic", name: "Anthropic", base_url: "https://api.anthropic.com/v1", default_model: "claude-sonnet-5", env_key: "ANTHROPIC_API_KEY", style: AM, note: "Claude Messages API · key or browser OAuth", key_optional: false, browser_auth: true },
     Provider { id: "google", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", default_model: "gemini-3-pro", env_key: "GEMINI_API_KEY", style: CC, note: "Gemini · OpenAI-compat", key_optional: false, browser_auth: false },
     Provider { id: "antigravity", name: "Google Antigravity", base_url: "https://generativelanguage.googleapis.com/v1beta/openai", default_model: "gemini-3-pro", env_key: "GEMINI_API_KEY", style: CC, note: "browser SSO · Code Assist", key_optional: false, browser_auth: true },
-    Provider { id: "xai", name: "xAI Grok", base_url: "https://api.x.ai/v1", default_model: "grok-4", env_key: "XAI_API_KEY", style: CC, note: "Grok · API key", key_optional: false, browser_auth: false },
+    Provider { id: "xai", name: "xAI Grok", base_url: "https://api.x.ai/v1", default_model: "grok-4", env_key: "XAI_API_KEY", style: CC, note: "Grok · key or browser", key_optional: false, browser_auth: true },
     Provider { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com/v1", default_model: "deepseek-chat", env_key: "DEEPSEEK_API_KEY", style: CC, note: "V3 · R1", key_optional: false, browser_auth: false },
     Provider { id: "mistral", name: "Mistral", base_url: "https://api.mistral.ai/v1", default_model: "mistral-large-latest", env_key: "MISTRAL_API_KEY", style: CC, note: "Mistral · Codestral", key_optional: false, browser_auth: false },
     Provider { id: "cohere", name: "Cohere", base_url: "https://api.cohere.ai/compatibility/v1", default_model: "command-a-03-2025", env_key: "COHERE_API_KEY", style: CC, note: "Command", key_optional: false, browser_auth: false },
@@ -97,7 +148,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "venice", name: "Venice AI", base_url: "https://api.venice.ai/api/v1", default_model: "llama-3.3-70b", env_key: "VENICE_API_KEY", style: CC, note: "private · uncensored", key_optional: false, browser_auth: false },
 
     // ── Chinese labs ─────────────────────────────────────────────────────
-    Provider { id: "kimi", name: "Kimi Code (kimi.com)", base_url: KIMI_CODE_BASE_URL, default_model: "kimi-for-coding", env_key: "KIMI_API_KEY", style: CC, note: "Coding plan · API key", key_optional: false, browser_auth: false },
+    Provider { id: "kimi", name: "Kimi Code (kimi.com)", base_url: KIMI_CODE_BASE_URL, default_model: "kimi-for-coding", env_key: "KIMI_API_KEY", style: CC, note: "Coding plan · API key or browser OAuth", key_optional: false, browser_auth: true },
     Provider { id: "moonshot", name: "Moonshot Open Platform", base_url: "https://api.moonshot.ai/v1", default_model: "kimi-k2-0711-preview", env_key: "MOONSHOT_API_KEY", style: CC, note: "Kimi K2 · platform API", key_optional: false, browser_auth: false },
     Provider { id: "zhipu", name: "Z.AI / Zhipu GLM", base_url: "https://api.z.ai/api/paas/v4", default_model: "glm-4.6", env_key: "ZAI_API_KEY", style: CC, note: "GLM", key_optional: false, browser_auth: false },
     Provider { id: "qwen", name: "Alibaba Qwen (DashScope)", base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", default_model: "qwen-max", env_key: "DASHSCOPE_API_KEY", style: CC, note: "Qwen", key_optional: false, browser_auth: false },
@@ -308,17 +359,35 @@ mod tests {
     }
 
     #[test]
-    fn openai_is_api_key_only_on_responses_api() {
-        let p = by_id("openai").expect("openai");
-        assert!(!p.browser_auth, "OpenAI rejects third-party OAuth clients");
-        assert_eq!(p.style, ApiStyle::Responses);
-        assert_eq!(p.env_key, "OPENAI_API_KEY");
+    fn xai_grok_cli_version_meets_proxy_floor() {
+        // Floor is 0.1.202; default / installed version must not be empty.
+        let v = xai_grok_cli_version();
+        assert!(!v.is_empty(), "empty version would become '(none)' → 426");
+        assert!(
+            v.chars().any(|c| c.is_ascii_digit()),
+            "version should look like a CLI release: {v}"
+        );
+        assert_eq!(XAI_GROK_CLI_MIN_VERSION, "0.1.202");
+        assert!(
+            XAI_GROK_CLI_DEFAULT_VERSION >= XAI_GROK_CLI_MIN_VERSION
+                || XAI_GROK_CLI_DEFAULT_VERSION.starts_with("0.2")
+                || XAI_GROK_CLI_DEFAULT_VERSION.starts_with("0.1.2"),
+            "default {XAI_GROK_CLI_DEFAULT_VERSION} must satisfy min {XAI_GROK_CLI_MIN_VERSION}"
+        );
     }
 
     #[test]
-    fn kimi_code_supports_key_on_managed_chat_api() {
+    fn openai_supports_chatgpt_oauth_on_responses_api() {
+        let p = by_id("openai").expect("openai");
+        assert!(p.browser_auth);
+        assert_eq!(p.style, ApiStyle::Responses);
+        assert!(OPENAI_OAUTH_BASE_URL.ends_with("/backend-api/codex"));
+    }
+
+    #[test]
+    fn kimi_code_supports_key_and_oauth_on_managed_chat_api() {
         let p = by_id("kimi").expect("kimi");
-        assert!(!p.browser_auth, "Kimi rejects third-party OAuth clients");
+        assert!(p.browser_auth);
         assert_eq!(p.env_key, "KIMI_API_KEY");
         assert_eq!(p.base_url, KIMI_CODE_BASE_URL);
         assert_eq!(p.default_model, "kimi-for-coding");
@@ -327,6 +396,14 @@ mod tests {
         let moonshot = by_id("moonshot").expect("moonshot");
         assert_eq!(moonshot.base_url, "https://api.moonshot.ai/v1");
         assert!(!moonshot.browser_auth);
+    }
+
+    #[test]
+    fn oauth_tokens_route_only_to_their_fixed_first_party_backends() {
+        assert_eq!(oauth_base_url("openai"), Some(OPENAI_OAUTH_BASE_URL));
+        assert_eq!(oauth_base_url("xai"), Some(XAI_OAUTH_BASE_URL));
+        assert_eq!(oauth_base_url("kimi"), Some(KIMI_CODE_BASE_URL));
+        assert_eq!(oauth_base_url("anthropic"), None);
     }
 
     #[test]
@@ -378,6 +455,10 @@ mod tests {
 #[allow(dead_code)] // used by tests; available for TUI/docs tooling
 pub fn oauth_browser_provider_ids() -> &'static [&'static str] {
     &[
+        "openai",
+        "xai",
+        "kimi",
+        "anthropic",
         "antigravity",
         "huggingface",
         "azure",

@@ -12,10 +12,10 @@ The active provider, endpoint, and default model are stored in
 | Provider | API key | Browser / SSO |
 |----------|---------|----------------|
 | **Meta Model API** | [dev.meta.ai](https://dev.meta.ai/) | - |
-| **OpenAI** | `OPENAI_API_KEY` | - (OpenAI gates OAuth to its own CLI) |
-| **xAI Grok** | `XAI_API_KEY` | - (xAI gates OAuth to its own CLI) |
-| **Kimi Code (kimi.com)** | `KIMI_API_KEY` | - (Kimi gates OAuth to its own CLI) |
-| **Anthropic Claude** | `ANTHROPIC_API_KEY` | - (Anthropic gates OAuth to its own CLI) |
+| **OpenAI** | `OPENAI_API_KEY` | ChatGPT browser OAuth (Codex backend) or import `~/.codex` |
+| **xAI Grok** | `XAI_API_KEY` | Device code / Grok CLI session (cli-chat-proxy) |
+| **Kimi Code (kimi.com)** | `KIMI_API_KEY` | Device code / Kimi CLI session |
+| **Anthropic Claude** | `ANTHROPIC_API_KEY` | Claude browser OAuth or import `~/.claude` |
 | **Google Antigravity** | Gemini key fallback | `gcloud auth login` browser SSO |
 | **Hugging Face** | `HF_TOKEN` | Device code (`hf auth login` style) |
 | **Azure OpenAI** | `AZURE_OPENAI_API_KEY` | `az login` / Entra device code |
@@ -51,19 +51,20 @@ NurCLI resolves the current OAuth token before every model or inference request,
 the active and per-provider session stores synchronized after token rotation, and
 forces one refresh/retry if a provider rejects an access token early.
 
-## Why OpenAI, Anthropic, xAI, and Kimi are API-key only
+## OpenAI, Anthropic, xAI, and Kimi browser sign-in
 
-These vendors ship their own coding CLIs (Codex, Claude Code, Grok CLI, Kimi Code) and
-only issue subscription OAuth tokens to those first-party clients. There is no OAuth
-client a third-party CLI can register for, so NurCLI does not offer browser sign-in for
-them: `/login` goes straight to the API key prompt.
+These providers support **browser / device-code OAuth** in addition to API keys:
 
-Earlier NurCLI versions (≤ 0.15.2) reused those CLIs' OAuth client IDs and, for xAI,
-mirrored the Grok CLI version headers. That impersonated the vendors' own clients,
-violated their terms, and broke as soon as they tightened enforcement — the Claude
-redirect-URI rejection and xAI's HTTP 426 were exactly that. Those flows are removed
-rather than patched. Sessions stored by older builds are ignored on read, so upgrading
-prompts for an API key instead of failing with a confusing 401.
+| Provider | Browser flow | Import existing CLI session | OAuth inference host |
+|----------|--------------|-----------------------------|----------------------|
+| **OpenAI** | Loopback PKCE (Codex client) | `~/.codex` | `chatgpt.com/backend-api/codex` |
+| **xAI** | Device code | `~/.grok` | `cli-chat-proxy.grok.com` (+ Grok CLI version headers) |
+| **Anthropic** | Loopback PKCE (Claude Code client) | `~/.claude` | `api.anthropic.com` (Bearer + `oauth-2025-04-20` beta) |
+| **Kimi** | Device code | `~/.kimi` | `api.kimi.com/coding/v1` |
+
+In `/login`, pick the provider → **Sign in with browser**, or **Use existing CLI
+session** when a local first-party login is detected. API keys remain available as a
+fallback for every one of them.
 
 Kimi Code API keys work against `https://api.kimi.com/coding/v1`. The separate Moonshot
 Open Platform catalog entry remains available for `https://api.moonshot.ai/v1` keys.
