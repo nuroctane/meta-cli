@@ -1508,7 +1508,14 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let sticky_oi = sticky_owner(&owner, &is_prompt_head, vis_lo, vis_hi);
     let sticky: Option<String> = sticky_oi.map(|oi| prompts[oi].clone());
     let sticky_cell = sticky_oi.and_then(|oi| prompt_cells.get(oi).copied());
-    let sticky_h = if sticky.is_some() { STICKY_H } else { 0 };
+    // Freeze sticky while drag-selecting: sticky appearing/disappearing mid-drag
+    // changes body height and makes the highlight jump under the pointer.
+    let sticky_h = if sticky.is_some() && app.select_anchor.is_none() && !app.selecting {
+        STICKY_H
+    } else {
+        0
+    };
+    let sticky = if sticky_h > 0 { sticky } else { None };
     let body_y = area.y + sticky_h;
     let body_h = viewport.saturating_sub(sticky_h);
     // Re-sync if sticky appearance changed body height.

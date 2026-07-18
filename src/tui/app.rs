@@ -1222,6 +1222,8 @@ pub struct App {
     pub select_anchor: Option<TextPos>,
     /// Active text selection in the transcript (plain drag — no Shift needed).
     pub selection: Option<TextRange>,
+    /// Throttle for edge auto-scroll while drag-selecting.
+    pub select_autoscroll_at: Option<Instant>,
     /// Plain text of every wrapped transcript line (for copy). Rebuilt each draw.
     pub plain_lines: Vec<String>,
     /// Per-cell wrap cache — avoids re-wrapping the whole transcript every frame.
@@ -1477,6 +1479,7 @@ pub async fn run_tui(
         mouse_left_down: false,
         select_anchor: None,
         selection: None,
+        select_autoscroll_at: None,
         plain_lines: Vec::new(),
         wrap_cache_width: 0,
         wrap_cache_keys: Vec::new(),
@@ -2901,13 +2904,12 @@ impl App {
                     self.input.clear_selection();
                     // Begin potential drag-select; click actions fire on Up if
                     // the pointer barely moved (so drag never fights peek/expand).
+                    // Do not paint a selection until the drag threshold is met.
                     if let Some(pos) = self.pos_at(m.column, m.row) {
                         self.select_anchor = Some(pos);
                         self.selecting = false;
-                        self.selection = Some(TextRange {
-                            start: pos,
-                            end: pos,
-                        });
+                        self.selection = None;
+                        self.select_autoscroll_at = None;
                     }
                 } else {
                     self.scrollbar_drag = false;
@@ -3023,29 +3025,60 @@ impl App {
         if self.select_anchor.is_none() {
             return;
         }
-        // Edge auto-scroll so the selection can grow past the viewport.
-        // Off-screen selected text stays selected (absolute line indices).
-        self.maybe_autoscroll_while_selecting(row);
+        // Update the range first so we know whether this is a real drag.
         self.extend_selection_to(col, row);
+        // Only auto-scroll after a real drag (not on click jitter), and only
+        // when the pointer leaves the body — scrolling on the first/last row
+        // made ordinary selects feel jumpy.
+        if self.selecting {
+            self.maybe_autoscroll_while_selecting(row);
+            // Remap end after scroll so the caret tracks the pointer.
+            self.extend_selection_to(col, row);
+        }
     }
 
-    /// Scroll toward older/newer content when the pointer is at/past the
-    /// transcript edge during a drag-select.
+    /// Scroll toward older/newer content when the pointer is **outside** the
+    /// transcript body during a drag-select. Throttled so Windows mouse-move
+    /// floods don't thrash the viewport.
     fn maybe_autoscroll_while_selecting(&mut self, row: u16) {
         let body = self.transcript_body;
         if body.height == 0 {
             return;
         }
-        // Outside or in the first/last row of the body → nudge the view.
-        if row < body.y.saturating_add(1) {
-            self.scroll_up(1);
-        } else if row + 1 >= body.bottom() {
-            self.scroll_down(1);
+        // Require leaving the body (not merely the edge row).
+        let dir = if row < body.y {
+            -1i8
+        } else if row >= body.bottom() {
+            1i8
+        } else {
+            return;
+        };
+        // Throttle: max ~20 steps/sec regardless of event flood.
+        let now = Instant::now();
+        if let Some(prev) = self.select_autoscroll_at {
+            if now.duration_since(prev) < Duration::from_millis(50) {
+                return;
+            }
+        }
+        self.select_autoscroll_at = Some(now);
+        // Distance past the edge scales step size a little (still small).
+        let step = if dir < 0 {
+            let past = body.y.saturating_sub(row);
+            (1 + past / 3).min(4) as u16
+        } else {
+            let past = row.saturating_sub(body.bottom().saturating_sub(1));
+            (1 + past / 3).min(4) as u16
+        };
+        if dir < 0 {
+            self.scroll_up(step);
+        } else {
+            self.scroll_down(step);
         }
     }
 
-    /// Update selection end from pointer (clamped). Marks `selecting` once the
-    /// end moves past a one-cell threshold from the anchor.
+    /// Update selection end from pointer (clamped). Marks selecting once the
+    /// end moves past a small threshold from the anchor (avoids click jitter
+    /// lighting a one-cell selection wash).
     fn extend_selection_to(&mut self, col: u16, row: u16) {
         let Some(anchor) = self.select_anchor else {
             return;
@@ -3053,7 +3086,8 @@ impl App {
         let Some(pos) = self.pos_at_clamped(col, row) else {
             return;
         };
-        let moved = pos.line != anchor.line || pos.col.abs_diff(anchor.col) > 1;
+        // ~2 chars or any line change counts as a real drag.
+        let moved = pos.line != anchor.line || pos.col.abs_diff(anchor.col) >= 2;
         if moved {
             self.selecting = true;
             self.selection = Some(TextRange {
@@ -3061,13 +3095,14 @@ impl App {
                 end: pos,
             });
             self.hover_cell = None;
-        } else if self.selection.is_some() {
-            // Keep end in sync even for tiny moves once a range exists.
+        } else if self.selecting {
+            // Keep end in sync once we're already selecting.
             self.selection = Some(TextRange {
                 start: anchor,
                 end: pos,
             });
         }
+        // Pre-threshold: leave selection collapsed so clicks don't flash.
     }
 
     fn in_transcript(&self, col: u16, row: u16) -> bool {

@@ -28,6 +28,10 @@ repository.
     then upload only if they approved.
   - If missing → investigate and write it now (do not re-ask for explore
     permission).
+- If the user asks how to **see the graph/output**, be explicit: the local
+  `.foglamp/scan.json` is renderer input (raw data), not the visual graph. The
+  rendered, shareable graph appears after upload to foglamp.dev. If upload was
+  not approved yet, ask the upload question; if it was approved, upload now.
 
 ## Steps
 1. **Investigate** the repo with tools (read/grep/list). Build the JSON below.
@@ -37,10 +41,13 @@ repository.
    architecture (models, tools, integrations, and main flows — no code or
    secrets) to foglamp.dev and creates a public, unlisted link. Upload?"
    Stop here until they say yes / go ahead / upload / publish.
-4. On yes: **Upload** (see "Publish"), capture the JSON response.
+4. On yes / go ahead / upload / publish: **Upload immediately** (see
+   "Publish"), capture the JSON response. Do not merely explain how to upload.
 5. Save the response to `.foglamp/scan.lock.json` (so a later run updates the
    same URL). `.foglamp/` must stay gitignored — the edit token is a secret.
-6. Open the returned `url` and give it to the user.
+6. Open the returned `url` using the available browser/open tool or OS opener,
+   then give the URL to the user with the local `scan.json` and
+   `scan.lock.json` paths. If opening fails, still print the URL.
 
 ## How to investigate
 - Find where AI runs: generateText / streamText / generateObject / streamObject,
@@ -137,5 +144,6 @@ On Windows PowerShell (no jq), first run is the same with curl.exe; for updates,
 compose JSON with the editToken from scan.lock.json yourself.
 
 The response is JSON: { "slug", "url", "editToken", "expiresAt" }. Save it to
-.foglamp/scan.lock.json, then open url. On a 422 error, fix .foglamp/scan.json
-to satisfy the rules and retry.
+.foglamp/scan.lock.json, then open the returned url and print it. Also print the
+absolute paths to `.foglamp/scan.json` and `.foglamp/scan.lock.json`. On a 422
+error, fix .foglamp/scan.json to satisfy the rules and retry.
