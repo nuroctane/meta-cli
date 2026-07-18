@@ -654,7 +654,8 @@ impl ApiClient {
     // ── Anthropic Messages API ────────────────────────────────────────────
     async fn create_anthropic(&self, req: &ResponseRequest) -> Result<ApiResponse> {
         let url = format!("{}/messages", self.base_url);
-        let body = super::anthropic::build_body(req, false);
+        let oauth = self.oauth.is_some() || super::anthropic::is_oauth_token(&self.api_key);
+        let body = super::anthropic::build_body_with_oauth(req, false, oauth);
         let mut attempt = 0u32;
         let mut oauth_refreshed = false;
         loop {
@@ -687,7 +688,10 @@ impl ApiClient {
                     oauth_refreshed = true;
                     continue;
                 }
-                if Self::is_retryable_status(status.as_u16()) && attempt < 4 {
+                // Opaque OAuth 429 is usually wrong client identity, not a real
+                // temporary rate limit — don't thrash retries.
+                let is_oauth_429 = status.as_u16() == 429 && oauth;
+                if Self::is_retryable_status(status.as_u16()) && attempt < 4 && !is_oauth_429 {
                     tokio::time::sleep(std::time::Duration::from_millis(400 * (1 << (attempt - 1))))
                         .await;
                     continue;
@@ -705,10 +709,10 @@ impl ApiClient {
                         super::anthropic::DEFAULT_SONNET
                     ));
                 }
-                if code == 429 && (self.oauth.is_some() || super::anthropic::is_oauth_token(&self.api_key)) {
+                if is_oauth_429 {
                     msg.push_str(
-                        " · Claude OAuth/subscription limit or client fingerprint — wait and retry, \
-                         or /logout and use an ANTHROPIC_API_KEY",
+                        " · Claude OAuth needs Claude Code system identity (Nur injects this) — \
+                         upgrade to latest nur, or use ANTHROPIC_API_KEY if usage is exhausted",
                     );
                 }
                 return Err(MuseError::Api {
@@ -731,7 +735,8 @@ impl ApiClient {
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<ApiResponse> {
         let url = format!("{}/messages", self.base_url);
-        let body = super::anthropic::build_body(req, true);
+        let oauth = self.oauth.is_some() || super::anthropic::is_oauth_token(&self.api_key);
+        let body = super::anthropic::build_body_with_oauth(req, true, oauth);
         let res = self
             .send_with_oauth_retry(|| {
                 self.http

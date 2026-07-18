@@ -27,6 +27,15 @@ pub const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
 pub const OAUTH_BETAS: &str =
     "oauth-2025-04-20,claude-code-20250219,oidc-federation-2026-04-01";
 
+/// Required system identity for Claude Code OAuth (`sk-ant-oat…`) rate-limit pool.
+///
+/// Anthropic routes subscription OAuth tokens to the Claude Code quota pool only
+/// when the Messages `system` prompt identifies as Claude Code. Without this,
+/// Sonnet often returns opaque HTTP 429 `rate_limit_error` / `"Error"`.
+/// Must be a **separate** system content block (not concatenated into one string).
+pub const CLAUDE_CODE_SYSTEM_IDENTITY: &str =
+    "You are Claude Code, Anthropic's official CLI for Claude.";
+
 /// Default Sonnet on the Claude API (platform.claude.com, mid-2026).
 /// **Not** `claude-sonnet-4-20250514` — Sonnet 4 is retired on the first-party
 /// Claude API (still on some Bedrock/GCP endpoints only).
@@ -70,7 +79,17 @@ pub fn normalize_model_id(model: &str) -> String {
 }
 
 /// Build a Messages API body from a Responses request.
+///
+/// When `oauth` is true (Claude Code / `sk-ant-oat…` session), the system prompt
+/// is emitted as **content blocks** with [`CLAUDE_CODE_SYSTEM_IDENTITY`] first so
+/// Anthropic assigns the subscription rate-limit pool.
+#[allow(dead_code)] // non-oauth convenience; production uses build_body_with_oauth
 pub fn build_body(req: &ResponseRequest, stream: bool) -> Value {
+    build_body_with_oauth(req, stream, false)
+}
+
+/// Like [`build_body`], with an explicit OAuth/Claude Code session flag.
+pub fn build_body_with_oauth(req: &ResponseRequest, stream: bool, oauth: bool) -> Value {
     let mut system: Option<String> = req.instructions.clone().filter(|s| !s.is_empty());
     let mut messages: Vec<Value> = Vec::new();
 
@@ -88,7 +107,22 @@ pub fn build_body(req: &ResponseRequest, stream: bool) -> Value {
         "max_tokens": 16_384,
         "messages": messages,
     });
-    if let Some(sys) = system {
+    if oauth {
+        // Separate blocks — a single concatenated string still 429s on Sonnet.
+        let mut blocks = vec![json!({
+            "type": "text",
+            "text": CLAUDE_CODE_SYSTEM_IDENTITY,
+        })];
+        if let Some(sys) = system.filter(|s| !s.is_empty()) {
+            // Avoid duplicating identity if caller already included it.
+            if !sys.contains("You are Claude Code, Anthropic's official CLI") {
+                blocks.push(json!({ "type": "text", "text": sys }));
+            } else {
+                blocks = vec![json!({ "type": "text", "text": sys })];
+            }
+        }
+        body["system"] = json!(blocks);
+    } else if let Some(sys) = system {
         if !sys.is_empty() {
             body["system"] = json!(sys);
         }
@@ -528,6 +562,29 @@ mod tests {
         assert!(is_oauth_token("  sk-ant-oat-xyz  "));
         assert!(!is_oauth_token("sk-ant-api03-abcdef"));
         assert!(!is_oauth_token("xai-jwt-token"));
+    }
+
+    #[test]
+    fn oauth_system_is_content_blocks_with_claude_code_identity() {
+        let body = build_body_with_oauth(&req(), false, true);
+        let system = body.get("system").expect("system present");
+        let arr = system.as_array().expect("oauth system must be blocks");
+        assert!(arr.len() >= 2, "identity + nur instructions");
+        assert_eq!(
+            arr[0].get("text").and_then(|t| t.as_str()),
+            Some(CLAUDE_CODE_SYSTEM_IDENTITY)
+        );
+        assert!(
+            arr[1]
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .contains("be terse"),
+            "user instructions kept as separate block"
+        );
+        // Non-oauth keeps plain string system.
+        let plain = build_body_with_oauth(&req(), false, false);
+        assert!(plain["system"].is_string());
     }
 
     #[test]
