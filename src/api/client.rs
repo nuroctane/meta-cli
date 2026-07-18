@@ -245,6 +245,8 @@ impl ApiClient {
             ApiStyle::AnthropicMessages => return self.create_anthropic(req).await,
             ApiStyle::Responses => {}
         }
+        // ChatGPT/Codex OAuth backend often ignores stream:false and returns SSE.
+        // Collect the completed event rather than failing JSON parse on `event:`.
         let url = format!("{}/responses", self.base_url);
         let mut attempt = 0u32;
         let mut oauth_refreshed = false;
@@ -304,7 +306,7 @@ impl ApiClient {
                 });
             }
 
-            return parse_response_body(&body, status.as_u16());
+            return parse_success_body(&body, status.as_u16());
         }
     }
 
@@ -326,6 +328,10 @@ impl ApiClient {
             }
             ApiStyle::Responses => {}
         }
+        // Codex/ChatGPT OAuth always streams Responses events; force stream=true
+        // so the body matches what we parse.
+        let mut stream_req = req.clone();
+        stream_req.stream = Some(true);
         let url = format!("{}/responses", self.base_url);
         let mut attempt = 0u32;
         let mut last_err: Option<MuseError> = None;
@@ -339,7 +345,7 @@ impl ApiClient {
                         .post(&url)
                         .header("Content-Type", "application/json")
                         .header("Accept", "text/event-stream")
-                        .json(req),
+                        .json(&stream_req),
                 )
                 .send()
                 .await
@@ -389,16 +395,29 @@ impl ApiClient {
                 });
             }
 
-            // Server ignored stream=true → plain JSON body.
-            if !content_type.contains("text/event-stream") {
+            // Prefer streaming by content-type; Codex sometimes returns SSE with a
+            // non-event-stream Content-Type (or none). Peek is impossible after
+            // streaming starts, so when CT is wrong we buffer the whole body and
+            // detect SSE by payload shape.
+            let use_byte_stream = content_type.contains("text/event-stream")
+                || content_type.contains("application/x-ndjson")
+                || content_type.is_empty();
+
+            if !use_byte_stream {
                 let body = res.text().await?;
-                return parse_response_body(&body, status.as_u16());
+                if body_looks_like_sse(&body) {
+                    return consume_sse_text(&body, &mut on_event);
+                }
+                return parse_success_body(&body, status.as_u16());
             }
 
             let mut stream = res.bytes_stream();
             let mut parser = super::sse::SseParser::new();
             let mut final_response: Option<ApiResponse> = None;
             let mut saw_any_data = false;
+            let mut buffered: Vec<u8> = Vec::new();
+            // If CT was empty/ambiguous, accumulate first chunk to detect pure JSON.
+            let mut maybe_json_only = !content_type.contains("text/event-stream");
 
             loop {
                 let chunk = tokio::select! {
@@ -417,6 +436,49 @@ impl ApiClient {
                         }
                     }
                 };
+
+                if maybe_json_only {
+                    buffered.extend_from_slice(&chunk);
+                    // Wait until we have enough to tell SSE vs JSON, or a blank line.
+                    let preview = String::from_utf8_lossy(&buffered);
+                    if buffered.len() < 16
+                        && !preview.contains('\n')
+                        && !preview.trim_start().starts_with('{')
+                    {
+                        continue;
+                    }
+                    maybe_json_only = false;
+                    if !body_looks_like_sse(&preview) && preview.trim_start().starts_with('{') {
+                        // Drain remaining body for full JSON object.
+                        while let Some(Ok(more)) = stream.next().await {
+                            buffered.extend_from_slice(&more);
+                        }
+                        let body = String::from_utf8_lossy(&buffered).into_owned();
+                        return parse_success_body(&body, status.as_u16());
+                    }
+                    // Treat buffered prefix as SSE.
+                    for data in parser.push(&buffered) {
+                        if data.trim() == "[DONE]" {
+                            continue;
+                        }
+                        saw_any_data = true;
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                            if let Err(e) = handle_sse_json(&v, &mut on_event, &mut final_response) {
+                                if attempt < 3 {
+                                    last_err = Some(e);
+                                    break;
+                                } else {
+                                    return Err(e);
+                                }
+                            }
+                        }
+                    }
+                    buffered.clear();
+                    if final_response.is_some() {
+                        break;
+                    }
+                    continue;
+                }
 
                 for data in parser.push(&chunk) {
                     if data.trim() == "[DONE]" {
@@ -797,9 +859,54 @@ fn handle_sse_json(
     Ok(())
 }
 
+/// ChatGPT/Codex (and some gateways) return SSE even when Content-Type is wrong.
+fn body_looks_like_sse(body: &str) -> bool {
+    let t = body.trim_start();
+    t.starts_with("event:")
+        || t.starts_with("data:")
+        || t.starts_with(": ")
+        || t.contains("\nevent:")
+        || t.contains("\rdata:")
+}
+
+fn parse_success_body(body: &str, status: u16) -> Result<ApiResponse> {
+    if body_looks_like_sse(body) {
+        let mut noop = |_ev: StreamEvent| {};
+        return consume_sse_text(body, &mut noop);
+    }
+    parse_response_body(body, status)
+}
+
+/// Drain a full SSE text body into text/reasoning deltas + final ApiResponse.
+fn consume_sse_text(
+    body: &str,
+    on_event: &mut impl FnMut(StreamEvent),
+) -> Result<ApiResponse> {
+    let mut parser = super::sse::SseParser::new();
+    let mut events = parser.push(body.as_bytes());
+    // Flush trailing event if the body lacked a final blank line.
+    events.extend(parser.push(b"\n\n"));
+    let mut final_response: Option<ApiResponse> = None;
+    for data in events {
+        if data.trim() == "[DONE]" {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+            handle_sse_json(&v, on_event, &mut final_response)?;
+        }
+    }
+    final_response.ok_or_else(|| {
+        MuseError::Other(
+            "Codex/Responses SSE ended without response.completed (check auth and model)"
+                .into(),
+        )
+    })
+}
+
 fn parse_response_body(body: &str, status: u16) -> Result<ApiResponse> {
     let parsed: ApiResponse = serde_json::from_str(body).map_err(|e| {
-        MuseError::Other(format!("failed to parse API response: {e}; body={body}"))
+        let snippet: String = body.chars().take(240).collect();
+        MuseError::Other(format!("failed to parse API response: {e}; body={snippet}"))
     })?;
 
     if let Some(err) = &parsed.error {
@@ -816,16 +923,41 @@ fn parse_response_body(body: &str, status: u16) -> Result<ApiResponse> {
 }
 
 fn parse_error_message(body: &str) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_str(body).ok()?;
-    v.get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|m| m.as_str())
-        .map(|s| s.to_string())
-        .or_else(|| {
-            v.get("message")
-                .and_then(|m| m.as_str())
-                .map(|s| s.to_string())
-        })
+    // JSON error shapes first.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(msg) = v
+            .get("error")
+            .and_then(|e| e.get("message"))
+            .and_then(|m| m.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| {
+                v.get("message")
+                    .and_then(|m| m.as_str())
+                    .map(|s| s.to_string())
+            })
+        {
+            return Some(msg);
+        }
+    }
+    // SSE error event: extract last data: line's message if present.
+    if body_looks_like_sse(body) {
+        let mut parser = super::sse::SseParser::new();
+        let mut events = parser.push(body.as_bytes());
+        events.extend(parser.push(b"\n\n"));
+        for data in events.into_iter().rev() {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&data) {
+                if let Some(msg) = v
+                    .pointer("/error/message")
+                    .or_else(|| v.pointer("/response/error/message"))
+                    .or_else(|| v.get("message"))
+                    .and_then(|m| m.as_str())
+                {
+                    return Some(msg.to_string());
+                }
+            }
+        }
+    }
+    None
 }
 
 fn rand_jitter() -> u64 {
@@ -839,6 +971,26 @@ fn rand_jitter() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sse_body_detection_and_completed_parse() {
+        assert!(body_looks_like_sse(
+            "event: response.created\ndata: {\"type\":\"response.created\"}\n\n"
+        ));
+        assert!(!body_looks_like_sse("{\"id\":\"resp_1\",\"output\":[]}"));
+
+        // Minimal Codex-shaped SSE: created then completed with empty output.
+        let body = "event: response.created\n\
+data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"status\":\"in_progress\",\"output\":[]}}\n\
+\n\
+event: response.completed\n\
+data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"status\":\"completed\",\"output\":[]}}\n\
+\n";
+        let resp = consume_sse_text(body, &mut |_ev| {})
+            .expect("parse codex-shaped sse");
+        assert_eq!(resp.id.as_deref(), Some("resp_1"));
+        assert_eq!(resp.status.as_deref(), Some("completed"));
+    }
 
     #[test]
     fn openai_oauth_cannot_be_redirected_to_public_or_custom_api() {

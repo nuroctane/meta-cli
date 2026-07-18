@@ -23,7 +23,9 @@ pub const OAUTH_BETA: &str = "oauth-2025-04-20";
 #[allow(dead_code)]
 pub const CLAUDE_CODE_BETA: &str = "claude-code-20250219";
 /// Combined beta list for Claude OAuth / Claude Code sessions.
-pub const OAUTH_BETAS: &str = "oauth-2025-04-20,claude-code-20250219";
+/// Mirrors Claude Code: oauth + product beta (+ oidc federation used by Code ≥2.1).
+pub const OAUTH_BETAS: &str =
+    "oauth-2025-04-20,claude-code-20250219,oidc-federation-2026-04-01";
 
 /// Default Sonnet on the Claude API (platform.claude.com, mid-2026).
 /// **Not** `claude-sonnet-4-20250514` — Sonnet 4 is retired on the first-party
