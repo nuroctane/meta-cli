@@ -1621,45 +1621,50 @@ impl App {
             return;
         }
         let model_prompt = format!(
-            "Design and build an interactive tldraw board for this request, then open it for \
-             the user:\n{arg}\n\nUse the `tldraw` tool. If the app is not installed, call \
-             action=install first. Produce the board file and call action=open so the user sees it.",
+            "Design a diagram for this request using the `tldraw` tool ONLY:\n{arg}\n\n\
+             Rules:\n\
+             1. If tldraw offline is not installed: action=install, then action=status.\n\
+             2. Build with action=create — pass title=… and shapes=[{{x,y,w,h,text,color}}…].\n\
+             3. create ALWAYS saves to the user's Desktop (filename from title or path basename). \
+             Do not write into the repo/workspace.\n\
+             4. NEVER invent .tldraw JSON with write_file. Must use create (richText + valid indices).\n\
+             5. create opens the board. If nothing appears: Alt+Tab for \"tldraw offline\", \
+             or open the .tldraw from Desktop / drag onto https://www.tldraw.com/.",
         );
         self.start_turn_labeled(&format!("/draw {arg}"), &model_prompt);
     }
 
     /// Open a `.tldraw`/`.tldr` file directly in the installed app.
+    /// Prefer Desktop (create output location), then cwd, then absolute.
     fn draw_open_file(&mut self, rel: &str) {
-        let abs = if std::path::Path::new(rel).is_absolute() {
-            std::path::PathBuf::from(rel)
+        let p = std::path::Path::new(rel);
+        let abs = if p.is_absolute() {
+            p.to_path_buf()
         } else {
-            self.cwd.join(rel)
+            let desk = crate::tools::tldraw::desktop_dir().join(rel);
+            if desk.is_file() {
+                desk
+            } else {
+                let name = p
+                    .file_name()
+                    .map(|n| crate::tools::tldraw::desktop_dir().join(n));
+                match name {
+                    Some(n) if n.is_file() => n,
+                    _ => self.cwd.join(rel),
+                }
+            }
         };
         if !abs.is_file() {
-            self.push_error(format!("no such file: {}", abs.display()));
+            self.push_error(format!(
+                "no such file: {}\n  (new boards land on Desktop: {})",
+                abs.display(),
+                crate::tools::tldraw::desktop_dir().display()
+            ));
             return;
         }
-        let Some(app) = crate::tools::tldraw::app_path() else {
-            self.push_note(
-                Tone::Mode,
-                "tldraw offline not installed — /draw install first".into(),
-            );
-            return;
-        };
-        match std::process::Command::new(&app).arg(&abs).spawn() {
-            Ok(_) => self.push_note(
-                Tone::Neutral,
-                format!("opened {} in tldraw offline", abs.display()),
-            ),
-            Err(e) => match crate::open_uri::open_path(&abs) {
-                Ok(()) => self.push_note(
-                    Tone::Neutral,
-                    format!("opened {} (via file association)", abs.display()),
-                ),
-                Err(e2) => {
-                    self.push_error(format!("could not open {}: {e2} / {e}", abs.display()))
-                }
-            },
+        match crate::tools::tldraw::launch_on_file(&abs) {
+            Ok(msg) => self.push_note(Tone::Neutral, msg),
+            Err(e) => self.push_error(e.to_string()),
         }
     }
 
