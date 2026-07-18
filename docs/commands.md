@@ -380,7 +380,7 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/receipt` | Session receipt — hash-chained verification |
 | `/cua` | Computer-use desktop driver: `on` \| `off` \| `status` |
 | `/graph` | Inline live execution-graph card for the current turn |
-| `/draw` | Open / build interactive **tldraw offline** boards (`/draw <file.tldraw>`, `/draw install`, `/draw <idea>`). New boards always save to the **Desktop** as real `.tldraw` files (not invented JSON). |
+| `/draw` | Open / build **tldraw offline** boards (`/draw <file.tldraw>`, `/draw install`, `/draw <idea>`). New static boards save to the **Desktop**. Opening a board auto-enables document scripts (canvas API `script-workspace` → applied) for interactive agent-shape files. |
 | `/steer` | Inject a message into the running turn without cancelling it |
 | `/scan` | Map the codebase → shareable foglamp scan |
 | `/goal` | Set a standing session goal |

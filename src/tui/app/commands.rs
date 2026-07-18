@@ -1621,15 +1621,22 @@ impl App {
             return;
         }
         let model_prompt = format!(
-            "Design a diagram for this request using the `tldraw` tool ONLY:\n{arg}\n\n\
+            "Design / open an interactive tldraw offline board for this request.\n{arg}\n\n\
+             Use the `tldraw` tool (and shell only if you need the canvas HTTP API beyond the tool).\n\n\
+             Capabilities (official offline app):\n\
+             - Static boards: action=create (Desktop .tldraw, dark theme, contrast-safe shapes).\n\
+             - Interactive boards with document scripts / agent-shapes: action=open path= to an existing \
+             interactive file (ZIP .tldraw with script/). open AUTO-ENABLES scripts (script-workspace → applied).\n\
+             - Live edits: action=api code=\"return await api.getDocs()\" etc. after open.\n\
+             - Re-enable scripts: action=enable_scripts path=…\n\n\
              Rules:\n\
-             1. If tldraw offline is not installed: action=install, then action=status.\n\
-             2. Build with action=create — pass title=… and shapes=[{{x,y,w,h,text,color}}…].\n\
-             3. create ALWAYS saves to the user's Desktop (filename from title or path basename). \
-             Do not write into the repo/workspace.\n\
-             4. NEVER invent .tldraw JSON with write_file. Must use create (richText + valid indices).\n\
-             5. create opens the board. If nothing appears: Alt+Tab for \"tldraw offline\", \
-             or open the .tldraw from Desktop / drag onto https://www.tldraw.com/.",
+             1. Install if needed (action=install), then status.\n\
+             2. Prefer open of a real interactive board when the user names a .tldraw path \
+             (e.g. C:\\\\Users\\\\david\\\\Scripts\\\\nn-digits.tldraw).\n\
+             3. For new static diagrams use create (title + shapes). NEVER write_file fake JSON.\n\
+             4. Contrast-aware shapes under dark theme (blue/green/red/… with readable labels).\n\
+             5. After open, confirm scripts line shows state=applied when hasScript boards.\n\
+             6. Report Desktop/path + Alt+Tab for the window.",
         );
         self.start_turn_labeled(&format!("/draw {arg}"), &model_prompt);
     }

@@ -30,6 +30,7 @@ pub fn is_read_only_action(args: &str) -> bool {
         .and_then(|a| a.as_str())
         .unwrap_or("status");
     matches!(action, "status" | "detect")
+    // open/create/enable_scripts/api mutate desktop or canvas
 }
 
 impl Tool for Tldraw {
@@ -38,14 +39,15 @@ impl Tool for Tldraw {
     }
 
     fn description(&self) -> &str {
-        "tldraw offline desktop app + valid .tldraw boards. \
-         action=status: installed? \
-         action=install: download official installer. \
-         action=create: write a REAL .tldraw from shapes and open it. \
-         Outputs ALWAYS save to the user's Desktop (filename only; path= optional). \
-         action=open (or run): launch the app on path=.tldraw (Desktop or absolute). \
-         NEVER invent .tldraw JSON with write_file — use create. \
-         shape items: {id?, x, y, w, h, text, color?, geo?} color= black|grey|white|blue|green|red|orange|yellow|violet|light-blue|light-green|light-red|light-violet."
+        "tldraw offline desktop app + interactive boards (document scripts + agent-shapes). \
+         action=status: app + local API (port/token) + open docs. \
+         action=install: official installer. \
+         action=create: static Desktop .tldraw from shapes (contrast-safe, dark theme). \
+         action=open/run: open path and AUTO-ENABLE document scripts (script-workspace → applied). \
+         action=enable_scripts: re-enable scripts on an already-open board. \
+         action=api: run JS against live canvas {code} (optional path= to pick doc). \
+         NEVER invent .tldraw JSON with write_file. Interactive demos (ZIP archives with script/) \
+         open with scripts enabled automatically."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -54,24 +56,28 @@ impl Tool for Tldraw {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["status", "detect", "install", "open", "run", "create"],
+                    "enum": ["status", "detect", "install", "open", "run", "create", "enable_scripts", "api"],
                     "default": "status"
                 },
                 "path": {
                     "type": "string",
-                    "description": "Filename or path. create: saved under Desktop (basename used). open: Desktop-relative, absolute, or workspace-relative."
+                    "description": "Filename or path. create → Desktop basename. open → absolute/Desktop/workspace."
                 },
                 "title": {
                     "type": "string",
-                    "description": "Document / page title for create (also used for default filename if path omitted)"
+                    "description": "Document / page title for create"
                 },
                 "shapes": {
                     "type": "array",
                     "description": "For create: list of boxes {x,y,w,h,text,color?,geo?}",
                     "items": { "type": "object" }
                 },
+                "code": {
+                    "type": "string",
+                    "description": "For action=api: JavaScript with top-level await (api / editor helpers)"
+                },
                 "spec": {
-                    "description": "Legacy: ignored if shapes provided; else stored as .spec.json"
+                    "description": "Legacy: ignored if shapes provided"
                 }
             }
         })
@@ -84,8 +90,10 @@ impl Tool for Tldraw {
             "install" => install(),
             "open" | "run" => open_action(args, &ctx.cwd),
             "create" => create_action(args, &ctx.cwd),
+            "enable_scripts" => enable_scripts_action(args, &ctx.cwd),
+            "api" => api_action(args, &ctx.cwd),
             other => Err(MuseError::Tool(format!(
-                "unknown tldraw action '{other}' — use status|install|open|create"
+                "unknown tldraw action '{other}' — use status|install|open|create|enable_scripts|api"
             ))),
         }
     }
@@ -399,75 +407,75 @@ pub fn launch_on_file(abs: &Path) -> Result<String> {
     let notes = validate_or_hint(&abs);
     let file_is_valid = notes.is_empty();
 
-    let Some(app) = app_path() else {
-        // Last-ditch: OS association + web note.
+    // Dark canvas before the app reads prefs — white labels stay readable.
+    ensure_dark_theme();
+
+    if app_path().is_none() {
         let _ = crate::open_uri::open_path(&abs);
         return Err(MuseError::Tool(
             "tldraw offline is not installed — run action=install first, then open again.\n\
              Or drag the file onto https://www.tldraw.com/ in a browser."
                 .into(),
         ));
-    };
+    }
 
     let mut methods: Vec<String> = Vec::new();
     let mut opened = false;
 
-    // Only pass the path when the document is valid. Invalid invented JSON
-    // makes Electron run headless / without a real window.
+    // Only pass the path when the document is valid (ZIP archive OR JSON snapshot).
     let file_arg = if file_is_valid {
         Some(abs.as_path())
     } else {
         None
     };
 
-    // 1) Primary: `cmd /c start "" app [file]` — start detaches into the
-    //    interactive desktop session; do NOT use DETACHED_PROCESS on Electron.
-    match spawn_via_shell_start(&app, file_arg) {
-        Ok(()) => {
-            methods.push(if file_is_valid {
-                format!("cmd start \"{}\" + file", app.display())
-            } else {
-                format!("cmd start bare app \"{}\" (file invalid — not passed)", app.display())
-            });
-            opened = true;
-        }
-        Err(e) => methods.push(format!("cmd start failed: {e}")),
-    }
-
-    // 2) Fallback: CreateProcess on the exe (no creation-flag tricks).
-    if !opened {
-        match spawn_app_plain(&app, file_arg) {
+    // 1) Shell open of the *file* (Invoke-Item / association) — most reliable
+    //    for landing on the correct board (single-instance app).
+    if file_is_valid {
+        match crate::open_uri::open_path(&abs) {
             Ok(()) => {
-                methods.push(format!("direct spawn {}", app.display()));
+                methods.push("shell open file".into());
                 opened = true;
             }
-            Err(e) => methods.push(format!("direct spawn failed: {e}")),
+            Err(e) => methods.push(format!("shell open failed: {e}")),
         }
     }
 
-    // 3) Reveal in Explorer (user can File→Open from the app, or drag onto web).
-    #[cfg(windows)]
-    {
-        let _ = std::process::Command::new("explorer.exe")
-            .arg(format!("/select,{}", abs.display()))
-            .spawn();
-        methods.push("explorer /select".into());
+    // 2) PowerShell Start-Process app+file
+    if !opened {
+        if let Some(app) = app_path() {
+            match spawn_via_powershell_start(&app, file_arg) {
+                Ok(()) => {
+                    methods.push("powershell Start-Process".into());
+                    opened = true;
+                }
+                Err(e) => methods.push(format!("powershell start failed: {e}")),
+            }
+        }
     }
 
-    methods.push("web: https://www.tldraw.com/ (drag file onto page)".into());
+    // 3) cmd start / plain spawn
+    if !opened {
+        if let Some(app) = app_path() {
+            if spawn_via_shell_start(&app, file_arg).is_ok()
+                || spawn_app_plain(&app, file_arg).is_ok()
+            {
+                methods.push("cmd/direct spawn".into());
+                opened = true;
+            }
+        }
+    }
 
     if !opened {
         return Err(MuseError::Tool(format!(
-            "could not launch tldraw offline at {}\n  tried: {}\n\
-             Open the app from the Start menu, then File → Open:\n  {}",
-            app.display(),
-            methods.join(" · "),
-            abs.display()
+            "could not launch tldraw offline for {}\n  tried: {}",
+            abs.display(),
+            methods.join(" · ")
         )));
     }
 
     let mut out = format!(
-        "opened tldraw offline for {}\n  methods: {}\n",
+        "opened tldraw offline (dark theme) for {}\n  methods: {}\n",
         abs.display(),
         methods.join(" · ")
     );
@@ -475,16 +483,56 @@ pub fn launch_on_file(abs: &Path) -> Result<String> {
         out.push_str(&notes);
         out.push('\n');
         out.push_str(
-            "App launched without that file (invalid docs crash the window). \
-             Use tldraw(action=create, path=…, shapes=[…]) to rewrite a real board, \
-             then open again. Or File → Open after fixing the JSON.\n",
+            "App launched without that file (invalid docs). \
+             Use tldraw(action=create, …) or open a real interactive ZIP .tldraw.\n",
         );
-    } else {
-        out.push_str(
-            "Look for the \"tldraw offline\" window (Alt+Tab if needed).\n",
-        );
+        return Ok(out);
     }
+
+    // Auto-enable document scripts (script-workspace → state applied).
+    // Without this, hasScript boards open as not-watching and agent scripts look dead.
+    match enable_scripts_for_path(&abs, Duration::from_secs(35)) {
+        Ok(report) => {
+            out.push_str(&report);
+        }
+        Err(e) => {
+            out.push_str(&format!(
+                "scripts: not enabled yet ({e})\n  \
+                 Re-run tldraw(action=enable_scripts, path=…) after the window appears, \
+                 or wait for localhost:7236 (see %APPDATA%\\tldraw\\server.json).\n"
+            ));
+        }
+    }
+    out.push_str("Look for the tldraw offline window (Alt+Tab if needed).\n");
     Ok(out)
+}
+
+/// Detach GUI via PowerShell so Electron is not a child of nur's console/job.
+fn spawn_via_powershell_start(app: &Path, file: Option<&Path>) -> std::result::Result<(), String> {
+    let app_s = app.to_string_lossy().replace('\'', "''");
+    let script = match file {
+        Some(f) => {
+            let f_s = f.to_string_lossy().replace('\'', "''");
+            format!(
+                "Start-Process -FilePath '{app_s}' -ArgumentList @('{f_s}') -WorkingDirectory (Split-Path -Parent '{app_s}')"
+            )
+        }
+        None => format!(
+            "Start-Process -FilePath '{app_s}' -WorkingDirectory (Split-Path -Parent '{app_s}')"
+        ),
+    };
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", &script])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("powershell exited {status}"))
+    }
 }
 
 /// Windows: `cmd /c start "" app [file]` so the GUI is owned by Explorer's
@@ -505,40 +553,49 @@ fn spawn_via_shell_start(app: &Path, file: Option<&Path>) -> std::result::Result
     }
 }
 
-/// Plain CreateProcess / exec — no DETACHED_PROCESS (that flag can leave
-/// Electron running with MainWindowHandle=0).
+/// Plain CreateProcess / exec — break away from nur's job so CLI exit cannot
+/// kill Electron. Avoid DETACHED_PROCESS alone (can leave MainWindowHandle=0).
 fn spawn_app_plain(app: &Path, file: Option<&Path>) -> std::result::Result<(), String> {
     let mut cmd = std::process::Command::new(app);
     if let Some(f) = file {
         cmd.arg(f);
     }
-    // Detach stdio so nur's pipes do not pin Electron; still a normal GUI process.
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        // CREATE_NEW_PROCESS_GROUP only — survive parent, keep a real window.
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
     }
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 fn validate_or_hint(path: &Path) -> String {
+    // Official offline docs can be:
+    // 1) ZIP archive (PK..) containing db.sqlite + script/ — interactive boards
+    // 2) JSON snapshot with tldrawFileFormatVersion + records — static boards
+    if let Ok(mut f) = std::fs::File::open(path) {
+        let mut magic = [0u8; 4];
+        use std::io::Read;
+        if f.read_exact(&mut magic).is_ok() && &magic == b"PK\x03\x04" {
+            return String::new(); // valid ZIP .tldraw
+        }
+    }
     let Ok(text) = std::fs::read_to_string(path) else {
-        return String::new();
+        return "warning: cannot read file".into();
     };
     let Ok(v) = serde_json::from_str::<Value>(&text) else {
-        return "warning: file is not JSON — tldraw may refuse it.".into();
+        return "warning: not a ZIP .tldraw archive and not JSON — tldraw may refuse it.".into();
     };
     if v.get("tldrawFileFormatVersion").is_some() && v.get("records").is_some() {
         return String::new();
     }
-    // Common failure mode: models invent a fake schema via write_file.
-    "warning: this is NOT a valid .tldraw document (missing tldrawFileFormatVersion + records). \
-     Use tldraw(action=create, path=…, shapes=[…]) to write a real file the app can open."
+    "warning: this is NOT a valid .tldraw document (missing tldrawFileFormatVersion + records, \
+     and not a ZIP archive). Use tldraw(action=create, …) for static boards, or open a real \
+     interactive .tldraw (e.g. nn-digits) produced by the offline app."
         .into()
 }
 
@@ -546,6 +603,7 @@ fn validate_or_hint(path: &Path) -> String {
 
 fn create_action(args: &Value, _cwd: &Path) -> Result<String> {
     // Always Desktop — not workspace (sandbox would block Desktop otherwise).
+    ensure_dark_theme();
     let abs = resolve_create_path(args)?;
     if let Some(parent) = abs.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -645,14 +703,9 @@ fn build_tldraw_document(title: &str, shapes: &[Value]) -> Value {
             .get("color")
             .and_then(|v| v.as_str())
             .map(normalize_color)
-            .unwrap_or_else(|| "black".into());
-        // Dark fills need light labels; light fills need dark labels.
-        let label_color = match color.as_str() {
-            "white" | "yellow" | "light-blue" | "light-green" | "light-red" | "light-violet" => {
-                "black"
-            }
-            _ => "white",
-        };
+            .unwrap_or_else(|| "blue".into());
+        // High-contrast under dark theme (pastel solid fills + white text = invisible).
+        let (color, label_color, fill) = contrast_style(&color);
         let geo = s
             .get("geo")
             .and_then(|v| v.as_str())
@@ -685,10 +738,10 @@ fn build_tldraw_document(title: &str, shapes: &[Value]) -> Value {
                 "richText": to_rich_text(&text),
                 "labelColor": label_color,
                 "color": color,
-                "fill": "solid",
-                "dash": "draw",
+                "fill": fill,
+                "dash": "solid",
                 "size": "m",
-                "font": "draw",
+                "font": "sans",
                 "align": "middle",
                 "verticalAlign": "middle",
                 "url": "",
@@ -866,16 +919,386 @@ fn normalize_color(c: &str) -> String {
     }
 }
 
+/// Map a requested color to (stroke/fill color, labelColor, fill) that stays readable.
+///
+/// tldraw **solid** fills are pastel tints of `color`. White labels on those pastels
+/// vanish in light mode. We force dark theme on open (see `ensure_dark_theme`) and
+/// still pair labels for dark-canvas readability.
+fn contrast_style(color: &str) -> (String, String, &'static str) {
+    let c = normalize_color(color);
+    // Near-white / yellow / light-* : keep light fill, force black text.
+    // Everything else: saturated stroke + solid fill + white text (dark theme).
+    match c.as_str() {
+        "white" => ("grey".into(), "black".into(), "solid"),
+        "yellow" | "light-blue" | "light-green" | "light-red" | "light-violet" => {
+            (c, "black".into(), "solid")
+        }
+        // Mid greys: black label is safer on pastel solid
+        "grey" => ("grey".into(), "black".into(), "solid"),
+        // Strong accents — white label under dark theme
+        "black" | "blue" | "green" | "red" | "orange" | "violet" => {
+            (c, "white".into(), "solid")
+        }
+        other => (other.to_string(), "white".into(), "solid"),
+    }
+}
+
+/// Force tldraw offline user preference to **dark** so solid fills + white labels
+/// stay readable. Best-effort; never fails create/open.
+pub fn ensure_dark_theme() {
+    let Some(cfg_path) = tldraw_config_path() else {
+        return;
+    };
+    if let Some(parent) = cfg_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let mut root: Value = std::fs::read_to_string(&cfg_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| {
+            json!({
+                "version": "2.0.0",
+                "userPreferences": {},
+                "featureFlags": {}
+            })
+        });
+    if !root.is_object() {
+        root = json!({
+            "version": "2.0.0",
+            "userPreferences": {},
+            "featureFlags": {}
+        });
+    }
+    let prefs = root
+        .as_object_mut()
+        .unwrap()
+        .entry("userPreferences")
+        .or_insert_with(|| json!({}));
+    if let Some(obj) = prefs.as_object_mut() {
+        obj.insert("theme".into(), json!("dark"));
+        // Keep a visible board background when exporting / sharing
+        obj.entry("exportBackground").or_insert(json!(true));
+    }
+    if let Ok(body) = serde_json::to_string_pretty(&root) {
+        let _ = std::fs::write(&cfg_path, body);
+    }
+}
+
+fn tldraw_config_path() -> Option<PathBuf> {
+    // Official offline app stores prefs here (Windows Roaming\tldraw).
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return Some(PathBuf::from(appdata).join("tldraw").join("config.json"));
+    }
+    dirs::config_dir().map(|c| c.join("tldraw").join("config.json"))
+}
+
+// ── local canvas API (localhost + server.json) ─────────────────────────────
+
+#[derive(Debug, Clone)]
+struct ServerInfo {
+    port: u16,
+    token: String,
+}
+
+fn server_json_path() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("tldraw").join("server.json");
+    }
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("tldraw")
+        .join("server.json")
+}
+
+fn read_server_info() -> Option<ServerInfo> {
+    let p = server_json_path();
+    let text = std::fs::read_to_string(p).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let port = v.get("port")?.as_u64()? as u16;
+    let token = v.get("token")?.as_str()?.to_string();
+    if token.is_empty() {
+        return None;
+    }
+    Some(ServerInfo { port, token })
+}
+
+fn wait_for_server(timeout: Duration) -> Option<ServerInfo> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < timeout {
+        if let Some(s) = read_server_info() {
+            // Probe /api/search lightly
+            if canvas_api_post(&s, "/api/search", &json!({"code": "return 1"})).is_ok() {
+                return Some(s);
+            }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    None
+}
+
+fn canvas_api_request(
+    server: &ServerInfo,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> Result<Value> {
+    let url = format!("http://127.0.0.1:{}{path}", server.port);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| MuseError::Tool(format!("http client: {e}")))?;
+    let mut req = match method {
+        "GET" => client.get(&url),
+        _ => client.post(&url),
+    };
+    req = req.header("authorization", format!("Bearer {}", server.token));
+    if let Some(b) = body {
+        req = req
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(b).unwrap_or_else(|_| "{}".into()));
+    }
+    let resp = req
+        .send()
+        .map_err(|e| MuseError::Tool(format!("canvas API {method} {path}: {e}")))?;
+    let status = resp.status();
+    let text = resp
+        .text()
+        .map_err(|e| MuseError::Tool(format!("canvas API body: {e}")))?;
+    if !status.is_success() {
+        return Err(MuseError::Tool(format!(
+            "canvas API {status}: {}",
+            text.chars().take(300).collect::<String>()
+        )));
+    }
+    serde_json::from_str(&text).map_err(|e| MuseError::Tool(format!("canvas API json: {e}")))
+}
+
+fn canvas_api_post(server: &ServerInfo, path: &str, body: &Value) -> Result<Value> {
+    canvas_api_request(server, "POST", path, Some(body))
+}
+
+fn canvas_api_get(server: &ServerInfo, path: &str) -> Result<Value> {
+    canvas_api_request(server, "GET", path, None)
+}
+
+fn path_matches_doc(doc: &Value, abs: &Path) -> bool {
+    let abs_s = abs.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let name = abs
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    for key in ["filePath", "name", "displayPath"] {
+        if let Some(v) = doc.get(key).and_then(|x| x.as_str()) {
+            let vv = v.replace('/', "\\").to_ascii_lowercase();
+            if vv == abs_s || vv.ends_with(&abs_s) || vv.contains(&name) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Pick API doc id. Prefer short `documentId` (stable for /api/doc/…), fall back to full `id`.
+fn find_doc_id(server: &ServerInfo, abs: &Path) -> Result<String> {
+    let resp = canvas_api_post(
+        server,
+        "/api/search",
+        &json!({"code": "return await api.getDocs()"}),
+    )?;
+    let docs = resp.get("result").cloned().unwrap_or(resp.clone());
+    let arr = docs
+        .as_array()
+        .ok_or_else(|| MuseError::Tool(format!("getDocs unexpected: {docs}")))?;
+
+    let pick = |d: &Value| -> Option<String> {
+        d.get("documentId")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| d.get("id").and_then(|x| x.as_str()).map(|s| s.to_string()))
+    };
+
+    if let Some(d) = arr.iter().find(|d| path_matches_doc(d, abs)) {
+        if let Some(id) = pick(d) {
+            return Ok(id);
+        }
+    }
+    if let Some(d) = arr
+        .iter()
+        .find(|d| d.get("focusOrder").and_then(|x| x.as_i64()) == Some(0))
+    {
+        if let Some(id) = pick(d) {
+            return Ok(id);
+        }
+    }
+    if let Some(d) = arr
+        .iter()
+        .find(|d| d.get("hasScript").and_then(|x| x.as_bool()) == Some(true))
+    {
+        if let Some(id) = pick(d) {
+            return Ok(id);
+        }
+    }
+    arr.first()
+        .and_then(pick)
+        .ok_or_else(|| MuseError::Tool("no open documents on canvas API".into()))
+}
+
+/// Open script-workspace so document scripts are watched + applied.
+/// Returns a human report. Critical for interactive boards (nn-digits, agent-shapes).
+pub fn enable_scripts_for_path(abs: &Path, timeout: Duration) -> Result<String> {
+    let server = wait_for_server(timeout).ok_or_else(|| {
+        MuseError::Tool(
+            "canvas API not up — is tldraw offline running? (expect %APPDATA%\\tldraw\\server.json)"
+                .into(),
+        )
+    })?;
+    let doc_id = find_doc_id(&server, abs)?;
+    // Status before
+    let before = canvas_api_get(&server, &format!("/api/doc/{doc_id}/script-status"))
+        .unwrap_or(json!({}));
+    let before_state = before
+        .pointer("/result/state")
+        .and_then(|x| x.as_str())
+        .unwrap_or("?");
+
+    let ws = canvas_api_post(
+        &server,
+        &format!("/api/doc/{doc_id}/script-workspace"),
+        &json!({}),
+    )?;
+    let is_default = ws
+        .pointer("/result/isDefaultScript")
+        .and_then(|x| x.as_bool())
+        .unwrap_or(true);
+    let main_js = ws
+        .pointer("/result/mainJsPath")
+        .and_then(|x| x.as_str())
+        .unwrap_or("");
+    let has_script_manifest = ws.pointer("/result/manifest/sha256").is_some();
+
+    // Poll until applied / watching
+    let mut final_state = "unknown".to_string();
+    let mut watching = false;
+    for _ in 0..25 {
+        if let Ok(st) = canvas_api_get(&server, &format!("/api/doc/{doc_id}/script-status")) {
+            final_state = st
+                .pointer("/result/state")
+                .and_then(|x| x.as_str())
+                .unwrap_or("?")
+                .to_string();
+            watching = st
+                .pointer("/result/watching")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            if final_state == "applied" || final_state == "error" || (watching && final_state != "not-watching")
+            {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+
+    let mut out = format!(
+        "scripts: enabled for doc {doc_id}\n  \
+         before: {before_state} → after: {final_state} (watching={watching})\n  \
+         main.js: {main_js}\n  \
+         defaultScript={is_default} manifest={has_script_manifest}\n  \
+         api: http://127.0.0.1:{}/  (token in server.json)\n",
+        server.port
+    );
+    if final_state == "applied" {
+        out.push_str("  ✓ document scripts are applied and live\n");
+    } else if final_state == "error" {
+        out.push_str("  ✗ script apply error — check .script-workspace/error.log\n");
+    } else {
+        out.push_str("  … scripts may still be loading; call enable_scripts again if needed\n");
+    }
+    Ok(out)
+}
+
+fn enable_scripts_action(args: &Value, cwd: &Path) -> Result<String> {
+    let path = arg_str(args, "path").unwrap_or_default();
+    let abs = if path.is_empty() {
+        // Focused / first open doc — still need a path hint for matching; use Desktop empty
+        // and let find_doc_id fall through to focusOrder 0
+        desktop_dir()
+    } else {
+        resolve_open_path(cwd, &path)?
+    };
+    ensure_dark_theme();
+    // If app not up, try open first
+    if read_server_info().is_none() && !path.is_empty() && abs.is_file() {
+        let _ = launch_on_file(&abs);
+        return Ok("open+enable_scripts already ran via open\n".into());
+    }
+    if path.is_empty() {
+        let server = wait_for_server(Duration::from_secs(10)).ok_or_else(|| {
+            MuseError::Tool("canvas API down — open a board first".into())
+        })?;
+        let docs = canvas_api_post(
+            &server,
+            "/api/search",
+            &json!({"code": "return await api.getDocs()"}),
+        )?;
+        let arr = docs
+            .get("result")
+            .and_then(|x| x.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let id = arr
+            .iter()
+            .find(|d| d.get("focusOrder").and_then(|x| x.as_i64()) == Some(0))
+            .or_else(|| arr.first())
+            .and_then(|d| d.get("id"))
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| MuseError::Tool("no open docs".into()))?;
+        // Fake path for report — call workspace directly
+        let dummy = PathBuf::from(id);
+        return enable_scripts_for_path(&dummy, Duration::from_secs(20));
+    }
+    enable_scripts_for_path(&abs, Duration::from_secs(25))
+}
+
+fn api_action(args: &Value, cwd: &Path) -> Result<String> {
+    let code = arg_str(args, "code")
+        .map_err(|_| MuseError::Tool("api requires code= JavaScript with await api.…".into()))?;
+    let server = wait_for_server(Duration::from_secs(15)).ok_or_else(|| {
+        MuseError::Tool("canvas API not running — open a .tldraw first".into())
+    })?;
+    // optional path just to ensure scripts if given
+    if let Ok(path) = arg_str(args, "path") {
+        if !path.is_empty() {
+            if let Ok(abs) = resolve_open_path(cwd, &path) {
+                let _ = enable_scripts_for_path(&abs, Duration::from_secs(10));
+            }
+        }
+    }
+    let resp = canvas_api_post(
+        &server,
+        "/api/search",
+        &json!({ "code": code }),
+    )?;
+    Ok(format!(
+        "canvas api ok\n{}\n",
+        serde_json::to_string_pretty(&resp).unwrap_or_else(|_| resp.to_string())
+    ))
+}
+
 fn status_report() -> String {
     let mut s = String::new();
     match app_path() {
         Some(app) => {
             s.push_str(&format!("tldraw offline: INSTALLED\n  {}\n", app.display()));
             s.push_str(&format!("output dir (create): {}\n", desktop_dir().display()));
-            s.push_str("open:    tldraw(action=open, path=board.tldraw)  # Desktop or absolute\n");
             s.push_str(
-                "create:  tldraw(action=create, title=…, shapes=[{x,y,w,h,text,color}])\n\
-                 \t→ always writes to Desktop (valid richText + index keys)\n",
+                "open:    tldraw(action=open, path=board.tldraw)  # auto-enables document scripts\n",
+            );
+            s.push_str(
+                "create:  tldraw(action=create, title=…, shapes=[…]) → Desktop (static board)\n",
+            );
+            s.push_str(
+                "scripts: tldraw(action=enable_scripts, path=…) · api: action=api code=\"return await api.getDocs()\"\n",
             );
         }
         None => {
@@ -884,6 +1307,29 @@ fn status_report() -> String {
                 "install: tldraw(action=install) — github.com/tldraw/tldraw-offline\n",
             );
         }
+    }
+    match read_server_info() {
+        Some(si) => {
+            s.push_str(&format!(
+                "canvas API: UP  http://127.0.0.1:{}  (server.json present)\n",
+                si.port
+            ));
+            if let Ok(docs) = canvas_api_post(
+                &si,
+                "/api/search",
+                &json!({"code": "return await api.getDocs()"}),
+            ) {
+                if let Some(arr) = docs.get("result").and_then(|x| x.as_array()) {
+                    s.push_str(&format!("open docs: {}\n", arr.len()));
+                    for d in arr.iter().take(6) {
+                        let name = d.get("name").and_then(|x| x.as_str()).unwrap_or("?");
+                        let hs = d.get("hasScript").and_then(|x| x.as_bool()).unwrap_or(false);
+                        s.push_str(&format!("  - {name}  hasScript={hs}\n"));
+                    }
+                }
+            }
+        }
+        None => s.push_str("canvas API: down (open a board to start localhost server)\n"),
     }
     match latest_asset_url() {
         Ok((tag, _)) => s.push_str(&format!("latest release: {tag}\n")),
@@ -952,6 +1398,18 @@ mod tests {
     }
 
     #[test]
+    fn validate_accepts_zip_magic() {
+        let dir = std::env::temp_dir().join(format!("nur-tldraw-zip-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let p = dir.join("board.tldraw");
+        // Minimal ZIP local-file header magic
+        std::fs::write(&p, b"PK\x03\x04dummy").unwrap();
+        let hint = validate_or_hint(&p);
+        assert!(hint.is_empty(), "ZIP .tldraw must be valid, got: {hint}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn create_path_lands_on_desktop() {
         let args = json!({"title": "Car Meet Parking", "path": "subdir/foo.tldraw"});
         let p = resolve_create_path(&args).unwrap();
@@ -967,5 +1425,33 @@ mod tests {
         let name = p.file_name().unwrap().to_string_lossy();
         assert!(name.ends_with(".tldraw"), "{name}");
         assert!(name.contains("my-cool-board"), "{name}");
+    }
+
+    #[test]
+    fn contrast_style_never_white_on_white() {
+        let (c, label, _) = contrast_style("white");
+        assert_ne!(c, "white");
+        assert_eq!(label, "black");
+        let (_, label_blue, _) = contrast_style("blue");
+        assert_eq!(label_blue, "white");
+        let (_, label_yellow, _) = contrast_style("yellow");
+        assert_eq!(label_yellow, "black");
+    }
+
+    #[test]
+    fn build_document_applies_contrast_labels() {
+        let shapes = vec![
+            json!({"text": "A", "color": "blue"}),
+            json!({"text": "B", "color": "yellow"}),
+        ];
+        let doc = build_tldraw_document("T", &shapes);
+        let shapes: Vec<_> = doc["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["typeName"] == "shape")
+            .collect();
+        assert_eq!(shapes[0]["props"]["labelColor"], "white");
+        assert_eq!(shapes[1]["props"]["labelColor"], "black");
     }
 }
