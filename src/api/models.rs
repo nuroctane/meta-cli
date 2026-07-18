@@ -230,7 +230,12 @@ fn fetch_once(
                 if oauth.is_some() || crate::api::anthropic::is_oauth_token(api_key) {
                     req = req
                         .bearer_auth(api_key)
-                        .header("anthropic-beta", crate::api::anthropic::OAUTH_BETA);
+                        .header("anthropic-beta", crate::api::anthropic::OAUTH_BETAS)
+                        .header("x-app", "cli")
+                        .header(
+                            "User-Agent",
+                            format!("claude-cli/{}", env!("CARGO_PKG_VERSION")),
+                        );
                 } else {
                     req = req.header("x-api-key", api_key);
                 }

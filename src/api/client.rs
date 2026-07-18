@@ -154,13 +154,22 @@ impl ApiClient {
     /// Anthropic as plain Bearer-only Chat Completions.
     fn auth_headers(&self, mut req: RequestBuilder) -> RequestBuilder {
         let api_key = self.api_key_for_request();
+        let is_claude_oauth =
+            self.oauth.is_some() || super::anthropic::is_oauth_token(&api_key);
         req = match self.style {
             ApiStyle::AnthropicMessages => {
                 req = req.header("anthropic-version", "2023-06-01");
-                if self.oauth.is_some() || super::anthropic::is_oauth_token(&api_key) {
+                if is_claude_oauth {
+                    // Claude Code sends oauth + claude-code betas and a cli User-Agent.
+                    // Bare `nur-cli/…` + only oauth-2025 often surfaces as HTTP 429.
                     req = req
                         .bearer_auth(&api_key)
-                        .header("anthropic-beta", super::anthropic::OAUTH_BETA);
+                        .header("anthropic-beta", super::anthropic::OAUTH_BETAS)
+                        .header("x-app", "cli")
+                        .header(
+                            "User-Agent",
+                            format!("claude-cli/{}", env!("CARGO_PKG_VERSION")),
+                        );
                 } else {
                     req = req.header("x-api-key", &api_key);
                 }
@@ -170,8 +179,21 @@ impl ApiClient {
         };
         if self.provider_id == "openai" {
             if let Some(oauth) = &self.oauth {
+                // Codex backend requires a known originator (`codex_cli_rs`) +
+                // account id + OpenAI-Beta; unknown originators are rejected.
+                const OPENAI_ORIGINATOR: &str = "codex_cli_rs";
+                req = req
+                    .header("originator", OPENAI_ORIGINATOR)
+                    .header("OpenAI-Beta", "responses_websockets=2026-02-06")
+                    .header(
+                        "User-Agent",
+                        format!("{OPENAI_ORIGINATOR}/{}", env!("CARGO_PKG_VERSION")),
+                    );
                 if let Some(account_id) = &oauth.account_id {
-                    req = req.header("ChatGPT-Account-ID", account_id);
+                    req = req
+                        .header("ChatGPT-Account-ID", account_id)
+                        .header("ChatGPT-Account-Id", account_id)
+                        .header("chatgpt-account-id", account_id);
                 }
                 if oauth.is_fedramp {
                     req = req.header("X-OpenAI-Fedramp", "true");
@@ -621,6 +643,12 @@ impl ApiClient {
                         super::anthropic::DEFAULT_SONNET
                     ));
                 }
+                if code == 429 && (self.oauth.is_some() || super::anthropic::is_oauth_token(&self.api_key)) {
+                    msg.push_str(
+                        " · Claude OAuth/subscription limit or client fingerprint — wait and retry, \
+                         or /logout and use an ANTHROPIC_API_KEY",
+                    );
+                }
                 return Err(MuseError::Api {
                     status: code,
                     message: msg,
@@ -863,6 +891,18 @@ mod tests {
         assert_eq!(
             request.headers().get("Authorization").unwrap(),
             "Bearer oauth-token"
+        );
+        assert_eq!(
+            request.headers().get("originator").and_then(|v| v.to_str().ok()),
+            Some("codex_cli_rs"),
+            "unknown originator makes authorize/API fail"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get("OpenAI-Beta")
+                .and_then(|v| v.to_str().ok()),
+            Some("responses_websockets=2026-02-06")
         );
     }
 

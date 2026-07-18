@@ -260,7 +260,20 @@ pub mod openai {
         account_id: Option<String>,
     }
 
+    /// Originator OpenAI's auth + Codex backend accept (see codex-rs default_client).
+    /// Unknown values (e.g. `nur_cli`) make authorize return missing_required_parameter.
+    pub const ORIGINATOR: &str = "codex_cli_rs";
+
     pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        // Prefer an existing Codex CLI session — no browser round-trip.
+        if let Ok(Some(imported)) = import_codex_cli() {
+            send(
+                tx,
+                BrowserLoginProgress::Status("using existing Codex CLI session".into()),
+            );
+            return Ok(imported);
+        }
+
         let (listener, port) = CALLBACK_PORTS
             .iter()
             .find_map(|port| {
@@ -270,17 +283,19 @@ pub mod openai {
             })
             .ok_or_else(|| {
                 MuseError::Other(
-                    "OpenAI login needs localhost port 1455 or 1457, but both are in use".into(),
+                    "OpenAI login needs localhost port 1455 or 1457, but both are in use. Close Codex or free those ports, or run `codex login` and choose “Use existing CLI session”.".into(),
                 )
             })?;
+        // Codex registers localhost (not 127.0.0.1) + /auth/callback on 1455/1457.
         let redirect = format!("http://localhost:{port}/auth/callback");
         let verifier = random_urlsafe(64);
         let challenge = pkce_challenge(&verifier);
         let state = random_urlsafe(32);
         let scope =
             "openid profile email offline_access api.connectors.read api.connectors.invoke";
+        // Param set mirrors codex-rs login (originator must be a known Codex client).
         let auth_url = format!(
-            "{ISSUER}/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&scope={}&code_challenge={challenge}&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state={state}&originator=nur_cli",
+            "{ISSUER}/oauth/authorize?response_type=code&client_id={CLIENT_ID}&redirect_uri={}&scope={}&code_challenge={challenge}&code_challenge_method=S256&id_token_add_organizations=true&codex_cli_simplified_flow=true&state={state}&originator={ORIGINATOR}",
             urlencoding_encode(&redirect),
             urlencoding_encode(scope),
         );
@@ -288,7 +303,9 @@ pub mod openai {
         send(tx, BrowserLoginProgress::OpenUrl(auth_url.clone()));
         send(
             tx,
-            BrowserLoginProgress::Status("complete OpenAI sign-in in your browser…".into()),
+            BrowserLoginProgress::Status(
+                "complete OpenAI / ChatGPT sign-in in the browser…".into(),
+            ),
         );
         let _ = open_browser(&auth_url);
         let code = wait_localhost_code_on(
@@ -311,6 +328,10 @@ pub mod openai {
         ];
         let response = http()?
             .post(format!("{ISSUER}/oauth/token"))
+            .header(
+                "Content-Type",
+                "application/x-www-form-urlencoded;charset=utf-8",
+            )
             .form(&form)
             .send()
             .map_err(|error| {
