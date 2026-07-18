@@ -615,11 +615,16 @@ fn run_doctor() -> Result<()> {
                 .max_session_tokens
                 .map(|t| t.to_string())
                 .unwrap_or_else(|| "∞tok".into());
+            let turns = if cfg.max_turns == 0 {
+                "∞".into()
+            } else {
+                cfg.max_turns.to_string()
+            };
             theme::print_ok(&format!(
                 "config  model={} effort={} max_turns={} budget={}/{}  ({})",
                 cfg.model,
                 cfg.reasoning_effort,
-                cfg.max_turns,
+                turns,
                 cost_cap,
                 tok_cap,
                 config::config_path().display()

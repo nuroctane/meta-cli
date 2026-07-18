@@ -404,7 +404,8 @@ impl AgentRunner {
                 return Err(MuseError::Interrupted);
             }
             turns += 1;
-            if turns > self.config.max_turns {
+            // max_turns == 0 → unlimited (overnight / long agent loops).
+            if self.config.max_turns > 0 && turns > self.config.max_turns {
                 return Err(MuseError::MaxTurns(self.config.max_turns));
             }
             if let Some(msg) = session_budget_exceeded(&self.config, usage) {

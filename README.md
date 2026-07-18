@@ -361,7 +361,7 @@ provider = "meta"              # or openai, openrouter, ollama, ...
 model = "muse-spark-1.1"       # whatever the active provider expects
 base_url = "https://api.meta.ai/v1"
 reasoning_effort = "high"
-max_turns = 40
+max_turns = 0   # 0 = unlimited agent rounds per prompt
 ```
 
 See [docs/configuration.md](./docs/configuration.md) and [docs/authentication.md](./docs/authentication.md).

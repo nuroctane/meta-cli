@@ -44,7 +44,7 @@ pub struct Cli {
     #[arg(long)]
     pub effort: Option<String>,
 
-    /// Max agent turns per prompt
+    /// Max agent turns per prompt (`0` = unlimited; default from config is unlimited)
     #[arg(long)]
     pub max_turns: Option<u32>,
 

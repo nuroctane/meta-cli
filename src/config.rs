@@ -55,6 +55,9 @@ pub struct Config {
     pub base_url: String,
     #[serde(default = "default_reasoning")]
     pub reasoning_effort: String,
+    /// Max agent tool/model rounds per user prompt. **`0` = unlimited** (default)
+    /// so long-running work is not cut off at an arbitrary wall. Use
+    /// `max_session_cost_usd` / `max_session_tokens` if you want a budget stop.
     #[serde(default = "default_max_turns")]
     pub max_turns: u32,
     #[serde(default = "default_true")]
@@ -170,7 +173,7 @@ fn default_reasoning() -> String {
     DEFAULT_REASONING.to_string()
 }
 fn default_max_turns() -> u32 {
-    40
+    0 // unlimited
 }
 fn default_context_window() -> u64 {
     1_000_000
@@ -510,9 +513,11 @@ impl Config {
                 VALID_EFFORTS.join("|")
             )));
         }
-        if self.max_turns == 0 || self.max_turns > 200 {
+        // 0 = unlimited. Optional hard ceiling only rejects absurd config typos
+        // (u32 max is fine; no artificial 40/200 wall).
+        if self.max_turns > 1_000_000 {
             return Err(MuseError::Config(format!(
-                "max_turns {} out of range 1..200",
+                "max_turns {} is unreasonably large (use 0 for unlimited, or a value ≤ 1000000)",
                 self.max_turns
             )));
         }

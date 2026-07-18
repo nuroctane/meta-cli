@@ -12,7 +12,8 @@ provider = "meta"
 model = "muse-spark-1.1"
 base_url = "https://api.meta.ai/v1"
 reasoning_effort = "high"
-max_turns = 40
+# 0 = unlimited agent rounds per prompt (default). Set a number to cap.
+max_turns = 0
 stream = true
 context_window = 1000000
 
@@ -45,7 +46,7 @@ auto_update = true
 | `model` | string | `muse-spark-1.1` | Model id for the active provider |
 | `base_url` | string | `https://api.meta.ai/v1` | API base (no trailing path); providers use Responses or Chat Completions under this base |
 | `reasoning_effort` | string | `high` | Reasoning depth: `minimal`, `low`, `medium`, `high`, `xhigh` |
-| `max_turns` | integer | `40` | Max agent turns per prompt (range: 1–200) |
+| `max_turns` | integer | `0` | Max agent tool/model rounds per user prompt. **`0` = unlimited** (default). Optional positive cap if you want a hard stop; prefer `max_session_cost_usd` / `max_session_tokens` for overnight budgets |
 | `stream` | bool | `true` | Stream API responses |
 | `context_window` | integer | `1000000` | Model context window in tokens (range: 1000–2000000) |
 | `tool_result_max_chars` | integer | `12000` | Max inline tool output chars; larger results spill to disk (`0` = unlimited) |
