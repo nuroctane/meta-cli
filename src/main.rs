@@ -200,6 +200,15 @@ async fn real_main() -> Result<()> {
                     return Ok(());
                 }
             }
+            // Existing installs: check GitHub Releases and self-update when a
+            // newer version is available (TTL-throttled; soft-fails offline).
+            let auto = load_config()
+                .map(|c| c.auto_update)
+                .unwrap_or(true);
+            if bootstrap::maybe_auto_update_on_launch(auto) {
+                // Child process took over the TUI with the new binary.
+                return Ok(());
+            }
         }
         _ => {}
     }

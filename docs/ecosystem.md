@@ -78,8 +78,20 @@ fable-method · activated from your wording (no slash command needed)
 | *clone this website*, *pixel-perfect clone* | `clone-website-meta` |
 | *draw a diagram*, *excalidraw* | `excalidraw` |
 | *resume from Claude / Grok / Codex / Cursor / Nur* | matching `resume-*` skill |
+| *toolcraft*, *design app scaffold*, *craft tooling* | `toolcraft` (pointer → live docs) |
 
 Only **installed** skills fire (marketplace plugin or skill pack). Unrelated chat does not activate anything. The injected skill is **mandatory for that turn** — the model must follow it, not freestyle a shorter path.
+
+### Context discipline (why 800+ skills do not blow the prompt)
+
+| Layer | What is injected | When |
+|-------|------------------|------|
+| **Catalog** | name + short description only | every turn (unless `poor_mode`) |
+| **NL activation** | full `SKILL.md` body for **one** matched skill | user wording hits an `INTENT_RULES` phrase |
+| **On demand** | `skill(action=read, name=…)` | model chooses to load more |
+| **`poor_mode`** | no catalog, no activation | limited-context hosts / cost saver |
+
+Pointer skills (e.g. **toolcraft**) stay short on purpose: they route to external docs instead of embedding a long guide. Prefer specific activation phrases so casual chat does not false-fire.
 
 Install Fable (and others) with:
 
@@ -89,9 +101,10 @@ nur plugins install superpowers
 ```
 
 **Bundled on install:** the `bro`, `coding-standards`, `prelude`, `tech-spec`,
-`cloudflare-composition-root`, and `herdr` skills (from
-[dmmulroy/skills](https://github.com/dmmulroy/skills)) ship with NurCLI and are
-written to `~/.nur/skills` (mirrored to `~/.agents/skills`) on first run.
+`cloudflare-composition-root`, `herdr` skills (from
+[dmmulroy/skills](https://github.com/dmmulroy/skills)), plus pointer skill
+**`toolcraft`**, ship with NurCLI and are written to `~/.nur/skills` (mirrored to
+`~/.agents/skills`) on install / `nur ecosystem ensure`.
 
 ---
 

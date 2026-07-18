@@ -434,6 +434,21 @@ const INTENT_RULES: &[IntentRule] = &[
         label: "superpowers",
         why: "Superpowers skill-first process discipline",
     },
+    // ── External pointer skills (short body; load live docs) ─────────────
+    IntentRule {
+        skill_names: &["toolcraft"],
+        phrases: &[
+            "toolcraft",
+            "/toolcraft",
+            "tool craft",
+            "design app scaffold",
+            "design-app scaffold",
+            "craft tooling",
+            "use toolcraft",
+        ],
+        label: "toolcraft",
+        why: "Toolcraft design-app scaffold (pointer — fetch live docs)",
+    },
 ];
 
 /// Normalize user text for phrase matching (lowercase, collapse punctuation).
@@ -817,6 +832,11 @@ mod intent_tests {
 
         let (sk, _) = detect_skill_activation("polish the UI like emil", &skills).unwrap();
         assert_eq!(sk.name, "design-eng");
+
+        let skills = vec![fake_skill("toolcraft")];
+        let (sk, rule) = detect_skill_activation("use toolcraft for this scaffold", &skills).unwrap();
+        assert_eq!(sk.name, "toolcraft");
+        assert_eq!(rule.label, "toolcraft");
     }
 
     #[test]

@@ -303,13 +303,33 @@ pub fn run_full_install() -> Result<()> {
     Ok(())
 }
 
-/// `nur update` — pull the git checkout, rebuild release, reinstall full stack.
+/// `nur update` — prefer GitHub release binary; fall back to git pull + rebuild
+/// when a local checkout exists; last resort reinstalls the running binary.
 pub fn run_update() -> Result<()> {
     println!();
     theme::print_info("NurCLI — update");
-    theme::print_info("git pull · cargo build --release · reinstall stack");
+    theme::print_info("GitHub release · or git pull + cargo build --release");
     println!();
 
+    // 1) GitHub prebuilt (works for release-installed users without a clone).
+    match try_install_from_github(true) {
+        Ok(UpdateOutcome::Updated { version }) => {
+            theme::print_ok(&format!("Updated to v{version} from GitHub Releases"));
+            finish_update_stack(&version)?;
+            return Ok(());
+        }
+        Ok(UpdateOutcome::AlreadyCurrent { version }) => {
+            theme::print_ok(&format!("Already on latest release (v{version})"));
+            // Still refresh ecosystem packs.
+            finish_update_stack(&version)?;
+            return Ok(());
+        }
+        Err(e) => {
+            theme::print_info(&format!("GitHub release path skipped: {e}"));
+        }
+    }
+
+    // 2) Local source tree rebuild.
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let mut repo = home.join("laboratory").join("nur-cli");
     if !repo.join("Cargo.toml").is_file() {
@@ -331,15 +351,12 @@ pub fn run_update() -> Result<()> {
             Err(e) => theme::print_info(&format!("git pull skipped: {e}")),
         }
         step("Building release…");
-        // Quiet compiler warnings in the update UX; real errors still print.
-        // (Source tree is kept warning-clean so -q is safe for users.)
         let st = Command::new("cargo")
             .args(["build", "--release", "-q"])
             .current_dir(&repo)
             .status()
             .map_err(|e| MuseError::Other(format!("cargo: {e}")))?;
         if !st.success() {
-            // Re-run verbose so the user sees the actual failure.
             let _ = Command::new("cargo")
                 .args(["build", "--release"])
                 .current_dir(&repo)
@@ -366,12 +383,16 @@ pub fn run_update() -> Result<()> {
         theme::print_ok(&format!("Installed {}", dest.display()));
         prepend_path(&dest_dir);
         let _ = ensure_user_path(&dest_dir);
-    } else {
-        // No source tree — repair using the running binary (one-stop self-install).
-        return run_full_install();
+        finish_update_stack(env!("CARGO_PKG_VERSION"))?;
+        return Ok(());
     }
 
-    // Stack repair via the *newly installed* binary (never re-copy this process).
+    // 3) No network + no source — reinstall the currently running binary.
+    theme::print_info("No GitHub asset and no local checkout — reinstalling this binary");
+    run_full_install()
+}
+
+fn finish_update_stack(version: &str) -> Result<()> {
     let dest = install_binary_path();
     step("Provisioning ecosystem…");
     let _ = Command::new(&dest)
@@ -382,7 +403,7 @@ pub fn run_update() -> Result<()> {
 
     let marker = BootstrapMarker {
         schema: BOOTSTRAP_SCHEMA,
-        version: env!("CARGO_PKG_VERSION").into(),
+        version: version.into(),
         binary: dest.display().to_string(),
         completed_at: now_secs(),
         ecosystem_ok: true,
@@ -397,6 +418,344 @@ pub fn run_update() -> Result<()> {
     theme::print_info("Run:     nur");
     println!();
     Ok(())
+}
+
+// ── Auto-update on launch (GitHub Releases) ───────────────────────────────
+
+const GH_RELEASES_LATEST: &str =
+    "https://api.github.com/repos/nuroctane/nur-cli/releases/latest";
+/// Min seconds between network checks when already current (rate-limit friendly).
+const AUTO_UPDATE_TTL_SECS: u64 = 6 * 60 * 60; // 6 hours
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct AutoUpdateState {
+    #[serde(default)]
+    last_check_at: u64,
+    #[serde(default)]
+    last_remote_version: String,
+    #[serde(default)]
+    last_result: String,
+}
+
+enum UpdateOutcome {
+    Updated { version: String },
+    AlreadyCurrent { version: String },
+}
+
+fn auto_update_state_path() -> PathBuf {
+    config::muse_home().join("auto_update.json")
+}
+
+fn load_auto_update_state() -> AutoUpdateState {
+    fs::read_to_string(auto_update_state_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .unwrap_or_default()
+}
+
+fn save_auto_update_state(st: &AutoUpdateState) {
+    let _ = config::ensure_dirs();
+    if let Ok(text) = serde_json::to_string_pretty(st) {
+        let _ = fs::write(auto_update_state_path(), text);
+    }
+}
+
+/// Interactive TUI launch: if a newer GitHub release exists, install it and
+/// re-exec so the user lands on the new binary. Returns `true` when the
+/// caller should **exit** (child took over the session).
+///
+/// Safe defaults:
+/// - Off when `NUR_SKIP_AUTO_UPDATE` / `META_SKIP_AUTO_UPDATE` is set
+/// - Off when `config.auto_update = false` (caller passes enabled flag)
+/// - Off for release-artifact first install (bootstrap owns that path)
+/// - Never fails the launch: network/errors are soft and open the TUI
+pub fn maybe_auto_update_on_launch(enabled: bool) -> bool {
+    if !enabled {
+        return false;
+    }
+    if env_truthy("NUR_SKIP_AUTO_UPDATE") || env_truthy("META_SKIP_AUTO_UPDATE") {
+        return false;
+    }
+    // First-run / release EXE: bootstrap already handles install.
+    if looks_like_release_artifact() {
+        return false;
+    }
+    // Only auto-update when the product is installed (or we are it).
+    if !install_binary_path().is_file() && !is_running_from_install() {
+        return false;
+    }
+
+    let mut st = load_auto_update_state();
+    let now = now_secs();
+    if st.last_check_at > 0
+        && now.saturating_sub(st.last_check_at) < AUTO_UPDATE_TTL_SECS
+        && st.last_result == "current"
+    {
+        return false;
+    }
+
+    match try_install_from_github(false) {
+        Ok(UpdateOutcome::Updated { version }) => {
+            st.last_check_at = now;
+            st.last_remote_version = version.clone();
+            st.last_result = "updated".into();
+            save_auto_update_state(&st);
+            // Refresh bootstrap marker so doctor/status show the new version.
+            let dest = install_binary_path();
+            let marker = BootstrapMarker {
+                schema: BOOTSTRAP_SCHEMA,
+                version: version.clone(),
+                binary: dest.display().to_string(),
+                completed_at: now,
+                ecosystem_ok: true,
+            };
+            if let Ok(text) = serde_json::to_string_pretty(&marker) {
+                let _ = fs::write(marker_path(), text);
+            }
+            theme::print_ok(&format!("Auto-updated to v{version} — restarting…"));
+            // Re-exec installed binary; skip bootstrap + another update loop.
+            if reexec_after_auto_update().is_ok() {
+                return true;
+            }
+            theme::print_info("Restart nur to use the new version");
+            false
+        }
+        Ok(UpdateOutcome::AlreadyCurrent { version }) => {
+            st.last_check_at = now;
+            st.last_remote_version = version;
+            st.last_result = "current".into();
+            save_auto_update_state(&st);
+            false
+        }
+        Err(e) => {
+            // Soft fail — never block the TUI.
+            st.last_check_at = now;
+            st.last_result = format!("error: {e}");
+            save_auto_update_state(&st);
+            false
+        }
+    }
+}
+
+fn reexec_after_auto_update() -> Result<()> {
+    let dest = install_binary_path();
+    if !dest.is_file() {
+        return Err(MuseError::Other(format!(
+            "installed binary missing at {}",
+            dest.display()
+        )));
+    }
+    // Spawn the new binary (Windows cannot replace a running image in-place;
+    // Unix could exec, but spawn+exit is consistent and avoids leaving a
+    // half-updated parent).
+    let status = Command::new(&dest)
+        .env("NUR_SKIP_BOOTSTRAP", "1")
+        .env("META_SKIP_BOOTSTRAP", "1")
+        .env("NUR_SKIP_AUTO_UPDATE", "1")
+        .status()
+        .map_err(|e| {
+            MuseError::Other(format!("failed to launch {}: {e}", dest.display()))
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        let code = status.code().unwrap_or(1);
+        Err(MuseError::Other(format!("nur exited with status {code}")))
+    }
+}
+
+/// Query GitHub Releases and install a newer binary when available.
+/// `force_verbose` prints status lines (used by `nur update`).
+fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
+    let local = env!("CARGO_PKG_VERSION");
+    let http = reqwest::blocking::Client::builder()
+        .user_agent(format!("nur-cli/{local}"))
+        .timeout(std::time::Duration::from_secs(if force_verbose {
+            60
+        } else {
+            8
+        }))
+        .build()
+        .map_err(|e| MuseError::Other(format!("http client: {e}")))?;
+
+    if force_verbose {
+        step("Checking GitHub Releases…");
+    }
+    let rel: serde_json::Value = http
+        .get(GH_RELEASES_LATEST)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .map_err(|e| MuseError::Other(format!("releases API: {e}")))?
+        .error_for_status()
+        .map_err(|e| MuseError::Other(format!("releases API: {e}")))?
+        .json()
+        .map_err(|e| MuseError::Other(format!("releases JSON: {e}")))?;
+
+    let tag = rel
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim();
+    if tag.is_empty() {
+        return Err(MuseError::Other("empty release tag".into()));
+    }
+    let remote = strip_v_prefix(tag);
+    if !version_is_newer(remote, local) {
+        return Ok(UpdateOutcome::AlreadyCurrent {
+            version: remote.to_string(),
+        });
+    }
+
+    let assets: Vec<(String, String)> = rel
+        .get("assets")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    Some((
+                        a.get("name")?.as_str()?.to_string(),
+                        a.get("browser_download_url")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (name, url) = pick_nur_release_asset(&assets)
+        .ok_or_else(|| MuseError::Other("no matching release asset for this platform".into()))?;
+
+    if force_verbose {
+        step(&format!("Downloading {name} (v{remote})…"));
+    } else {
+        theme::print_info(&format!("Update available: v{local} → v{remote}"));
+        theme::print_info(&format!("Downloading {name}…"));
+    }
+
+    let dest_dir = install_dir();
+    fs::create_dir_all(&dest_dir)?;
+    let tmp = dest_dir.join(format!(
+        ".nur-update-{}{}",
+        remote,
+        if cfg!(windows) { ".exe.tmp" } else { ".tmp" }
+    ));
+    let bytes = http
+        .get(&url)
+        .send()
+        .map_err(|e| MuseError::Other(format!("download: {e}")))?
+        .error_for_status()
+        .map_err(|e| MuseError::Other(format!("download: {e}")))?
+        .bytes()
+        .map_err(|e| MuseError::Other(format!("download body: {e}")))?;
+    if bytes.len() < 1_000_000 {
+        // Guard against HTML error pages / truncated assets (real EXEs are multi-MB).
+        return Err(MuseError::Other(format!(
+            "downloaded asset too small ({} bytes) — aborting",
+            bytes.len()
+        )));
+    }
+    fs::write(&tmp, &bytes).map_err(MuseError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755));
+    }
+
+    let dest = install_binary_path();
+    install_binary_safe(&tmp, &dest)?;
+    let _ = fs::remove_file(&tmp);
+    scrub_legacy_and_impostor_bins(&dest_dir, &dest);
+    if let Some(hash) = file_sha256(&dest) {
+        let record = format!(
+            "{hash}  {}",
+            dest.file_name().and_then(|s| s.to_str()).unwrap_or("nur")
+        );
+        let _ = fs::write(dest_dir.join("nur.sha256"), format!("{record}\n"));
+    }
+    prepend_path(&dest_dir);
+
+    Ok(UpdateOutcome::Updated {
+        version: remote.to_string(),
+    })
+}
+
+fn strip_v_prefix(tag: &str) -> &str {
+    tag.strip_prefix('v')
+        .or_else(|| tag.strip_prefix('V'))
+        .unwrap_or(tag)
+}
+
+/// True when `remote` is a strictly greater semver than `local` (major.minor.patch).
+fn version_is_newer(remote: &str, local: &str) -> bool {
+    let parse = |s: &str| -> Option<(u64, u64, u64)> {
+        let mut parts = s.split('.');
+        let maj = parts.next()?.parse().ok()?;
+        let min = parts.next().unwrap_or("0").parse().unwrap_or(0);
+        // Take only numeric prefix of patch (ignore -beta etc.)
+        let pat_s = parts.next().unwrap_or("0");
+        let pat: u64 = pat_s
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .unwrap_or(0);
+        Some((maj, min, pat))
+    };
+    match (parse(remote), parse(local)) {
+        (Some(r), Some(l)) => r > l,
+        _ => remote != local && !remote.is_empty(),
+    }
+}
+
+/// Pick the nur-cli release asset for this OS/arch.
+#[cfg_attr(test, allow(dead_code))]
+fn pick_nur_release_asset(assets: &[(String, String)]) -> Option<(String, String)> {
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => "x86_64",
+        "aarch64" => "aarch64",
+        other => other,
+    };
+    // Preferred names used by our release pipeline / docs.
+    let preferred: Vec<String> = if cfg!(windows) {
+        vec![
+            format!("nur-windows-{arch}.exe"),
+            format!("nur-windows-{arch}"),
+            "nur-windows-x86_64.exe".into(),
+        ]
+    } else if cfg!(target_os = "macos") {
+        vec![
+            format!("nur-macos-{arch}"),
+            format!("nur-darwin-{arch}"),
+            format!("nur-macos-{arch}.tar.gz"),
+        ]
+    } else {
+        vec![
+            format!("nur-linux-{arch}"),
+            format!("nur-linux-{arch}.tar.gz"),
+        ]
+    };
+
+    for want in &preferred {
+        if let Some((n, u)) = assets.iter().find(|(n, _)| n.eq_ignore_ascii_case(want)) {
+            return Some((n.clone(), u.clone()));
+        }
+    }
+    // Fuzzy: any asset that contains both os token and arch.
+    assets
+        .iter()
+        .find(|(n, _)| {
+            let l = n.to_ascii_lowercase();
+            l.contains("nur")
+                && (l.contains(os) || (os == "macos" && l.contains("darwin")))
+                && l.contains(arch)
+        })
+        .map(|(n, u)| (n.clone(), u.clone()))
 }
 
 /// After installing from a release artifact, re-exec the installed `nur`
@@ -802,5 +1161,46 @@ fn stage_browser_quiet() -> Result<String> {
             "browser · {} · extension not staged yet (run nur browser setup after Node is available)",
             browser.label()
         )),
+    }
+}
+
+#[cfg(test)]
+mod auto_update_tests {
+    use super::*;
+
+    #[test]
+    fn version_is_newer_semver() {
+        assert!(version_is_newer("0.18.7", "0.18.6"));
+        assert!(version_is_newer("1.0.0", "0.99.9"));
+        assert!(!version_is_newer("0.18.6", "0.18.6"));
+        assert!(!version_is_newer("0.18.5", "0.18.6"));
+        assert!(version_is_newer("0.19.0", "0.18.99"));
+    }
+
+    #[test]
+    fn strip_v_prefix_works() {
+        assert_eq!(strip_v_prefix("v0.18.7"), "0.18.7");
+        assert_eq!(strip_v_prefix("0.18.7"), "0.18.7");
+    }
+
+    #[test]
+    fn pick_windows_asset() {
+        let assets = vec![
+            ("nur-linux-x86_64".into(), "http://l".into()),
+            ("nur-windows-x86_64.exe".into(), "http://w".into()),
+            ("nur-macos-aarch64".into(), "http://m".into()),
+        ];
+        let picked = pick_nur_release_asset(&assets);
+        assert!(picked.is_some());
+        let (name, url) = picked.unwrap();
+        if cfg!(windows) {
+            assert_eq!(name, "nur-windows-x86_64.exe");
+            assert_eq!(url, "http://w");
+        } else if cfg!(target_os = "macos") {
+            // may be none if arch mismatch on CI; just ensure no panic
+            let _ = (name, url);
+        } else {
+            assert!(name.contains("linux") || name.contains("windows") || name.contains("macos"));
+        }
     }
 }

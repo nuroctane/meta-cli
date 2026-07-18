@@ -170,6 +170,13 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
             ),
         ],
     ),
+    (
+        "toolcraft",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/toolcraft/SKILL.md"),
+        )],
+    ),
 ];
 
 const PLUR_SKILL: &str = r#"---

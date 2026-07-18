@@ -245,9 +245,30 @@ See [Authentication](authentication.md).
 
 ## Update
 
-Any of:
+**Automatic (default):** each interactive `nur` launch checks
+[GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest) (TTL ~6h
+when already current). If a newer version is available, it downloads the platform
+binary into `~/.local/bin`, then restarts into the new build. Offline / API errors
+are soft — the TUI still opens.
+
+Opt out:
+
+```toml
+# ~/.nur/config.toml
+auto_update = false
+```
 
 ```bash
+# one session only
+NUR_SKIP_AUTO_UPDATE=1 nur
+```
+
+**Manual:**
+
+```bash
+# force full update path (GitHub binary, or git pull + cargo build)
+nur update
+
 # one-liner again
 irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex   # Windows
 # curl -fsSL …/install.sh | bash                                                 # macOS / Linux
@@ -255,16 +276,19 @@ irm https://raw.githubusercontent.com/nuroctane/nur-cli/main/install.ps1 | iex  
 # from a clone
 git pull && ./install.ps1   # or install.sh
 
-# already have nur on PATH
+# reinstall this binary + ecosystem
 nur install
 
 # prebuilt: download newer nur-windows-x86_64.exe from Releases and double-click
-# (self-installs over ~/.local/bin/nur.exe — no hand PATH surgery)
 ```
 
 ```bash
 nur doctor   # confirm version + sha256
 ```
+
+> **Note:** Auto-update requires a build that already includes it (≥ 0.18.7).
+> Older installs need **one** manual step (`nur update` from a clone, or re-download
+> the release EXE) — after that, every launch keeps them current.
 
 ---
 

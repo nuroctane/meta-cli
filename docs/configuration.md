@@ -32,6 +32,9 @@ poor_mode = false
 
 # Background TTL pack repair on later TUI opens (first install is foreground)
 ecosystem_auto_ensure = true
+
+# Self-update from GitHub Releases on interactive launch (TTL-throttled)
+auto_update = true
 ```
 
 ### Settings reference
@@ -52,6 +55,7 @@ ecosystem_auto_ensure = true
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |
 | `poor_mode` | bool | `false` | Skip PLUR auto-inject, skills catalog, and long memory in the system prompt |
 | `ecosystem_auto_ensure` | bool | `true` | Background TTL **repair** of packs on later TUI opens (first install is foreground via one-liner / EXE / `nur install`); set `false` to skip repair |
+| `auto_update` | bool | `true` | On interactive launch, check [GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest) and install a newer binary when available (6h TTL when already current). Opt out with `false` or env `NUR_SKIP_AUTO_UPDATE=1`. `nur update` always runs the full update path |
 
 ### Reasoning effort levels
 
