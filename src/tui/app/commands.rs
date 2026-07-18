@@ -1041,12 +1041,12 @@ impl App {
                      tokens   {toks}  · used {}\n  \
                      turns    {turns}  · agent rounds per prompt\n  \
                      poor     {poor}  · prompt saver (/poor)\n  \
-                     /budget cost <usd>     e.g. /budget cost 2.5  ·  0|off = ∞\n  \
-                     /budget tokens <n>     e.g. /budget tokens 500000  ·  0|off = ∞\n  \
-                     /budget turns <n>      e.g. /budget turns 80  ·  0|off = ∞\n  \
-                     /turns <n>             short for /budget turns\n  \
-                     /budget clear          unlimited everything this process\n  \
-                     /budget save           write ceilings to config.toml",
+                     /budget cost <usd|unlimited|0>   e.g. /budget cost 2.5\n  \
+                     /budget tokens <n|unlimited|0>   e.g. /budget tokens 500000\n  \
+                     /budget turns <n|unlimited|0>    e.g. /budget turns 80\n  \
+                     /turns <n|unlimited|0>           short for /budget turns\n  \
+                     /budget clear                    unlimited everything this process\n  \
+                     /budget save                     write ceilings to config.toml",
                     fmt_num(used_t),
                 ),
             );
@@ -1077,7 +1077,9 @@ impl App {
             },
             "cost" => {
                 let Some(v) = parts.next() else {
-                    self.push_error("usage: /budget cost <usd>|0|off".into());
+                    self.push_error(
+                        "usage: /budget cost <usd|unlimited|0|off>".into(),
+                    );
                     return;
                 };
                 if is_unlimited_token(v) {
@@ -1106,12 +1108,16 @@ impl App {
                                 .into(),
                         );
                     }
-                    _ => self.push_error("cost must be a non-negative number, 0, or off".into()),
+                    _ => self.push_error(
+                        "cost must be a positive number, or unlimited|0|off".into(),
+                    ),
                 }
             }
             "tokens" => {
                 let Some(v) = parts.next() else {
-                    self.push_error("usage: /budget tokens <n>|0|off".into());
+                    self.push_error(
+                        "usage: /budget tokens <n|unlimited|0|off>".into(),
+                    );
                     return;
                 };
                 if is_unlimited_token(v) {
@@ -1142,7 +1148,9 @@ impl App {
                             ),
                         );
                     }
-                    _ => self.push_error("tokens must be a non-negative integer, 0, or off".into()),
+                    _ => self.push_error(
+                        "tokens must be a positive integer, or unlimited|0|off".into(),
+                    ),
                 }
             }
             "turns" => {
@@ -1157,8 +1165,8 @@ impl App {
                         Tone::Usage,
                         format!(
                             "turns per prompt  {turns}\n  \
-                             /budget turns <n>   cap agent rounds (0|off = unlimited)\n  \
-                             /turns <n>          same"
+                             /budget turns <n|unlimited|0>   cap agent rounds\n  \
+                             /turns <n|unlimited|0>          same"
                         ),
                     );
                     return;
@@ -1172,24 +1180,31 @@ impl App {
                     return;
                 }
                 match v.parse::<u32>() {
+                    Ok(0) => {
+                        self.cfg.max_turns = 0;
+                        self.push_note(
+                            Tone::Usage,
+                            "turns unlimited (this process · /budget save to persist)".into(),
+                        );
+                    }
                     Ok(n) if n <= 1_000_000 => {
                         self.cfg.max_turns = n;
-                        let msg = if n == 0 {
-                            "turns unlimited (this process · /budget save to persist)".into()
-                        } else {
+                        self.push_note(
+                            Tone::Usage,
                             format!(
                                 "turns set to {n} per prompt (this process · /budget save to persist)"
-                            )
-                        };
-                        self.push_note(Tone::Usage, msg);
+                            ),
+                        );
                     }
                     _ => self.push_error(
-                        "turns must be 0..1000000, or off (0 = unlimited)".into(),
+                        "turns must be a positive integer ≤ 1000000, or unlimited|0|off"
+                            .into(),
                     ),
                 }
             }
             _ => self.push_error(
-                "usage: /budget [cost|tokens|turns] <n>|0|off · clear · save".into(),
+                "usage: /budget [cost|tokens|turns] <n|unlimited|0|off> · clear · save"
+                    .into(),
             ),
         }
     }
@@ -1923,10 +1938,49 @@ fn open_in_browser(url: &str) -> bool {
     r.is_ok()
 }
 
-/// Tokens that mean "no cap" for /budget cost|tokens|turns.
+/// Values that mean "no cap" for `/budget cost|tokens|turns` and `/turns`.
+/// Accepts `unlimited`, `0`, `off`, and common synonyms (case-insensitive).
 fn is_unlimited_token(v: &str) -> bool {
+    let t = v.trim().to_ascii_lowercase();
     matches!(
-        v.trim().to_ascii_lowercase().as_str(),
-        "0" | "off" | "none" | "unlimited" | "inf" | "infinity" | "8" | "-"
+        t.as_str(),
+        "0" | "off"
+            | "none"
+            | "null"
+            | "nil"
+            | "unlimited"
+            | "unlimit"
+            | "inf"
+            | "infinity"
+            | "infinite"
+            | "∞"
+            | "-"
+            | "clear"
+            | "reset"
     )
+}
+
+#[cfg(test)]
+mod unlimited_token_tests {
+    use super::is_unlimited_token;
+
+    #[test]
+    fn accepts_unlimited_and_zero() {
+        for v in [
+            "0",
+            "unlimited",
+            "UNLIMITED",
+            "off",
+            "Off",
+            "none",
+            "inf",
+            "infinity",
+            "∞",
+            "clear",
+        ] {
+            assert!(is_unlimited_token(v), "should accept {v}");
+        }
+        assert!(!is_unlimited_token("80"));
+        assert!(!is_unlimited_token("2.5"));
+    }
 }

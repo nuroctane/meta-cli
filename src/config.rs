@@ -45,10 +45,9 @@ pub const PRICE_INPUT_PER_MTOK: f64 = 1.25;
 pub const PRICE_OUTPUT_PER_MTOK: f64 = 4.25;
 
 /// Bumped when defaults change in a way that must rewrite existing config.toml.
-/// Schema 0/1: stock default was `max_turns = 40`. Schema 2+: unlimited (`0`).
-pub const CONFIG_SCHEMA: u32 = 2;
-/// Old stock default written into every install before unlimited-by-default.
-const LEGACY_DEFAULT_MAX_TURNS: u32 = 40;
+/// Schema ≥3: agent rounds are unlimited (`max_turns = 0`) until the user sets
+/// a ceiling via `/budget` / `/turns` (or config).
+pub const CONFIG_SCHEMA: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -222,24 +221,17 @@ impl Default for Config {
     }
 }
 
-/// Lift obsolete stock defaults so old installs cannot stay stuck on
-/// `max_turns = 40` forever. Returns true if the in-memory config changed
-/// (caller should persist).
-///
-/// After schema 2, an explicit `max_turns = 40` set by the user is respected.
+/// One-shot migration: older installs may still carry a stock turn cap from
+/// before unlimited-by-default. Force unlimited agent rounds on upgrade so
+/// long runs never die on a leftover config value. After this, only an
+/// explicit `/budget turns` / `/turns` / config edit reintroduces a cap.
 pub fn migrate_config(cfg: &mut Config) -> bool {
-    let mut changed = false;
-    if cfg.config_schema < CONFIG_SCHEMA {
-        // Only rewrite the historical *default* value, not intentional small caps
-        // like 5 or 10 that were never the stock default.
-        if cfg.max_turns == LEGACY_DEFAULT_MAX_TURNS {
-            cfg.max_turns = 0;
-            changed = true;
-        }
-        cfg.config_schema = CONFIG_SCHEMA;
-        changed = true;
+    if cfg.config_schema >= CONFIG_SCHEMA {
+        return false;
     }
-    changed
+    cfg.max_turns = 0;
+    cfg.config_schema = CONFIG_SCHEMA;
+    true
 }
 
 fn default_compact_keep_user_turns() -> u32 {
@@ -430,7 +422,7 @@ pub fn load_config() -> Result<Config> {
         let text = fs::read_to_string(&path)?;
         toml::from_str(&text).map_err(|e| MuseError::Config(e.to_string()))?
     };
-    // One-time lift of legacy stock max_turns=40 → unlimited.
+    // One-time: older configs → unlimited agent rounds (user sets caps later).
     if migrate_config(&mut cfg) {
         let _ = save_config(&cfg);
     }
@@ -503,25 +495,16 @@ mod tests {
     }
 
     #[test]
-    fn migrate_lifts_legacy_max_turns_40_once() {
+    fn migrate_forces_unlimited_turns_on_schema_upgrade() {
         let mut cfg = Config::default();
         cfg.config_schema = 0;
-        cfg.max_turns = 40;
+        cfg.max_turns = 99; // leftover stock/old cap — must clear on upgrade
         assert!(migrate_config(&mut cfg));
-        assert_eq!(cfg.max_turns, 0, "legacy stock 40 must become unlimited");
+        assert_eq!(cfg.max_turns, 0);
         assert_eq!(cfg.config_schema, CONFIG_SCHEMA);
-        // Second pass is a no-op — intentional max_turns=40 after schema 2 sticks.
-        cfg.max_turns = 40;
+        // Second pass is a no-op; user-set caps after migration stick.
+        cfg.max_turns = 12;
         assert!(!migrate_config(&mut cfg));
-        assert_eq!(cfg.max_turns, 40);
-    }
-
-    #[test]
-    fn migrate_preserves_non_default_caps() {
-        let mut cfg = Config::default();
-        cfg.config_schema = 0;
-        cfg.max_turns = 12; // user-ish small cap, not the old stock default
-        assert!(migrate_config(&mut cfg)); // schema bumps
         assert_eq!(cfg.max_turns, 12);
     }
 
@@ -529,6 +512,7 @@ mod tests {
     fn default_max_turns_is_unlimited() {
         assert_eq!(Config::default().max_turns, 0);
         assert_eq!(default_max_turns(), 0);
+        assert_eq!(Config::default().config_schema, CONFIG_SCHEMA);
     }
 
     #[test]
