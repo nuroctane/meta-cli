@@ -250,32 +250,8 @@ pub fn uninstall_plugin(id: &str) -> Result<String, String> {
 }
 
 fn count_skills(root: &Path) -> usize {
-    let mut n = 0;
-    // skills/*/SKILL.md
-    let skills = root.join("skills");
-    if skills.is_dir() {
-        if let Ok(rd) = fs::read_dir(&skills) {
-            for e in rd.flatten() {
-                if e.path().join("SKILL.md").is_file() {
-                    n += 1;
-                }
-            }
-        }
-    }
-    // root-level */SKILL.md (plugin packs that put skills at top level)
-    if let Ok(rd) = fs::read_dir(root) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() && p.join("SKILL.md").is_file() {
-                n += 1;
-            }
-        }
-    }
-    // single SKILL.md at root
-    if root.join("SKILL.md").is_file() {
-        n += 1;
-    }
-    n
+    // Nested packs (mattpocock engineering/*, google ads/*, NVIDIA, …) need a walk.
+    crate::agent::skills::find_skill_mds(root, 5).len()
 }
 
 /// Copy/symlink discovered skill dirs into `~/.nur/skills/` so existing
@@ -284,34 +260,21 @@ fn mirror_skills_to_nur_home(plugin_root: &Path) -> Result<(), String> {
     let dest_root = nur_home().join("skills");
     fs::create_dir_all(&dest_root).map_err(|e| e.to_string())?;
 
+    // Recursive: supports skills/<category>/<name>/SKILL.md layouts.
     let mut sources: Vec<PathBuf> = Vec::new();
-    let nested = plugin_root.join("skills");
-    if nested.is_dir() {
-        if let Ok(rd) = fs::read_dir(&nested) {
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.is_dir() && p.join("SKILL.md").is_file() {
-                    sources.push(p);
-                }
+    for skill_md in crate::agent::skills::find_skill_mds(plugin_root, 5) {
+        if let Some(parent) = skill_md.parent() {
+            // Single-skill plugin with SKILL.md at plugin root: keep plugin id as name.
+            if parent == plugin_root {
+                sources.push(plugin_root.to_path_buf());
+            } else {
+                sources.push(parent.to_path_buf());
             }
         }
     }
-    if let Ok(rd) = fs::read_dir(plugin_root) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.is_dir() && p.join("SKILL.md").is_file() {
-                // Avoid double-counting nested skills/ parent as a skill.
-                if p.file_name().and_then(|n| n.to_str()) == Some("skills") {
-                    continue;
-                }
-                sources.push(p);
-            }
-        }
-    }
-    if plugin_root.join("SKILL.md").is_file() {
-        // Single-skill plugin: use plugin folder name.
-        sources.push(plugin_root.to_path_buf());
-    }
+    // Dedupe paths
+    sources.sort();
+    sources.dedup();
 
     for src in sources {
         let name = src

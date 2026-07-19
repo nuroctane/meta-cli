@@ -178,7 +178,7 @@ Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](
 | **One-shot install** | One-liner or Windows EXE · PATH · ecosystem · browser |
 | **Easy updates** | `nur update` |
 | **Knowledge stack** | Graph · engrams · vector memory · MCP · skills |
-| **Plugin marketplace** | `/plugins` picker (same UX as `/login`) · install Superpowers, Vercel, Firecrawl, Fable, … into `~/.nur/plugins` |
+| **Plugin marketplace** | `/plugins` picker · Superpowers, Fable, Matt Pocock, Addy Osmani, Google, NVIDIA, finance/marketing packs, … → `~/.nur/plugins` |
 | **Natural-language + slash skills** | *think like fable* · *TDD this* · *site cli* · *HAR file* · *polish the UI* · *resume from Claude* — **or** `/fable-method` `/adhd` `/site-cli` `/<any-skill>` |
 | **Resume other agents** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-nur` · `resume-grok` |
 | **Secrets stay local** | Keys only in `~/.nur/auth.json` (or env) · prefer `NUR_API_KEY` |

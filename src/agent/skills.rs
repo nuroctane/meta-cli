@@ -815,6 +815,61 @@ pub fn slash_activation_section(sk: &Skill) -> String {
 /// - legacy `~/.muse/skills`
 /// - `~/.agents/skills` (Agent Skills / graphify install --platform agents)
 /// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills` · `<cwd>/.nur/skills`
+/// Max directory depth when walking for nested SKILL.md (category/pack layouts).
+const SKILL_WALK_MAX_DEPTH: usize = 5;
+
+/// Collect every `SKILL.md` under `root` up to `max_depth` directory levels.
+/// Skips obvious junk (`.git`, `node_modules`, `target`, …).
+pub fn find_skill_mds(root: &Path, max_depth: usize) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    fn walk(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+        if depth > max_depth {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            if name.starts_with('.')
+                || name.eq_ignore_ascii_case("node_modules")
+                || name.eq_ignore_ascii_case("target")
+                || name.eq_ignore_ascii_case("dist")
+                || name.eq_ignore_ascii_case("build")
+                || name.eq_ignore_ascii_case("__pycache__")
+            {
+                continue;
+            }
+            if p.is_file() && name.eq_ignore_ascii_case("SKILL.md") {
+                out.push(p);
+                continue;
+            }
+            if p.is_dir() {
+                // Prefer skill dirs that contain SKILL.md at this level (still walk
+                // siblings/categories for nested pack layouts).
+                walk(&p, depth + 1, max_depth, out);
+            }
+        }
+    }
+    if root.is_dir() {
+        walk(root, 0, max_depth, &mut out);
+    } else if root.is_file()
+        && root
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.eq_ignore_ascii_case("SKILL.md"))
+            .unwrap_or(false)
+    {
+        out.push(root.to_path_buf());
+    }
+    out
+}
+
 pub fn load_skills(cwd: &Path) -> Vec<Skill> {
     let mut out = Vec::new();
     let mut dirs = Vec::new();
@@ -835,26 +890,7 @@ pub fn load_skills(cwd: &Path) -> Vec<Skill> {
         if !root.is_dir() {
             continue;
         }
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let p = entry.path();
-            let skill_md = if p.is_dir() {
-                p.join("SKILL.md")
-            } else if p
-                .file_name()
-                .and_then(|n| n.to_str())
-                .map(|n| n.eq_ignore_ascii_case("SKILL.md"))
-                .unwrap_or(false)
-            {
-                p.clone()
-            } else {
-                continue;
-            };
-            if !skill_md.is_file() {
-                continue;
-            }
+        for skill_md in find_skill_mds(&root, SKILL_WALK_MAX_DEPTH) {
             if let Some(skill) = parse_skill(&skill_md) {
                 // dedupe by name
                 if !out.iter().any(|s: &Skill| s.name == skill.name) {
@@ -1105,5 +1141,28 @@ mod intent_tests {
                 .unwrap_or_else(|| panic!("expected activation for: {q}"));
             assert_eq!(sk.name, want, "for: {q}");
         }
+    }
+
+
+    #[test]
+    fn finds_nested_skill_mds() {
+        let root = std::env::temp_dir().join(format!("nur-skill-walk-{}", std::process::id()));
+        let nested = root.join("skills").join("engineering").join("grill-me");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            nested.join("SKILL.md"),
+            "---
+name: grill-me
+description: test
+---
+
+body
+",
+        )
+        .unwrap();
+        let found = find_skill_mds(&root, 5);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(found.len(), 1, "expected nested SKILL.md, got {found:?}");
     }
 }

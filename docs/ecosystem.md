@@ -54,6 +54,40 @@ On install, skill packs are **mirrored in full** (including `references/`) into 
 
 ---
 
+
+Curated skill packs in `/plugins` (git clone → `~/.nur/plugins/<id>` → mirrored to `~/.nur/skills`):
+
+| Id | Source | Best for |
+|----|--------|----------|
+| `mattpocock` | [mattpocock/skills](https://github.com/mattpocock/skills) | Real engineering: grill-me, triage, tdd, to-spec, implement |
+| `addyosmani` | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | Production eng: context, frontend, security, shipping |
+| `builderio` | [BuilderIO/skills](https://github.com/BuilderIO/skills) | Agent efficiency: efficient-fable, plan-arbiter, limits |
+| `mengto` | [MengTo/Skills](https://github.com/MengTo/Skills) | Design / web craft / motion systems |
+| `google-skills` | [google/skills](https://github.com/google/skills) | Official Google product skills |
+| `nvidia-skills` | [NVIDIA/skills](https://github.com/NVIDIA/skills) | CUDA / accelerated computing |
+| `scientific` | [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) | AI scientist / lab tooling |
+| `ai-marketing` | [ericosiu/ai-marketing-skills](https://github.com/ericosiu/ai-marketing-skills) | Growth, SEO, content, outbound |
+| `finance-skills` | [himself65/finance-skills](https://github.com/himself65/finance-skills) | Valuation, earnings, market data |
+| `longbridge` | [longbridge/skills](https://github.com/longbridge/skills) | Markets / quant / portfolio |
+| `buffett` | [agi-now/buffett-skills](https://github.com/agi-now/buffett-skills) | Value investing |
+| `cre-skills` | [ahacker-1/cre-agent-skills](https://github.com/ahacker-1/cre-agent-skills) | Commercial real estate |
+| `claude-skills-mega` | [alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills) | Large multi-domain catalog (heavy) |
+| `journal-skills` | [Awesome-Journal-Skills](https://github.com/brycewang-stanford/Awesome-Journal-Skills) | Academic journals (very large) |
+
+Also useful but **not** installable skill packs:
+
+| Source | Why it is different |
+|--------|---------------------|
+| [vercel-labs/skills](https://github.com/vercel-labs/skills) | The `npx skills` **installer CLI** (`find-skills`), not a domain pack |
+| [agentskills/agentskills](https://github.com/agentskills/agentskills) | **Specification** for the SKILL.md format |
+| [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills) | Curated **index** of 1000+ skills (no SKILL.md tree) |
+| [openseo.so](https://openseo.so/) | Open-source **SEO platform + MCP**, not a skill repo |
+| [Billy1900/Midas](https://github.com/Billy1900/Midas) | Compound engineering **framework** for alpha research |
+| [get-zeked/perplexity-super-skills](https://github.com/get-zeked/perplexity-super-skills) | Perplexity Computer super-skills (non-standard layout) |
+
+Nested pack layouts (`skills/<category>/<name>/SKILL.md`) are discovered recursively and mirrored flat into `~/.nur/skills/<name>/` so `/skill-name` works.
+
+
 ## Slash skill invocation
 
 Every installed skill is addressable as a slash command — no per-skill hardcoding required.
