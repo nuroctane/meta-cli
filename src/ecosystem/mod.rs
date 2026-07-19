@@ -1,7 +1,8 @@
 //! External agent-ecosystem integrations provisioned by Meta's one-shot install.
 //!
 //! Core runtime: Graphify · PLUR · Ruflo
-//! Skill packs: Emil design · clone-website · cybersecurity · OpenCode catalog
+//! Skill packs: Emil design · clone-website · cybersecurity · default plugins
+//! (superpowers · fable · mattpocock · addyosmani · builderio) · OpenCode catalog
 //! Gateways: Executor MCP · skills CLI · AKM
 //! Patterns: DCP-style context pruning (native + docs)
 
@@ -22,7 +23,7 @@ pub use skills::install_bundled_skills;
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
 /// Bump when spawn/install logic changes so markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 7;
+const ECOSYSTEM_SCHEMA: u32 = 8;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -225,10 +226,20 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
         Err(e) => status.notes.push(format!("tldraw offline: {e}")),
     }
 
-    // Third-party skill packs (network; markers skip re-download).
+    // Third-party skill packs via skills CLI (network; markers skip re-download).
     let (packs_ok, pack_notes) = packs::install_skill_packs(&status.skills_cli);
     status.packs_installed = packs_ok;
     status.notes.extend(pack_notes);
+
+    // Default marketplace plugins: superpowers, fable, mattpocock, addyosmani, builderio.
+    // Recursive SKILL.md mirror so /skill-name slash + discovery work out of the box.
+    let (plug_ok, plug_notes) = crate::plugins::ensure_default_plugins();
+    for id in &plug_ok {
+        if !status.packs_installed.iter().any(|p| p == id) {
+            status.packs_installed.push(id.clone());
+        }
+    }
+    status.notes.extend(plug_notes);
 
     if status.plur.available {
         seed_default_plur_engrams();

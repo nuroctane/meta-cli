@@ -55,6 +55,10 @@ On install, skill packs are **mirrored in full** (including `references/`) into 
 ---
 
 
+**Default auto-install** (on `nur install` / ecosystem ensure): `superpowers`, `fable`, `mattpocock`, `addyosmani`, `builderio`.
+
+Also still auto-provisioned via the skills CLI into `~/.agents/skills`: design (Emil), clone-website, cybersecurity (large), plus dual-write of the default set when the CLI is available.
+
 Curated skill packs in `/plugins` (git clone → `~/.nur/plugins/<id>` → mirrored to `~/.nur/skills`):
 
 | Id | Source | Best for |

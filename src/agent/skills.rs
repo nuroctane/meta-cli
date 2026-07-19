@@ -905,7 +905,7 @@ pub fn load_skills(cwd: &Path) -> Vec<Skill> {
 
 fn parse_skill(path: &Path) -> Option<Skill> {
     let text = std::fs::read_to_string(path).ok()?;
-    let name = path
+    let folder_name = path
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
@@ -913,10 +913,21 @@ fn parse_skill(path: &Path) -> Option<Skill> {
         .to_string();
 
     // Optional YAML frontmatter
-    let (description, body) = if text.starts_with("---") {
+    let (name, description, body) = if text.starts_with("---") {
         if let Some(end) = text[3..].find("---") {
             let fm = &text[3..end + 3];
             let body = text[end + 6..].trim().to_string();
+            let fm_name = fm.lines().find_map(|l| {
+                let rest = l.strip_prefix("name:")?;
+                let s = rest.trim().trim_matches('"').trim();
+                let s = s.strip_prefix("'").unwrap_or(s);
+                let s = s.strip_suffix("'").unwrap_or(s).trim();
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            });
             let desc = fm
                 .lines()
                 .find_map(|l| {
@@ -924,12 +935,12 @@ fn parse_skill(path: &Path) -> Option<Skill> {
                         .map(|s| s.trim().trim_matches('"').to_string())
                 })
                 .unwrap_or_else(|| first_line(&body));
-            (desc, body)
+            (fm_name.unwrap_or(folder_name), desc, body)
         } else {
-            (first_line(&text), text.clone())
+            (folder_name, first_line(&text), text.clone())
         }
     } else {
-        (first_line(&text), text.clone())
+        (folder_name, first_line(&text), text.clone())
     };
 
     let body: String = body.chars().take(12_000).collect();

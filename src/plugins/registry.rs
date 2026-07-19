@@ -249,6 +249,46 @@ pub fn uninstall_plugin(id: &str) -> Result<String, String> {
     Ok(format!("uninstalled plugin '{id}'"))
 }
 
+
+/// Plugins that should be present after a normal ecosystem ensure / install.
+/// Superpowers + Fable + the "real engineering" default set (mattpocock,
+/// addyosmani, builderio). Idempotent: skips when already on disk.
+pub const DEFAULT_PLUGINS: &[&str] = &[
+    "superpowers",
+    "fable",
+    "mattpocock",
+    "addyosmani",
+    "builderio",
+];
+
+/// Install the default plugin set. Returns (ok_ids, notes). Network-bound;
+/// failures are non-fatal notes so offline machines still boot.
+pub fn ensure_default_plugins() -> (Vec<String>, Vec<String>) {
+    let mut ok = Vec::new();
+    let mut notes = Vec::new();
+    for id in DEFAULT_PLUGINS {
+        let dest = plugins_home().join(id);
+        if dest.is_dir() {
+            // Already installed — still re-mirror skills in case discovery improved.
+            if let Err(e) = mirror_skills_to_nur_home(&dest) {
+                notes.push(format!("{id}: remirror {e}"));
+            }
+            // Ensure registry row is enabled.
+            let _ = set_enabled(id, true);
+            ok.push((*id).to_string());
+            continue;
+        }
+        match install_plugin(id) {
+            Ok(msg) => {
+                ok.push((*id).to_string());
+                notes.push(msg);
+            }
+            Err(e) => notes.push(format!("{id}: {e}")),
+        }
+    }
+    (ok, notes)
+}
+
 fn count_skills(root: &Path) -> usize {
     // Nested packs (mattpocock engineering/*, google ads/*, NVIDIA, …) need a walk.
     crate::agent::skills::find_skill_mds(root, 5).len()

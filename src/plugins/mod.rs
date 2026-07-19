@@ -9,7 +9,8 @@ mod registry;
 
 pub use catalog::{by_id, catalog};
 pub use registry::{
-    install_plugin, is_enabled, is_installed, list_installed, plugins_home, set_enabled,
+    ensure_default_plugins, install_plugin, is_enabled, is_installed, list_installed, plugins_home, set_enabled,
+    DEFAULT_PLUGINS,
     uninstall_plugin, Registry,
 };
 
@@ -118,8 +119,11 @@ pub fn quick_status() -> String {
         .filter(|p| p.enabled)
         .count()
         .max(rows.iter().filter(|r| r.enabled).count());
+    let defaults = DEFAULT_PLUGINS.join(", ");
     format!(
-        "plugins  {enabled} enabled · {installed} installed · {} in catalog  (~/.nur/plugins)\n  /plugins  open marketplace picker",
+        "plugins  {enabled} enabled · {installed} installed · {} in catalog  (~/.nur/plugins)
+  defaults auto-install: {defaults}
+  /plugins  open marketplace picker",
         rows.len()
     )
 }

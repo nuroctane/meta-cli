@@ -11,12 +11,17 @@ use std::path::PathBuf;
 
 /// Skill sources installed via the `skills` CLI (vercel-labs/skills).
 const SKILL_PACKS: &[(&str, &str)] = &[
-    // Emil Kowalski — design engineering / animation taste
+    // Emil Kowalski - design engineering / animation taste
     ("emilkowalski/skills", "design"),
     // Website reverse-engineering skill (clone-website)
     ("JCodesMore/ai-website-cloner-template", "clone-website"),
     // 817 cybersecurity skills (MITRE/NIST mapped)
     ("mukul975/Anthropic-Cybersecurity-Skills", "cybersecurity"),
+    // Also land core engineering packs into ~/.agents via skills CLI when available
+    // (plugins path below is primary; this dual-writes for Agent Skills compat).
+    ("mattpocock/skills", "mattpocock"),
+    ("addyosmani/agent-skills", "addyosmani"),
+    ("BuilderIO/skills", "builderio"),
 ];
 
 pub fn ensure_skills_cli(node_ok: bool) -> ComponentStatus {
@@ -352,25 +357,38 @@ fn mirror_agents_to_muse() {
     let Some(home) = dirs::home_dir() else { return };
     let agents = home.join(".agents").join("skills");
     let muse = muse_home().join("skills");
-    let Ok(entries) = fs::read_dir(&agents) else {
+    if !agents.is_dir() {
         return;
-    };
+    }
     let _ = fs::create_dir_all(&muse);
-    for e in entries.flatten() {
-        let p = e.path();
-        if !p.is_dir() {
-            continue;
-        }
-        let name = e.file_name();
-        let dest = muse.join(&name);
+    // Recursive: cyber is flat, mattpocock is skills/<cat>/<name>/SKILL.md when
+    // installed under agents as nested trees.
+    for skill_md in crate::agent::skills::find_skill_mds(&agents, 5) {
+        let Some(src_dir) = skill_md.parent() else { continue };
+        let name = src_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("skill");
+        let dest = muse.join(name);
         if dest.exists() {
             continue;
         }
-        // Best-effort copy of SKILL.md only (avoid huge tree copies for cyber).
-        let src_skill = p.join("SKILL.md");
-        if src_skill.is_file() {
-            let _ = fs::create_dir_all(&dest);
-            let _ = fs::copy(&src_skill, dest.join("SKILL.md"));
+        // Best-effort: SKILL.md + small references/ if present (skip huge trees).
+        let _ = fs::create_dir_all(&dest);
+        let _ = fs::copy(&skill_md, dest.join("SKILL.md"));
+        let refs = src_dir.join("references");
+        if refs.is_dir() {
+            // copy shallow references files only
+            if let Ok(rd) = fs::read_dir(&refs) {
+                let dest_refs = dest.join("references");
+                let _ = fs::create_dir_all(&dest_refs);
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_file() {
+                        let _ = fs::copy(&p, dest_refs.join(e.file_name()));
+                    }
+                }
+            }
         }
     }
 }

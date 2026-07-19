@@ -113,6 +113,15 @@ Pulls latest main (when a Laboratory checkout exists), rebuilds, reinstalls the 
 
 Or from the shell: `nur plugins install superpowers`. Skills land under `~/.nur/plugins` and mirror into `~/.nur/skills`. Details: **[Ecosystem → Plugin marketplace](ecosystem.md#plugin-marketplace)**.
 
+### Default skills (auto-installed)
+
+On install / ecosystem ensure, Nur pulls:
+
+- **superpowers** · **fable** · **mattpocock** · **addyosmani** · **builderio**
+- plus design / clone-website / cybersecurity packs when the skills CLI is available
+
+They land under `~/.nur/plugins/` and mirror into `~/.nur/skills/` so `/grill-me`, `/fable-method`, `/context-engineering`, etc. work immediately.
+
 ### Invoke skills with slash commands
 
 Every installed skill is also a slash command:
