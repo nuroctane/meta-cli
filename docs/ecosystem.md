@@ -59,37 +59,35 @@ On install, skill packs are **mirrored in full** (including `references/`) into 
 
 Also still auto-provisioned via the skills CLI into `~/.agents/skills`: design (Emil), clone-website, cybersecurity (large), plus dual-write of the default set when the CLI is available.
 
-Curated skill packs in `/plugins` (git clone → `~/.nur/plugins/<id>` → mirrored to `~/.nur/skills`):
+**Default auto-install** (on `nur install` / ecosystem ensure): `superpowers`, `fable`, `mattpocock`, `addyosmani`, `builderio`.
 
-| Id | Source | Best for |
-|----|--------|----------|
-| `mattpocock` | [mattpocock/skills](https://github.com/mattpocock/skills) | Real engineering: grill-me, triage, tdd, to-spec, implement |
-| `addyosmani` | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | Production eng: context, frontend, security, shipping |
-| `builderio` | [BuilderIO/skills](https://github.com/BuilderIO/skills) | Agent efficiency: efficient-fable, plan-arbiter, limits |
-| `mengto` | [MengTo/Skills](https://github.com/MengTo/Skills) | Design / web craft / motion systems |
-| `google-skills` | [google/skills](https://github.com/google/skills) | Official Google product skills |
-| `nvidia-skills` | [NVIDIA/skills](https://github.com/NVIDIA/skills) | CUDA / accelerated computing |
-| `scientific` | [K-Dense-AI/scientific-agent-skills](https://github.com/K-Dense-AI/scientific-agent-skills) | AI scientist / lab tooling |
-| `ai-marketing` | [ericosiu/ai-marketing-skills](https://github.com/ericosiu/ai-marketing-skills) | Growth, SEO, content, outbound |
-| `finance-skills` | [himself65/finance-skills](https://github.com/himself65/finance-skills) | Valuation, earnings, market data |
-| `longbridge` | [longbridge/skills](https://github.com/longbridge/skills) | Markets / quant / portfolio |
-| `buffett` | [agi-now/buffett-skills](https://github.com/agi-now/buffett-skills) | Value investing |
-| `cre-skills` | [ahacker-1/cre-agent-skills](https://github.com/ahacker-1/cre-agent-skills) | Commercial real estate |
-| `claude-skills-mega` | [alirezarezvani/claude-skills](https://github.com/alirezarezvani/claude-skills) | Large multi-domain catalog (heavy) |
-| `journal-skills` | [Awesome-Journal-Skills](https://github.com/brycewang-stanford/Awesome-Journal-Skills) | Academic journals (very large) |
+Also still auto-provisioned via the skills CLI into `~/.agents/skills`: design (Emil), clone-website, cybersecurity (large), plus dual-write of the default set when the CLI is available.
 
-Also useful but **not** installable skill packs:
+### `/plugins` catalog (browse by category)
 
-| Source | Why it is different |
-|--------|---------------------|
-| [vercel-labs/skills](https://github.com/vercel-labs/skills) | The `npx skills` **installer CLI** (`find-skills`), not a domain pack |
-| [agentskills/agentskills](https://github.com/agentskills/agentskills) | **Specification** for the SKILL.md format |
-| [VoltAgent/awesome-agent-skills](https://github.com/VoltAgent/awesome-agent-skills) | Curated **index** of 1000+ skills (no SKILL.md tree) |
-| [openseo.so](https://openseo.so/) | Open-source **SEO platform + MCP**, not a skill repo |
-| [Billy1900/Midas](https://github.com/Billy1900/Midas) | Compound engineering **framework** for alpha research |
-| [get-zeked/perplexity-super-skills](https://github.com/get-zeked/perplexity-super-skills) | Perplexity Computer super-skills (non-standard layout) |
+Type a category in the picker filter (`design`, `finance`, `trading`, `workflow`, …). Rows sort by category then name.
 
-Nested pack layouts (`skills/<category>/<name>/SKILL.md`) are discovered recursively and mirrored flat into `~/.nur/skills/<name>/` so `/skill-name` works.
+| Category | What lives there |
+|----------|------------------|
+| `workflow` | Superpowers, Fable, Builder.io, Compound Engineering, gstack, agent toolkits |
+| `engineering` | Matt Pocock, Addy Osmani, Anthropic official, Microsoft, curated AI skills |
+| `specs` | Spec Kit, Spec-Driven Development, AI Dev Tasks |
+| `design` | Impeccable, Meng To, UI Craft, Design Skills, Taste Skill, Oh My Design, Superdesign, Anydesign, UI/UX Pro Max, Awesome Design Skills |
+| `design-system` | Extract Design System, Brand→Design.md, Feature-Sliced Design |
+| `browser` | Chrome DevTools, Firecrawl, Playwright Skill, Figma |
+| `deploy` | Vercel, Railway |
+| `cloud` | Cloudflare, Google Skills, NVIDIA Skills |
+| `data` | MongoDB |
+| `observability` | Axiom, Sentry |
+| `marketing` | AI Marketing Skills, coreyhaines marketingskills |
+| `finance` | Finance Skills, Longbridge, Buffett, CRE, CC Finance |
+| `trading` | Alpaca Skills, Vibe Trade |
+| `security` | Claude Red (authorized red-team) |
+| `science` | Scientific Agent Skills, Awesome Journal Skills |
+| `robotics` | Robotics Agent Skills |
+| `catalog` | Mega packs / awesome indexes (install selectively) |
+
+Install: `/plugins` or `nur plugins install <id>`. Nested `SKILL.md` layouts are discovered recursively and mirrored into `~/.nur/skills/<name>/` so `/skill-name` works.
 
 
 ## Slash skill invocation

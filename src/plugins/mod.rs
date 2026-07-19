@@ -7,7 +7,7 @@
 mod catalog;
 mod registry;
 
-pub use catalog::{by_id, catalog};
+pub use catalog::{by_id, catalog, category_rank, CATEGORIES};
 pub use registry::{
     ensure_default_plugins, install_plugin, is_enabled, is_installed, list_installed, plugins_home, set_enabled,
     DEFAULT_PLUGINS,
@@ -48,12 +48,16 @@ impl PluginRow {
 }
 
 /// Build picker rows: full catalog with install/enable state from disk.
+/// Sorted by category browse order then name so `/plugins` feels curated.
 pub fn marketplace_rows() -> Vec<PluginRow> {
     let reg = Registry::load();
-    catalog()
-        .iter()
-        .map(|p| row_for(p, &reg))
-        .collect()
+    let mut rows: Vec<PluginRow> = catalog().iter().map(|p| row_for(p, &reg)).collect();
+    rows.sort_by(|a, b| {
+        category_rank(&a.category)
+            .cmp(&category_rank(&b.category))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    rows
 }
 
 fn row_for(p: &Entry, reg: &Registry) -> PluginRow {
@@ -120,9 +124,11 @@ pub fn quick_status() -> String {
         .count()
         .max(rows.iter().filter(|r| r.enabled).count());
     let defaults = DEFAULT_PLUGINS.join(", ");
+    let cats = CATEGORIES.join(" · ");
     format!(
         "plugins  {enabled} enabled · {installed} installed · {} in catalog  (~/.nur/plugins)
   defaults auto-install: {defaults}
+  categories: {cats}
   /plugins  open marketplace picker",
         rows.len()
     )

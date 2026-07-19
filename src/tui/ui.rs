@@ -690,7 +690,7 @@ fn draw_plugin_picker(f: &mut Frame, app: &mut App, area: Rect) {
         theme::INDIGO,
         &title,
         None,
-        " ↑↓/wheel  ·  ↵ install/toggle  ·  type to filter  ·  esc/✕  ",
+        " ↑↓/wheel  ·  ↵ install/toggle  ·  filter: design|finance|workflow|…  ·  esc/✕  ",
     );
     let inner = modal_inner(rect);
 
@@ -767,7 +767,7 @@ fn draw_plugin_picker(f: &mut Frame, app: &mut App, area: Rect) {
             let text = format!(
                 "{marker}{:<16} {:<12} {badge}",
                 truncate(&p.name, 16),
-                truncate(&p.category, 12),
+                truncate(&p.category, 14),
             );
             let style = if selected {
                 Style::default()
