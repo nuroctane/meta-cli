@@ -139,6 +139,9 @@ fable-method · activated from your wording (no slash command needed)
 | *polish the UI*, *emil style*, *design eng* | `design-eng` |
 | *skeuomorphic component*, *neumorphic dark*, *rotary dial ui*, `/skeuo` | `skeuomorphic-ui` |
 | *cache hit rate*, *cache busting*, *route through my proxy*, *own gateway* | `gateway-cache-awareness` |
+| *post to X/LinkedIn*, *schedule a post*, *cross-post*, `/akarso` | `akarso` (native tool) |
+| *keyword research*, *backlinks*, *rank tracking*, *site audit*, `/openseo` | `openseo` (MCP) |
+| *dial in the …*, *tune parameters live*, *tuning panel*, `/dialkit` | `dialkit` |
 | *clone this website*, *pixel-perfect clone* | `clone-website-meta` |
 | *draw a diagram*, *excalidraw* | `excalidraw` |
 | *resume from Claude / Grok / Codex / Cursor / Nur* | matching `resume-*` skill |
@@ -307,6 +310,9 @@ Progressive skill packs loaded on demand.
 - `design-eng` — UI polish and animation
 - `skeuomorphic-ui` — Dark skeuomorphic components (knobs, sliders, inset controls) with top-lighting, layered shadows, tactile depth (`/skeuo` · `/skeuomorphic-ui`)
 - `gateway-cache-awareness` — Protect prompt-cache hit rate when routing an agent through your own gateway/proxy
+- `akarso` — Post/schedule/reply across 14 social platforms; paired with the native **`akarso`** tool + `/akarso` (auto-installed)
+- `openseo` — SEO research/audits (keywords, backlinks, rank, site audit) via the OpenSEO MCP; `/openseo`
+- `dialkit` — Live-tune interface parameters (dials/sliders/timelines) across React/Svelte/Vue/Solid; `/dialkit`
 - `clone-website` — Website reverse-engineering
 - `cybersecurity` — Security investigations and DFIR
 - `apple-design` — Apple-style interface design

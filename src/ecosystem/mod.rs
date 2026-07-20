@@ -23,7 +23,7 @@ pub use skills::install_bundled_skills;
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
 /// Bump when spawn/install logic changes so markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 8;
+const ECOSYSTEM_SCHEMA: u32 = 9;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -58,6 +58,9 @@ pub struct EcosystemStatus {
     /// Cua Drivers — computer-use MCP server + CLI (`cua-driver`).
     #[serde(default)]
     pub cua: ComponentStatus,
+    /// Akarso — social posting CLI/MCP (`akarso`).
+    #[serde(default)]
+    pub akarso: ComponentStatus,
     pub skills_installed: Vec<String>,
     #[serde(default)]
     pub packs_installed: Vec<String>,
@@ -76,7 +79,7 @@ impl EcosystemStatus {
             }
         };
         format!(
-            "ecosystem · {}  {}  {}  {}  {}  {}  {}  {}  {}  · packs {}",
+            "ecosystem · {}  {}  {}  {}  {}  {}  {}  {}  {}  {}  · packs {}",
             bit(self.graphify.available, "graphify"),
             bit(self.plur.available, "plur"),
             bit(self.ruflo.available, "ruflo"),
@@ -86,6 +89,7 @@ impl EcosystemStatus {
             bit(self.excalidraw.available, "excalidraw"),
             bit(self.skills_cli.available, "skills"),
             bit(self.cua.available, "cua"),
+            bit(self.akarso.available, "akarso"),
             if self.packs_installed.is_empty() {
                 "…".into()
             } else {
@@ -97,7 +101,7 @@ impl EcosystemStatus {
     pub fn report(&self) -> String {
         let mut s = String::from("Nur ecosystem (auto-provisioned on install / open)\n");
         // Fixed names so older ecosystem.json markers (pre-field) still list every slot.
-        let comps: [(&str, &ComponentStatus); 10] = [
+        let comps: [(&str, &ComponentStatus); 11] = [
             ("graphify", &self.graphify),
             ("plur", &self.plur),
             ("ruflo", &self.ruflo),
@@ -108,6 +112,7 @@ impl EcosystemStatus {
             ("browser", &self.browser),
             ("excalidraw", &self.excalidraw),
             ("cua", &self.cua),
+            ("akarso", &self.akarso),
         ];
         for (fallback_name, c) in comps {
             let name = if c.name.is_empty() {
@@ -163,8 +168,8 @@ impl EcosystemStatus {
             s.push_str(&format!("  note: {n}\n"));
         }
         s.push_str(
-            "\n  slash: /ecosystem /plur /ruflo /graphify /skills\n\
-             tools:  graphify plur ruflo executor omp browser excalidraw skill\n\
+            "\n  slash: /ecosystem /plur /ruflo /graphify /skills /akarso /openseo\n\
+             tools:  graphify plur ruflo akarso executor omp browser excalidraw skill\n\
              packs:  design · clone-website · cybersecurity · opencode catalog · DCP patterns\n",
         );
         s
@@ -218,6 +223,7 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
     status.browser = packs::ensure_browser_cli(status.node_ok);
     status.excalidraw = ensure_excalidraw(status.node_ok);
     status.cua = ensure_cua();
+    status.akarso = ensure_akarso(status.node_ok);
 
     // tldraw offline desktop app (official) — best-effort auto-install so `/draw`
     // works out of the box. No-ops when already present; skips quietly offline.
@@ -329,6 +335,40 @@ fn ensure_excalidraw(node_ok: bool) -> ComponentStatus {
     }
     if c.detail.is_empty() {
         c.detail = "not found after npm install — try: npm i -g excalidraw-cli".into();
+    }
+    c
+}
+
+// ── Akarso (social posting CLI/MCP) ─────────────────────────────────────────
+
+/// Akarso — post/schedule/reply across 14 social platforms (`akarso` npm CLI).
+/// Best-effort global install so the `akarso` tool + `/akarso` work out of the
+/// box; the user still runs `akarso auth login` once to connect. Never blocks
+/// ensure on failure (no account required to install the CLI).
+fn ensure_akarso(node_ok: bool) -> ComponentStatus {
+    let mut c = ComponentStatus {
+        name: "akarso".into(),
+        ..Default::default()
+    };
+    if let Some(bin) = find_bin("akarso") {
+        c.available = true;
+        c.path = Some(bin.clone());
+        c.version = cmd_version(&bin, &["--version"]);
+        c.detail = "CLI ready · social posting via the akarso tool (run `akarso auth login`)".into();
+        return c;
+    }
+    if !node_ok {
+        c.detail = "needs Node.js 18+ — npm i -g akarso".into();
+        return c;
+    }
+    let _ = run_quiet("npm", &["install", "-g", "akarso"], None, 600_000);
+    if let Some(bin) = find_bin("akarso") {
+        c.available = true;
+        c.path = Some(bin.clone());
+        c.version = cmd_version(&bin, &["--version"]);
+        c.detail = "installed via npm i -g akarso · run `akarso auth login`".into();
+    } else {
+        c.detail = "not found — npm install -g akarso".into();
     }
     c
 }

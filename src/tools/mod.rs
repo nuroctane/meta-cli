@@ -1,4 +1,5 @@
 mod apply_patch;
+pub mod akarso;
 mod bash;
 pub mod browser;
 pub use browser::is_read_only_action as browser_is_read_only;
@@ -140,6 +141,7 @@ impl ToolHost {
             Box::new(tldraw::Tldraw),
             Box::new(plur::Plur),
             Box::new(ruflo::Ruflo),
+            Box::new(akarso::Akarso),
             Box::new(executor_tool::ExecutorTool),
             Box::new(omp::OmpTool),
             Box::new(skill_tool::SkillTool),
@@ -217,6 +219,7 @@ impl ToolHost {
             "tldraw" => tldraw::Tldraw.execute(&args, ctx),
             "plur" => plur::Plur.execute(&args, ctx),
             "ruflo" => ruflo::Ruflo.execute(&args, ctx),
+            "akarso" => akarso::Akarso.execute(&args, ctx),
             "executor" => executor_tool::ExecutorTool.execute(&args, ctx),
             "omp" => omp::OmpTool.execute(&args, ctx),
             "skill" => skill_tool::SkillTool.execute(&args, ctx),
@@ -313,8 +316,8 @@ mod tests {
             "read_file", "list_dir", "write_file", "edit_file", "multi_edit", "apply_patch",
             "bash", "grep", "glob", "web_fetch", "web_search", "browser", "look",
             "extract_frames", "git_status", "git_diff", "graphify", "excalidraw", "tldraw",
-            "plur", "ruflo", "executor", "omp", "skill", "memory", "todo_write", "submit_plan",
-            "agent",
+            "plur", "ruflo", "akarso", "executor", "omp", "skill", "memory", "todo_write",
+            "submit_plan", "agent",
         ];
         want.sort();
 

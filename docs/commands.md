@@ -392,6 +392,9 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/logout` | Clear the stored API key |
 | `/model` · `/models` | Show and switch models for the active provider |
 | `/plugins` · `/plugin` | Browse / install / enable marketplace plugins |
+| `/akarso` | Akarso social posting: `/akarso` (auth), `accounts`, `posts`; publishing/scheduling runs through the `akarso` tool with approval |
+| `/openseo` | Open OpenSEO (open-source Semrush/Ahrefs alt) dashboard + MCP setup; SEO via MCP |
+| `/dialkit` | Activate the dialkit skill — live-tune interface parameters (React/Svelte/Vue/Solid) |
 | `/effort` | Reasoning effort: `minimal` → `xhigh` |
 | `/mode` | Permission mode: `manual` \| `plan` \| `auto` (or Shift+Tab) |
 | `/manual` | Switch to manual mode (approve writes/shell) |

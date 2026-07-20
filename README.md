@@ -336,6 +336,7 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/cd` `/pwd` `/doctor` `/status` | Workspace + health |
 | `/sessions` `/resume` | Session browser (press `c` to fold in chagent imports) |
 | `/chagent` `/hijack` `/takeover` `/sessionresume` `/migrate` | **chagent** cross-agent migration: import a Claude/Codex/Cursor/Grok session into nur and resume it. Bare command opens a dedicated import picker; `/chagent ls [agent]` lists; `/chagent <agent> [id\|latest]` imports one |
+| `/akarso` `/openseo` `/dialkit` | Deep-integrated tools: **akarso** (native tool — post/schedule across 14 social platforms), **OpenSEO** (SEO research/audits via MCP), **dialkit** (live-tune interface parameters) |
 | `/failover` | Cross-provider failover + privacy tiers (provider-picker; Space adds a fallback, Alt+P sets its privacy tier) |
 | `/fusion` | Multi-model debate → one synthesized answer (`/fusion panel <ids>`, then `/fusion <question>`) |
 | `/local` | Run a model locally via bundled llama.cpp: `/local up [tier\|url]` · `status` · `models` · `down` |

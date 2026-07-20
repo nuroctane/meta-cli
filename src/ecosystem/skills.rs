@@ -193,6 +193,21 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
             include_str!("../../skills/gateway-cache-awareness/SKILL.md"),
         )],
     ),
+    // Akarso — social posting CLI/MCP (paired with the native `akarso` tool).
+    (
+        "akarso",
+        &[("SKILL.md", include_str!("../../skills/akarso/SKILL.md"))],
+    ),
+    // OpenSEO — SEO research/audits via MCP (open-source Semrush/Ahrefs alt).
+    (
+        "openseo",
+        &[("SKILL.md", include_str!("../../skills/openseo/SKILL.md"))],
+    ),
+    // Dialkit — live tuning of interface parameters (multi-framework UI lib).
+    (
+        "dialkit",
+        &[("SKILL.md", include_str!("../../skills/dialkit/SKILL.md"))],
+    ),
 ];
 
 const PLUR_SKILL: &str = r#"---

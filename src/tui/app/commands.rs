@@ -182,6 +182,8 @@ impl App {
             "/graphify" => self.cmd_graphify(&arg),
             "/plur" => self.cmd_plur(&arg),
             "/ruflo" => self.cmd_ruflo(&arg),
+            "/akarso" => self.cmd_akarso(&arg),
+            "/openseo" => self.cmd_openseo(),
             "/ecosystem" => {
                 // Heals missing pieces (excalidraw, etc.) — same as one-shot ensure.
                 self.push_note(
@@ -401,6 +403,66 @@ impl App {
             Ok(s) => self.push_note(Tone::Skill, s),
             Err(e) => self.push_error(e.to_string()),
         }
+    }
+
+    /// Akarso social posting — read-only from the slash (status/list). Actual
+    /// publishing goes through the agent (`akarso` tool) so it's approval-gated;
+    /// `/akarso` never posts directly.
+    fn cmd_akarso(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let json = match arg {
+            "" | "status" | "auth" | "check" => r#"{"action":"auth_check"}"#.to_string(),
+            "accounts" | "acc" => r#"{"action":"accounts_list"}"#.to_string(),
+            "health" => r#"{"action":"accounts_health"}"#.to_string(),
+            "posts" | "list" | "ls" => r#"{"action":"posts_list"}"#.to_string(),
+            "profiles" => r#"{"action":"profiles_list"}"#.to_string(),
+            "help" | "-h" | "--help" => {
+                self.push_note(
+                    Tone::Skill,
+                    "akarso — social posting across 14 platforms\n  \
+                     /akarso            auth status\n  \
+                     /akarso accounts   connected accounts\n  \
+                     /akarso posts      list posts\n  \
+                     to publish/schedule, just ask (e.g. \"post X to LinkedIn and X\") — \
+                     the akarso tool runs it with approval\n  \
+                     first run:  akarso auth login  ·  akarso accounts connect <platform>"
+                        .into(),
+                );
+                return;
+            }
+            other => {
+                self.push_error(format!(
+                    "/akarso: unknown '{other}' — try: (blank) · accounts · posts · health · profiles · help"
+                ));
+                return;
+            }
+        };
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        match host.dispatch("akarso", &json, &ctx) {
+            Ok(s) => self.push_note(Tone::Skill, s),
+            Err(e) => self.push_error(e.to_string()),
+        }
+    }
+
+    /// OpenSEO — open the dashboard + MCP docs and point at the setup. OpenSEO is
+    /// an MCP server (no CLI); connect it via the `executor`/`/mcp` gateway.
+    fn cmd_openseo(&mut self) {
+        let _ = crate::open_uri::open("https://openseo.so/docs/mcp");
+        let _ = crate::open_uri::open("https://app.openseo.so");
+        self.push_note(
+            Tone::Skill,
+            "OpenSEO — open-source Semrush/Ahrefs alternative (SEO via MCP)\n  \
+             opened dashboard + MCP docs in your browser\n  \
+             1. sign up / self-host, then connect the MCP: https://openseo.so/docs/mcp\n  \
+             2. add it via the executor gateway (/mcp) so its tools are callable\n  \
+             3. then ask for keyword research · backlinks · rank tracking · site audit · competitor SEO\n  \
+             skill: /openseo activates the workflow guidance"
+                .into(),
+        );
     }
 
     /// Run graphify CLI actions from the TUI without going through the model.

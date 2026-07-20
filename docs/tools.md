@@ -13,7 +13,7 @@ All native tools available to the NurCLI agent.
 | **web** | `web_search` `web_fetch` | teal |
 | **git** | `git_status` `git_diff` | cyan |
 | **browser** | `browser` | teal |
-| **knowledge** | `graphify` `plur` `ruflo` `executor` `skill` `memory` | indigo / orange |
+| **knowledge** | `graphify` `plur` `ruflo` `akarso` `executor` `skill` `memory` | indigo / orange |
 | **delegate** | `omp` | — |
 | **agent** | `todo_write` `submit_plan` `agent` | — |
 
@@ -130,6 +130,10 @@ Search shared engram memory.
 ### `ruflo`
 
 Search vector memory.
+
+### `akarso`
+
+Post, schedule, and reply across 14 social platforms (X, LinkedIn, Instagram, Facebook, TikTok, YouTube, Threads, Reddit, Bluesky, Mastodon, Discord, Slack, Pinterest, Google Business). `action=auth_check|accounts_list|accounts_health|accounts_get|accounts_connect|posts_list|posts_get|posts_create|posts_delete|profiles_list`. Read actions are free; `posts_create` (publish/schedule), `posts_delete`, and `accounts_connect` are outward-facing and approval-gated. Requires `akarso auth login` once. Also `/akarso`.
 
 ### `executor`
 
