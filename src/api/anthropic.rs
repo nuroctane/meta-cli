@@ -151,7 +151,77 @@ pub fn build_body_with_oauth(req: &ResponseRequest, stream: bool, oauth: bool) -
     // Do not auto-attach Anthropic `thinking` — not all models accept it and a
     // 400 here looks like "Anthropic is broken" for users on haiku/sonnet tiers.
     let _ = &req.reasoning;
+    apply_prompt_caching(&mut body);
     body
+}
+
+/// Attach Anthropic prompt-cache breakpoints (`cache_control: ephemeral`) to the
+/// large, stable parts of the request: the system prompt, the tool schemas, and
+/// the most recent message(s).
+///
+/// Anthropic prompt caching is **opt-in** on the Messages API — without an
+/// explicit breakpoint the full prefix (system + tools + entire history) is
+/// re-read at full price on every turn. Every other provider nur speaks to does
+/// automatic server-side prefix caching, which is why only Claude showed runaway
+/// token cost. This restores parity with Claude Code, which sets the same
+/// breakpoints. Max 4 breakpoints per request: system (1) + tools (1) + a rolling
+/// breakpoint on the last 2 messages (≤2).
+fn apply_prompt_caching(body: &mut Value) {
+    fn mark(block: &mut Value) {
+        if let Some(obj) = block.as_object_mut() {
+            obj.insert("cache_control".into(), json!({ "type": "ephemeral" }));
+        }
+    }
+
+    // 1) System prompt — normalise a plain string to a single text block so a
+    //    breakpoint can be attached; otherwise mark the last existing block.
+    match body.get_mut("system") {
+        Some(s @ Value::String(_)) => {
+            let text = s.as_str().unwrap_or("").to_string();
+            *s = json!([{
+                "type": "text",
+                "text": text,
+                "cache_control": { "type": "ephemeral" },
+            }]);
+        }
+        Some(Value::Array(blocks)) => {
+            if let Some(last) = blocks.last_mut() {
+                mark(last);
+            }
+        }
+        _ => {}
+    }
+
+    // 2) Tool schemas — one breakpoint on the last tool caches the whole block.
+    if let Some(Value::Array(tools)) = body.get_mut("tools") {
+        if let Some(last) = tools.last_mut() {
+            mark(last);
+        }
+    }
+
+    // 3) Recent history — a rolling breakpoint on the last up-to-2 messages so
+    //    growing conversation context is reused across turns.
+    if let Some(Value::Array(messages)) = body.get_mut("messages") {
+        let start = messages.len().saturating_sub(2);
+        for msg in messages[start..].iter_mut() {
+            match msg.get_mut("content") {
+                Some(c @ Value::String(_)) => {
+                    let text = c.as_str().unwrap_or("").to_string();
+                    *c = json!([{
+                        "type": "text",
+                        "text": text,
+                        "cache_control": { "type": "ephemeral" },
+                    }]);
+                }
+                Some(Value::Array(blocks)) => {
+                    if let Some(last) = blocks.last_mut() {
+                        mark(last);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn push_item(item: &Value, messages: &mut Vec<Value>, system: &mut Option<String>) {
@@ -582,9 +652,60 @@ mod tests {
                 .contains("be terse"),
             "user instructions kept as separate block"
         );
-        // Non-oauth keeps plain string system.
+        // Non-oauth system is normalised to a cacheable text block array.
         let plain = build_body_with_oauth(&req(), false, false);
-        assert!(plain["system"].is_string());
+        let sys = plain["system"].as_array().expect("system is block array");
+        assert_eq!(sys[0]["text"], "be terse");
+        assert_eq!(sys.last().unwrap()["cache_control"]["type"], "ephemeral");
+    }
+
+    #[test]
+    fn prompt_caching_breakpoints_are_attached() {
+        // System, tools, and the most recent message must carry a cache_control
+        // breakpoint so Anthropic caches the prefix instead of re-billing it.
+        let b = build_body_with_oauth(&req(), false, false);
+
+        let sys = b["system"].as_array().expect("system blocks");
+        assert_eq!(sys.last().unwrap()["cache_control"]["type"], "ephemeral");
+
+        let tools = b["tools"].as_array().expect("tools present");
+        assert_eq!(tools.last().unwrap()["cache_control"]["type"], "ephemeral");
+
+        // At least one of the trailing messages is breakpointed.
+        let msgs = b["messages"].as_array().expect("messages present");
+        let last = msgs.last().unwrap();
+        let has_bp = match &last["content"] {
+            Value::Array(blocks) => blocks
+                .last()
+                .and_then(|blk| blk.get("cache_control"))
+                .is_some(),
+            _ => false,
+        };
+        assert!(has_bp, "last message must carry a cache breakpoint");
+
+        // Never exceed Anthropic's 4-breakpoint limit.
+        let mut count = 0;
+        let mut walk = |v: &Value| {
+            if let Value::Object(o) = v {
+                if o.contains_key("cache_control") {
+                    count += 1;
+                }
+            }
+        };
+        for blk in b["system"].as_array().unwrap() {
+            walk(blk);
+        }
+        for t in b["tools"].as_array().unwrap() {
+            walk(t);
+        }
+        for m in b["messages"].as_array().unwrap() {
+            if let Value::Array(blocks) = &m["content"] {
+                for blk in blocks {
+                    walk(blk);
+                }
+            }
+        }
+        assert!(count <= 4, "at most 4 cache breakpoints, got {count}");
     }
 
     #[test]
