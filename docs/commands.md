@@ -128,6 +128,39 @@ Columns: **ID · UPDATED · MSGS · TOKENS · COST · CWD**.
 
 ---
 
+### chagent — cross-agent session migration
+
+**chagent** (inspired by [SirTenzin/chagent](https://github.com/SirTenzin/chagent))
+imports a coding-agent session from *another* harness into NurCLI so it resumes
+like any native session. Supported sources: **Claude Code**, **Codex**,
+**Cursor**, and **Grok Build**.
+
+Under the hood it reuses the bundled `resume-session/session_reader.py` to
+normalise each foreign store into one JSON intermediate representation, then
+writes a native session (`messages` + Responses `input_items` + replayable UI
+cards). The imported transcript is treated as **inert history** — verify files,
+branch, and tests before continuing.
+
+In the TUI:
+
+| Command | Purpose |
+|---------|---------|
+| `/chagent` | Open the dedicated import picker — same look as `/sessions`, listing only migratable foreign sessions for this workspace. **↵ imports & resumes.** |
+| `/chagent ls [agent]` | List migratable sessions (all agents, or just one) |
+| `/chagent <agent> [id\|latest]` | Import that session and resume it |
+| `/sessions` → `c` | Fold foreign imports into the normal picker as tagged rows |
+
+Aliases for the picker/command: **`/hijack`**, **`/takeover`**,
+**`/sessionresume`**, **`/migrate`**. Agents are `claude` · `codex` · `cursor`
+· `grok`. Imports are re-homed to the current workspace (tools stay sandboxed
+here) and are cwd-scoped, so open the picker from the project folder.
+
+Requires Python 3 on `PATH` (`python3` / `python` / `py -3`) and the
+`resume-session` skill provisioned under `~/.nur/skills` (run `/ecosystem` if
+missing).
+
+---
+
 ### `nur usage`
 
 Show last known token usage and **estimated** cost. Displays paths to status and usage log files.
@@ -353,7 +386,8 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/clear` | Clear the transcript display |
 | `/new` | Start a fresh session |
 | `/compact` | Summarize the conversation to free context |
-| `/sessions` · `/resume` | Browse & open past sessions (`/resume <id>` also works) |
+| `/sessions` · `/resume` | Browse & open past sessions (`/resume <id>` also works). Press **`c`** in the picker to fold in chagent imports |
+| `/chagent` · `/hijack` · `/takeover` · `/sessionresume` · `/migrate` | **chagent** — cross-agent session migration. Bare command opens a dedicated import picker (same chrome as `/sessions`) listing migratable **Claude Code · Codex · Cursor · Grok Build** sessions for this workspace. `/chagent ls [agent]` lists them; `/chagent <agent> [id\|latest]` imports one and resumes it natively |
 | `/login` | Provider + API key or browser sign-in |
 | `/logout` | Clear the stored API key |
 | `/model` · `/models` | Show and switch models for the active provider |

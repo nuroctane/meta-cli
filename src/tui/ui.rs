@@ -358,6 +358,7 @@ fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
         close,
         body: inner,
         scope: Rect::default(),
+        foreign: Rect::default(),
         rows: Vec::new(),
     };
 
@@ -531,6 +532,7 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, area: Rect) {
         close,
         body: inner,
         scope: Rect::default(),
+        foreign: Rect::default(),
         rows: Vec::new(),
     };
 
@@ -705,6 +707,7 @@ fn draw_plugin_picker(f: &mut Frame, app: &mut App, area: Rect) {
         close,
         body: inner,
         scope: Rect::default(),
+        foreign: Rect::default(),
         rows: Vec::new(),
     };
 
@@ -928,10 +931,17 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let spin = theme::SPINNER[phase % theme::SPINNER.len()];
 
     // Snapshot list data so we can mutate picker hit/scroll freely.
-    let (total, this_cwd_only, mut sel, mut start) = {
+    let (total, this_cwd_only, show_foreign, foreign_only, mut sel, mut start) = {
         let p = app.picker.as_ref().unwrap();
         let total = p.visible().len();
-        (total, p.this_cwd_only, p.idx, p.scroll)
+        (
+            total,
+            p.this_cwd_only,
+            p.show_foreign,
+            p.foreign_only,
+            p.idx,
+            p.scroll,
+        )
     };
 
     let w = 82.min(area.width.saturating_sub(4)).max(54);
@@ -949,9 +959,21 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let scope_label = if this_cwd_only { "here" } else { "all" };
-    let title = format!(" {spin}  sessions  ·  {total} ");
-    let footer = " ↑↓/wheel  ·  ↵ open  ·  tab scope  ·  esc/✕ ";
-    draw_modal_frame(f, rect, phase, theme::META_BLUE, &title, Some(scope_label), footer);
+    let (title, footer) = if foreign_only {
+        // Dedicated chagent import picker — same chrome, import-focused labels.
+        (
+            format!(" {spin}  chagent · import  ·  {total} "),
+            " ↑↓/wheel  ·  ↵ import & resume  ·  esc/✕ ",
+        )
+    } else {
+        let import_tag = if show_foreign { "  ·  +imports" } else { "" };
+        (
+            format!(" {spin}  sessions  ·  {total}{import_tag} "),
+            " ↑↓/wheel  ·  ↵ open  ·  tab scope  ·  c import  ·  esc/✕ ",
+        )
+    };
+    let right = if foreign_only { None } else { Some(scope_label) };
+    draw_modal_frame(f, rect, phase, theme::META_BLUE, &title, right, footer);
 
     let pad = 2u16;
     let inner = Rect {
@@ -979,6 +1001,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         close,
         body: inner,
         scope,
+        foreign: Rect::default(),
         rows: Vec::new(),
     };
 
@@ -986,8 +1009,8 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled("  nothing here  ·  ".to_string(), theme::style_faint()),
-                Span::styled("tab / space".to_string(), theme::style_tool()),
-                Span::styled("  show all workspaces".to_string(), theme::style_faint()),
+                Span::styled("tab scope · c import".to_string(), theme::style_tool()),
+                Span::styled("  widen the search".to_string(), theme::style_faint()),
             ]))
             .style(Style::default().bg(theme::SURFACE_2)),
             inner,
@@ -1057,26 +1080,40 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
 
-        lines.push(Line::from(vec![
-            Span::styled(
-                marker.to_string(),
+        let mut prow: Vec<Span> = vec![Span::styled(
+            marker.to_string(),
+            Style::default()
+                .fg(if selected { theme::BG } else { theme::META_BLUE })
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        )];
+        // Category tag for chagent imports (Claude/Codex/Cursor/Grok).
+        let tag_w = if r.is_foreign() {
+            let tag = format!("{} ", crate::agent::chagent::tool_label(&r.source));
+            let w = tag.chars().count();
+            prow.push(Span::styled(
+                tag,
                 Style::default()
-                    .fg(if selected { theme::BG } else { theme::META_BLUE })
+                    .fg(if selected { theme::BG } else { theme::WARN })
                     .bg(bg)
                     .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                truncate(&r.preview, col_w),
-                Style::default()
-                    .fg(prompt_fg)
-                    .bg(bg)
-                    .add_modifier(if selected {
-                        Modifier::BOLD
-                    } else {
-                        Modifier::empty()
-                    }),
-            ),
-        ]));
+            ));
+            w
+        } else {
+            0
+        };
+        prow.push(Span::styled(
+            truncate(&r.preview, col_w.saturating_sub(tag_w)),
+            Style::default()
+                .fg(prompt_fg)
+                .bg(bg)
+                .add_modifier(if selected {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                }),
+        ));
+        lines.push(Line::from(prow));
 
         let short = &r.id[..8.min(r.id.len())];
         let place = if this_cwd_only {
@@ -1089,17 +1126,25 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             ""
         };
-        let cost = if r.cost > 0.0 {
-            format!("  ·  ${:.3}", r.cost)
+        let meta = if r.is_foreign() {
+            // Not yet imported — no native msg/token/cost stats exist.
+            format!(
+                "    {}  ·  ↵ imports into a nur session{place}  ·  {short}",
+                r.when,
+            )
         } else {
-            String::new()
+            let cost = if r.cost > 0.0 {
+                format!("  ·  ${:.3}", r.cost)
+            } else {
+                String::new()
+            };
+            format!(
+                "    {}  ·  {} msgs  ·  {} tok{cost}{place}{here}  ·  {short}",
+                r.when,
+                r.messages,
+                fmt_num(r.tokens),
+            )
         };
-        let meta = format!(
-            "    {}  ·  {} msgs  ·  {} tok{cost}{place}{here}  ·  {short}",
-            r.when,
-            r.messages,
-            fmt_num(r.tokens),
-        );
         lines.push(Line::from(Span::styled(
             truncate(&meta, col_w + 2),
             Style::default().fg(meta_fg).bg(bg),

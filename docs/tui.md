@@ -104,8 +104,9 @@ See [Permission modes](#permission-modes) below for exactly what each mode allow
 
 | Command | Purpose |
 |---------|---------|
-| `/sessions` | Open sessions browser (same as Ctrl+R) |
+| `/sessions` | Open sessions browser (same as Ctrl+R); press `c` for chagent imports |
 | `/resume` | Resume a session |
+| `/chagent` · `/hijack` · `/takeover` · `/sessionresume` | chagent: import a Claude/Codex/Cursor/Grok session and resume it |
 | `/todos` | Show current todos |
 | `/clear` | Clear current screen |
 | `/new` | Start a new session |
@@ -329,6 +330,7 @@ Open with `Ctrl+R` or `/sessions`. Browse recent sessions with a prompt-first pi
 - Scans both `~/.nur/sessions` and legacy `~/.muse/sessions`; when the same id exists twice, the **richer** copy wins.
 - Lists show message counts, tokens, and **estimated cost** so high-spend sessions are easy to spot.
 - Session saves write a sidecar **`.json.bak`** before overwrite.
+- Press **`c`** (or `i`) to fold in **chagent** imports — migratable **Claude Code · Codex · Cursor · Grok Build** sessions for this workspace appear as tagged rows; ↵ on one imports it into a native session and resumes. `/chagent` (aliases `/hijack`, `/takeover`, `/sessionresume`) opens a dedicated import-only picker with the same chrome.
 
 ### Sticky prompt
 

@@ -177,6 +177,22 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
             include_str!("../../skills/toolcraft/SKILL.md"),
         )],
     ),
+    // Saurabh-2607/Skills — dark skeuomorphic UI component skill.
+    (
+        "skeuomorphic-ui",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/skeuomorphic-ui/SKILL.md"),
+        )],
+    ),
+    // Gateway/proxy prompt-cache hit-rate awareness (inference-point insight).
+    (
+        "gateway-cache-awareness",
+        &[(
+            "SKILL.md",
+            include_str!("../../skills/gateway-cache-awareness/SKILL.md"),
+        )],
+    ),
 ];
 
 const PLUR_SKILL: &str = r#"---

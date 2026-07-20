@@ -209,6 +209,11 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
     ("/sessions", "browse & open past sessions  (same as /resume)"),
     ("/resume", "browse & open past sessions  (same as /sessions)"),
+    ("/chagent", "import a session from Claude/Codex/Cursor/Grok  (picker)"),
+    ("/hijack", "take over a foreign agent session  (alias of /chagent)"),
+    ("/takeover", "take over a foreign agent session  (alias of /chagent)"),
+    ("/sessionresume", "import a foreign agent session  (alias of /chagent)"),
+    ("/skeuo", "activate the skeuomorphic-ui skill  (/skeuomorphic-ui)"),
     ("/init", "generate a NUR.md project guide"),
     ("/scan", "map this codebase → shareable foglamp scan: /scan [focus]"),
     ("/goal", "set a standing session goal (context on every turn)"),
@@ -1022,6 +1027,16 @@ pub struct SessionRow {
     pub preview: String,
     /// Session belongs to the current workspace.
     pub here: bool,
+    /// Source harness token: `"nur"` for native sessions, or a foreign reader
+    /// tool (`"claude"` · `"codex"` · `"cursor"` · `"grok"`) for chagent imports.
+    pub source: String,
+}
+
+impl SessionRow {
+    /// True for a foreign (chagent-migratable) session rather than a native one.
+    pub fn is_foreign(&self) -> bool {
+        self.source != "nur"
+    }
 }
 
 /// Interactive sessions browser — open with `/sessions` or `/resume`.
@@ -1035,6 +1050,13 @@ pub struct SessionPicker {
     pub vis_page: usize,
     /// Only show sessions from this workspace.
     pub this_cwd_only: bool,
+    /// Include chagent-migratable foreign sessions (Claude/Codex/Cursor/Grok).
+    pub show_foreign: bool,
+    /// Foreign sessions have been discovered (avoid re-spawning the reader).
+    pub foreign_loaded: bool,
+    /// Dedicated chagent picker: show *only* foreign sessions (import mode).
+    /// Same chrome/scroll/confirm as the default picker, different contents.
+    pub foreign_only: bool,
     /// Hit-test geometry filled by the last draw (screen coords).
     pub hit: PickerHit,
     /// Coalesce trackpad/OS wheel floods to one step per tick.
@@ -1052,23 +1074,28 @@ pub struct PickerHit {
     pub body: ratatui::layout::Rect,
     /// Scope chip ("here" / "all") — click to toggle.
     pub scope: ratatui::layout::Rect,
+    /// Foreign-import chip ("import") — click to toggle chagent sources.
+    /// Reserved for a future clickable chip; the toggle is keyboard-driven (`c`).
+    #[allow(dead_code)]
+    pub foreign: ratatui::layout::Rect,
     /// Visible row index → screen rect (for click-to-select).
     pub rows: Vec<(usize, ratatui::layout::Rect)>,
 }
 
 impl SessionPicker {
+    fn row_visible(&self, r: &SessionRow) -> bool {
+        if self.foreign_only {
+            return r.is_foreign();
+        }
+        (!self.this_cwd_only || r.here) && (self.show_foreign || !r.is_foreign())
+    }
+
     pub fn visible(&self) -> Vec<&SessionRow> {
-        self.rows
-            .iter()
-            .filter(|r| !self.this_cwd_only || r.here)
-            .collect()
+        self.rows.iter().filter(|r| self.row_visible(r)).collect()
     }
 
     pub fn count(&self) -> usize {
-        self.rows
-            .iter()
-            .filter(|r| !self.this_cwd_only || r.here)
-            .count()
+        self.rows.iter().filter(|r| self.row_visible(r)).count()
     }
 
     /// Clamp idx/scroll after page-size or filter changes (never jumps more than needed).
@@ -3673,6 +3700,7 @@ impl App {
                     cwd: s.cwd.clone(),
                     preview,
                     here: s.cwd.to_lowercase() == here_key,
+                    source: "nur".into(),
                 }
             })
             .collect();
@@ -3701,6 +3729,9 @@ impl App {
             scroll: 0,
             vis_page: 6,
             this_cwd_only: false,
+            show_foreign: false,
+            foreign_loaded: false,
+            foreign_only: false,
             hit: PickerHit::default(),
             last_step_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
@@ -3708,18 +3739,133 @@ impl App {
         });
     }
 
+    /// Dedicated chagent picker — same chrome as `/sessions`, but populated only
+    /// with migratable foreign sessions (Claude/Codex/Cursor/Grok) for this
+    /// workspace. Enter imports the selected one and resumes it natively.
+    pub(super) fn open_chagent_picker(&mut self) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish".into());
+            return;
+        }
+        let cwd = self.cwd.display().to_string();
+        let mut errors = Vec::new();
+        let found = crate::agent::chagent::list_all(&cwd, 0, &mut errors);
+        if found.is_empty() {
+            let mut m =
+                "chagent · no migratable Claude/Codex/Cursor/Grok sessions for this workspace"
+                    .to_string();
+            if !errors.is_empty() {
+                m.push_str(&format!("\n  {}", errors.join("\n  ")));
+            }
+            m.push_str("\n  (imports are cwd-scoped — open the picker from the project folder)");
+            self.push_note(Tone::Session, m);
+            return;
+        }
+        let rows: Vec<SessionRow> = found
+            .into_iter()
+            .take(120)
+            .map(|fs| SessionRow {
+                id: fs.session_id.clone(),
+                when: relative_when(fs.updated()),
+                messages: 0,
+                tokens: 0,
+                cost: 0.0,
+                cwd: fs.cwd.clone().unwrap_or_else(|| cwd.clone()),
+                preview: fs.preview(),
+                here: true,
+                source: if fs.tool.is_empty() {
+                    "claude".into()
+                } else {
+                    fs.tool.clone()
+                },
+            })
+            .collect();
+        self.picker = Some(SessionPicker {
+            rows,
+            idx: 0,
+            scroll: 0,
+            vis_page: 6,
+            this_cwd_only: false,
+            show_foreign: true,
+            foreign_loaded: true,
+            foreign_only: true,
+            hit: PickerHit::default(),
+            last_step_at: Instant::now()
+                .checked_sub(Duration::from_secs(1))
+                .unwrap_or_else(Instant::now),
+        });
+    }
+
+    /// Toggle chagent's foreign sources in the picker. On first enable, discover
+    /// migratable Claude/Codex/Cursor/Grok sessions for the current workspace and
+    /// splice them in as tagged rows (bounded, one reader pass per tool).
+    fn picker_toggle_foreign(&mut self) {
+        let cwd = self.cwd.display().to_string();
+        let Some(p) = &mut self.picker else { return };
+        p.show_foreign = !p.show_foreign;
+        p.idx = 0;
+        p.scroll = 0;
+        if !p.show_foreign || p.foreign_loaded {
+            return;
+        }
+        p.foreign_loaded = true;
+        // Discovery spawns the bundled reader once per tool — user-initiated, so
+        // a brief synchronous pause here is acceptable (same as opening a modal).
+        let mut errors = Vec::new();
+        let found = crate::agent::chagent::list_all(&cwd, 0, &mut errors);
+        let Some(p) = &mut self.picker else { return };
+        let mut added = 0usize;
+        for fs in found.into_iter().take(60) {
+            // Skip a foreign session already imported (same short id already present).
+            let mut row = SessionRow {
+                id: fs.session_id.clone(),
+                when: relative_when(fs.updated()),
+                messages: 0,
+                tokens: 0,
+                cost: 0.0,
+                cwd: fs.cwd.clone().unwrap_or_else(|| cwd.clone()),
+                preview: fs.preview(),
+                here: true,
+                source: fs.tool.clone(),
+            };
+            if row.source.is_empty() {
+                row.source = "claude".into();
+            }
+            p.rows.push(row);
+            added += 1;
+        }
+        p.clamp_scroll();
+        if added == 0 {
+            let hint = if errors.is_empty() {
+                "no migratable Claude/Codex/Cursor/Grok sessions found for this workspace".to_string()
+            } else {
+                format!("no imports found · {}", errors.join(" · "))
+            };
+            self.push_note(Tone::Session, hint);
+        } else {
+            self.push_note(
+                Tone::Session,
+                format!("chagent · {added} foreign session(s) available to import (tagged)"),
+            );
+        }
+    }
+
     fn close_picker(&mut self) {
         self.picker = None;
     }
 
     fn picker_confirm(&mut self) {
-        let id = self
+        let selected = self
             .picker
             .as_ref()
-            .and_then(|p| p.visible().get(p.idx).map(|r| r.id.clone()));
+            .and_then(|p| p.visible().get(p.idx).map(|r| (r.id.clone(), r.source.clone())));
         self.picker = None;
-        if let Some(id) = id {
+        let Some((id, source)) = selected else { return };
+        if source == "nur" {
             self.cmd_resume(&id);
+        } else {
+            // Foreign row → chagent migrate into a native session, then resume it.
+            self.chagent_migrate(&source, &id);
         }
     }
 
@@ -3754,6 +3900,8 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('a') | KeyCode::Char(' ') => {
                 self.picker_toggle_scope();
             }
+            // Toggle chagent foreign-import category (Claude/Codex/Cursor/Grok).
+            KeyCode::Char('c') | KeyCode::Char('i') => self.picker_toggle_foreign(),
             KeyCode::Enter => self.picker_confirm(),
             _ => {}
         }
@@ -6819,6 +6967,7 @@ body".to_string()];
                 cwd: "/x".into(),
                 preview: format!("prompt {i}"),
                 here: true,
+                source: "nur".into(),
             })
             .collect();
         SessionPicker {
@@ -6827,6 +6976,9 @@ body".to_string()];
             scroll: 0,
             vis_page: page,
             this_cwd_only: true,
+            show_foreign: false,
+            foreign_loaded: false,
+            foreign_only: false,
             hit: PickerHit::default(),
             last_step_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))

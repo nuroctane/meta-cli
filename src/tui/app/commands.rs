@@ -166,6 +166,10 @@ impl App {
                     self.cmd_resume(&arg);
                 }
             }
+            // Cross-agent session migration (import Claude/Codex/Cursor/Grok).
+            "/chagent" | "/migrate" | "/hijack" | "/sessionresume" | "/takeover" => {
+                self.cmd_chagent(&arg)
+            }
             "/config" => self.cmd_config(),
             "/init" => {
                 self.submit_text(
@@ -199,6 +203,10 @@ impl App {
             "/feedback" => self.cmd_feedback(&arg),
             "/mc" | "/mcp" => self.cmd_mc(&arg),
             "/tips" => self.cmd_tips(),
+            // Skeuomorphic-ui skill aliases → canonical /skeuomorphic-ui.
+            "/skeuo" | "/skeu" | "/skeuomorphic" => {
+                self.cmd_skill_or_unknown("/skeuomorphic-ui", &arg)
+            }
             "/bug" => self.push_note(
                 Tone::Neutral,
                 "report an issue (unofficial community project)\n  \
@@ -571,10 +579,20 @@ impl App {
             ("↑ ↓  ·  wheel", "move selection"),
             ("Enter", "open session"),
             ("Tab  ·  Space", "toggle this workspace / all"),
+            ("c  ·  i", "toggle chagent imports (Claude/Codex/Cursor/Grok)"),
             ("click row", "select  ·  click again to open"),
             ("click ✕  ·  Esc", "close"),
         ] {
             s.push_str(&format!("  {k:<22}  {v}\n"));
+        }
+
+        s.push_str("\nchagent · cross-agent import  (/chagent · /hijack · /takeover)\n");
+        for (k, v) in [
+            ("/chagent", "import picker (foreign sessions only)"),
+            ("/chagent ls [agent]", "list migratable sessions"),
+            ("/chagent <agent> [ref]", "import <id|latest> and resume"),
+        ] {
+            s.push_str(&format!("  {k:<24}  {v}\n"));
         }
 
         s.push_str("\ncommands\n");
@@ -1615,6 +1633,127 @@ impl App {
                 self.replay_session_history();
             }
             Err(e) => self.push_error(format!("could not open session: {e}")),
+        }
+    }
+
+    /// chagent — cross-agent session migration.
+    ///
+    /// - `/chagent`                    open the dedicated import picker (parity
+    ///                                 with `/sessions`, foreign sessions only)
+    /// - `/chagent ls [agent]`         list migratable sessions
+    /// - `/chagent <agent> [id|latest]` import that session and resume it
+    ///
+    /// Aliases: `/migrate` · `/hijack` · `/sessionresume` · `/takeover`.
+    pub(super) fn cmd_chagent(&mut self, arg: &str) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish".into());
+            return;
+        }
+        let arg = arg.trim();
+        let mut it = arg.split_whitespace();
+        let first = it.next().unwrap_or("");
+        match first.to_ascii_lowercase().as_str() {
+            "" => self.open_chagent_picker(),
+            "ls" | "list" => {
+                let tool = it.next().map(|s| s.to_string());
+                self.chagent_list(tool);
+            }
+            "help" | "-h" | "--help" | "?" => self.push_note(
+                Tone::Session,
+                "chagent — migrate a session from another agent into nur\n  \
+                 /chagent                 import picker (Claude · Codex · Cursor · Grok)\n  \
+                 /chagent ls [agent]      list migratable sessions\n  \
+                 /chagent <agent> [ref]   import <ref|latest> and resume it\n  \
+                 aliases: /migrate /hijack /sessionresume /takeover"
+                    .into(),
+            ),
+            tool if crate::agent::chagent::is_foreign_tool(tool) => {
+                let reference: String = it.collect::<Vec<_>>().join(" ");
+                let reference = if reference.trim().is_empty() {
+                    "latest".to_string()
+                } else {
+                    reference
+                };
+                self.chagent_migrate(tool, &reference);
+            }
+            other => self.push_error(format!(
+                "chagent: unknown agent '{other}' — try claude · codex · cursor · grok, \
+                 or /chagent (picker) / /chagent ls"
+            )),
+        }
+    }
+
+    /// List migratable foreign sessions as a transcript note.
+    pub(super) fn chagent_list(&mut self, tool: Option<String>) {
+        let cwd = self.cwd.display().to_string();
+        let mut errors = Vec::new();
+        let found = match tool {
+            Some(t) => match crate::agent::chagent::list_foreign(&t, &cwd, 0) {
+                Ok(v) => v,
+                Err(e) => {
+                    self.push_error(format!("chagent: {e}"));
+                    return;
+                }
+            },
+            None => crate::agent::chagent::list_all(&cwd, 0, &mut errors),
+        };
+        if found.is_empty() {
+            let mut m = "chagent · no migratable sessions found for this workspace".to_string();
+            if !errors.is_empty() {
+                m.push_str(&format!("\n  {}", errors.join("\n  ")));
+            }
+            self.push_note(Tone::Session, m);
+            return;
+        }
+        let mut out = format!("chagent · {} migratable session(s):", found.len());
+        for fs in found.iter().take(40) {
+            out.push_str(&format!(
+                "\n  {:<12} {}  ·  {}  ·  {}",
+                crate::agent::chagent::tool_label(&fs.tool),
+                fs.short_id(),
+                fs.updated().format("%b %d %H:%M"),
+                fs.preview(),
+            ));
+        }
+        out.push_str("\n\nimport:  /chagent <agent> <id|latest>   (e.g.  /chagent claude latest)");
+        self.push_note(Tone::Session, out);
+    }
+
+    /// Import one foreign session into a native session, then resume it.
+    pub(super) fn chagent_migrate(&mut self, tool: &str, reference: &str) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish".into());
+            return;
+        }
+        let cwd = self.cwd.display().to_string();
+        let model = self.cfg.model.clone();
+        match crate::agent::chagent::migrate(tool, reference, &cwd, &model) {
+            Ok(mig) => {
+                let id = mig.session.id.clone();
+                let label = mig.source_label.clone();
+                let src_short: String = mig.source_id.chars().take(8).collect();
+                let turns = mig.imported_turns;
+                let src_cwd = mig.source_cwd.clone();
+                let warnings = mig.warnings.clone();
+                // Resume the freshly-saved native session (re-homes + replays).
+                self.cmd_resume(&id);
+                let mut note = format!(
+                    "chagent · imported from {label} ({src_short})  ·  {turns} turns"
+                );
+                if let Some(oc) = src_cwd {
+                    if !oc.eq_ignore_ascii_case(&cwd) {
+                        note.push_str(&format!("\n  was  {oc}  ·  tools sandboxed here"));
+                    }
+                }
+                note.push_str(
+                    "\n  ⚠ transcript is inert history — verify files/branch/tests before continuing",
+                );
+                for w in warnings.iter().take(4) {
+                    note.push_str(&format!("\n  ⚠ {w}"));
+                }
+                self.push_note(Tone::Session, note);
+            }
+            Err(e) => self.push_error(format!("chagent import failed: {e}")),
         }
     }
 

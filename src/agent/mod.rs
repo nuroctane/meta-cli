@@ -1,3 +1,4 @@
+pub mod chagent;
 pub mod continuous;
 pub mod fusion;
 pub mod hooks;

@@ -72,14 +72,15 @@ Type a category in the picker filter (`design`, `finance`, `trading`, `workflow`
 | `workflow` | Superpowers, Fable, Builder.io, Compound Engineering, gstack, agent toolkits |
 | `engineering` | Matt Pocock, Addy Osmani, Anthropic official, Microsoft, curated AI skills |
 | `specs` | Spec Kit, Spec-Driven Development, AI Dev Tasks |
-| `design` | Impeccable, Meng To, UI Craft, Design Skills, Taste Skill, Oh My Design, Superdesign, Anydesign, UI/UX Pro Max, Awesome Design Skills |
+| `engineering` (cont.) | Vercel Agent Skills, nanocodex |
+| `design` | Impeccable, Meng To, UI Craft, Design Skills, Taste Skill, Oh My Design, Superdesign, Anydesign, UI/UX Pro Max, Awesome Design Skills, **recent.design set**: Emil Kowalski, ibelick UI Skills, Make-Interfaces-Feel-Better, OKLCH, UserInterface Wiki, Dialkit |
 | `design-system` | Extract Design System, Brand→Design.md, Feature-Sliced Design |
-| `browser` | Chrome DevTools, Firecrawl, Playwright Skill, Figma |
+| `browser` | Agent Browser (vercel-labs), Chrome DevTools, Firecrawl, Playwright Skill, Figma |
 | `deploy` | Vercel, Railway |
 | `cloud` | Cloudflare, Google Skills, NVIDIA Skills |
-| `data` | MongoDB |
+| `data` | MongoDB, LangExtract |
 | `observability` | Axiom, Sentry |
-| `marketing` | AI Marketing Skills, coreyhaines marketingskills |
+| `marketing` | AI Marketing Skills, coreyhaines marketingskills, OpenSEO, Akarso |
 | `finance` | Finance Skills, Longbridge, Buffett, CRE, CC Finance |
 | `trading` | Alpaca Skills, Vibe Trade |
 | `security` | Claude Red (authorized red-team) |
@@ -136,6 +137,8 @@ fable-method · activated from your wording (no slash command needed)
 | *verify before claiming done*, *check your work thoroughly* | `verification-before-completion` |
 | *code review this*, *review my changes* | `requesting-code-review` |
 | *polish the UI*, *emil style*, *design eng* | `design-eng` |
+| *skeuomorphic component*, *neumorphic dark*, *rotary dial ui*, `/skeuo` | `skeuomorphic-ui` |
+| *cache hit rate*, *cache busting*, *route through my proxy*, *own gateway* | `gateway-cache-awareness` |
 | *clone this website*, *pixel-perfect clone* | `clone-website-meta` |
 | *draw a diagram*, *excalidraw* | `excalidraw` |
 | *resume from Claude / Grok / Codex / Cursor / Nur* | matching `resume-*` skill |
@@ -302,6 +305,8 @@ Progressive skill packs loaded on demand.
 **Built-in skills include:**
 
 - `design-eng` — UI polish and animation
+- `skeuomorphic-ui` — Dark skeuomorphic components (knobs, sliders, inset controls) with top-lighting, layered shadows, tactile depth (`/skeuo` · `/skeuomorphic-ui`)
+- `gateway-cache-awareness` — Protect prompt-cache hit rate when routing an agent through your own gateway/proxy
 - `clone-website` — Website reverse-engineering
 - `cybersecurity` — Security investigations and DFIR
 - `apple-design` — Apple-style interface design

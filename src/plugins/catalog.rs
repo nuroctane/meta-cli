@@ -142,6 +142,23 @@ pub const CATALOG: &[PluginEntry] = &[
         path_in_repo: None,
     },
 
+    PluginEntry {
+        id: "vercel-agent-skills",
+        name: "Vercel Agent Skills",
+        description: "Vercel's official collection of agent skills for shipping web software",
+        category: "engineering",
+        source_url: "https://github.com/vercel-labs/agent-skills.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "nanocodex",
+        name: "nanocodex",
+        description: "Minimal Rust coding agent (gakonst) — reference tools incl. a lean web_search",
+        category: "engineering",
+        source_url: "https://github.com/gakonst/nanocodex.git",
+        path_in_repo: None,
+    },
+
     // ── specs ─────────────────────────────────────────────────────────────
     PluginEntry {
         id: "spec-kit",
@@ -249,6 +266,55 @@ pub const CATALOG: &[PluginEntry] = &[
         source_url: "https://github.com/bergside/awesome-design-skills.git",
         path_in_repo: None,
     },
+    // ── recent.design curated design-engineer skills ──────────────────────
+    PluginEntry {
+        id: "emil-skills",
+        name: "Emil Kowalski Skills",
+        description: "Skills for Design Engineers — animation, craft, and UI polish (emilkowalski)",
+        category: "design",
+        source_url: "https://github.com/emilkowalski/skills.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "ui-skills",
+        name: "UI Skills (ibelick)",
+        description: "Design-engineer skills for building refined, motion-aware interfaces",
+        category: "design",
+        source_url: "https://github.com/ibelick/ui-skills.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "make-interfaces-feel-better",
+        name: "Make Interfaces Feel Better",
+        description: "Skill that makes your interfaces feel better — micro-interaction taste (jakubkrehel)",
+        category: "design",
+        source_url: "https://github.com/jakubkrehel/make-interfaces-feel-better.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "oklch-skill",
+        name: "OKLCH Color Skill",
+        description: "Work with OKLCH colors — perceptual palettes and accessible contrast (jakubkrehel)",
+        category: "design",
+        source_url: "https://github.com/jakubkrehel/oklch-skill.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "userinterface-wiki",
+        name: "User Interface Wiki",
+        description: "A living manual for better interfaces — UI patterns and principles (raphaelsalaja)",
+        category: "design",
+        source_url: "https://github.com/raphaelsalaja/userinterface-wiki.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "dialkit",
+        name: "Dialkit",
+        description: "Dial in interface parameters of any kind — tune motion/layout/token knobs (joshpuckett)",
+        category: "design",
+        source_url: "https://github.com/joshpuckett/dialkit.git",
+        path_in_repo: None,
+    },
 
     // ── design-system ─────────────────────────────────────────────────────
     PluginEntry {
@@ -277,6 +343,14 @@ pub const CATALOG: &[PluginEntry] = &[
     },
 
     // ── browser ───────────────────────────────────────────────────────────
+    PluginEntry {
+        id: "agent-browser",
+        name: "Agent Browser",
+        description: "Browser automation CLI for AI agents — navigate, act, and extract (vercel-labs)",
+        category: "browser",
+        source_url: "https://github.com/vercel-labs/agent-browser.git",
+        path_in_repo: None,
+    },
     PluginEntry {
         id: "chrome-devtools",
         name: "Chrome DevTools",
@@ -363,6 +437,14 @@ pub const CATALOG: &[PluginEntry] = &[
         source_url: "https://github.com/mongodb/agent-skills.git",
         path_in_repo: None,
     },
+    PluginEntry {
+        id: "langextract",
+        name: "LangExtract",
+        description: "Extract structured info from unstructured text via LLMs with source grounding (google)",
+        category: "data",
+        source_url: "https://github.com/google/langextract.git",
+        path_in_repo: None,
+    },
 
     // ── observability ─────────────────────────────────────────────────────
     PluginEntry {
@@ -397,6 +479,22 @@ pub const CATALOG: &[PluginEntry] = &[
         description: "Popular marketing skill pack for growth experiments and go-to-market agents",
         category: "marketing",
         source_url: "https://github.com/coreyhaines31/marketingskills.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "open-seo",
+        name: "OpenSEO",
+        description: "Open-source Semrush/Ahrefs alternative — keyword/backlink/rank/audit MCP (every-app)",
+        category: "marketing",
+        source_url: "https://github.com/every-app/open-seo.git",
+        path_in_repo: None,
+    },
+    PluginEntry {
+        id: "akarso",
+        name: "Akarso",
+        description: "Post, schedule, and reply across 14 social platforms from the terminal (remorses)",
+        category: "marketing",
+        source_url: "https://github.com/remorses/akarso.git",
         path_in_repo: None,
     },
 
