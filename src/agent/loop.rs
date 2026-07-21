@@ -95,7 +95,9 @@ pub fn spawn_turn(
             .run_turn_events(&mut session, &prompt, &mut usage, &tx, &cancel)
             .await;
         usage.set_state("idle");
-        let _ = session.save();
+        if !runner.is_subagent {
+            let _ = session.save();
+        }
         let interrupted = matches!(res, Err(MuseError::Interrupted));
         let result = res.map_err(|e| e.to_string());
         let _ = tx.send(AgentEvent::Done {
@@ -168,6 +170,12 @@ struct Served {
 }
 
 impl AgentRunner {
+    fn persist_session(&self, session: &Session) {
+        if !self.is_subagent {
+            let _ = session.save();
+        }
+    }
+
     /// Run one model request against `client`, forwarding stream events to the
     /// UI. Returns `(response, text_deltas_emitted)` on success, or
     /// `(error, text_deltas_emitted)` so the caller can tell whether failing
@@ -444,7 +452,7 @@ impl AgentRunner {
                 .unwrap_or_default();
             for msg in steered {
                 session.input_items.push(user_text_item(&msg));
-                let _ = session.save();
+                self.persist_session(session);
                 let preview: String = msg.chars().take(80).collect();
                 let ellip = if msg.chars().count() > 80 { "…" } else { "" };
                 let _ = tx.send(AgentEvent::Status(format!(
@@ -565,7 +573,7 @@ impl AgentRunner {
                          grep, read_file on README/Cargo.toml/package.json). \
                          Do not only plan. Do not reply with an empty message.",
                     ));
-                    let _ = session.save();
+                    self.persist_session(session);
                     continue;
                 }
 
@@ -583,7 +591,7 @@ impl AgentRunner {
 
                 usage.set_state("idle");
                 session.push_assistant(&text);
-                let _ = session.save();
+                self.persist_session(session);
                 return Ok(text);
             }
 
@@ -593,7 +601,7 @@ impl AgentRunner {
             while idx < calls.len() {
                 if cancel.is_cancelled() {
                     pair_interrupted(&mut session.input_items, &calls);
-                    let _ = session.save();
+                    self.persist_session(session);
                     return Err(MuseError::Interrupted);
                 }
 
@@ -652,7 +660,7 @@ impl AgentRunner {
                                 // post-batch call — whatever has not answered yet.
                                 pair_interrupted(&mut session.input_items, &calls);
                                 // Note: other in-flight blocking tasks keep running until drop
-                                let _ = session.save();
+                                self.persist_session(session);
                                 return Err(MuseError::Interrupted);
                             }
                             r = handle => r.map_err(|e| MuseError::Other(e.to_string()))?,
@@ -760,7 +768,7 @@ impl AgentRunner {
                             }
                             Err(MuseError::Interrupted) => {
                                 pair_interrupted(&mut session.input_items, &calls);
-                                let _ = session.save();
+                                self.persist_session(session);
                                 return Err(MuseError::Interrupted);
                             }
                             Err(e) => (format!("error: {e}"), false),
@@ -820,7 +828,7 @@ impl AgentRunner {
                     tokio::select! {
                         _ = cancel.cancelled() => {
                             pair_interrupted(&mut session.input_items, &calls);
-                            let _ = session.save();
+                            self.persist_session(session);
                             return Err(MuseError::Interrupted);
                         }
                         r = exec => match r {
@@ -871,7 +879,7 @@ impl AgentRunner {
                 idx += 1;
             }
 
-            let _ = session.save();
+            self.persist_session(session);
         }
     }
 
@@ -1483,6 +1491,7 @@ async fn run_agent_tool(
         &prompt,
         kind,
         cancel,
+        tx,
     )
     .await
 }
@@ -1553,7 +1562,7 @@ pub async fn compact_session(
     let kept = recent.len();
     new_items.extend(recent);
     session.input_items = new_items;
-    let _ = session.save();
+    runner.persist_session(session);
     Ok(format!(
         "{summary}\n\n[compact: thinned {thinned} tool bodies · kept {kept} recent dialogue items · \
          precompact bak written]"

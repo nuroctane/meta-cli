@@ -27,6 +27,26 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             theme::style_faint(),
         )));
         f.render_widget(p, area);
+        // Overlays must remain visible even when the base prompt is too small
+        // to lay out. Their geometry is fitted independently below.
+        if app.approval.is_some() {
+            draw_approval(f, app, area);
+        }
+        if app.picker.is_some() {
+            draw_session_picker(f, app, area);
+        }
+        if app.login.is_some() {
+            draw_login(f, app, area);
+        }
+        if app.model_picker.is_some() {
+            draw_model_picker(f, app, area);
+        }
+        if app.plugin_picker.is_some() {
+            draw_plugin_picker(f, app, area);
+        }
+        if app.ctx_menu.is_some() {
+            draw_ctx_menu(f, app);
+        }
         return;
     }
 
@@ -124,15 +144,8 @@ fn draw_login_method(f: &mut Frame, app: &App, area: Rect) {
     let provider = crate::providers::by_id(&m.provider_id)
         .copied()
         .unwrap_or(*crate::providers::default_provider());
-    let w = 64u16.min(area.width.saturating_sub(4)).max(44);
     let want: u16 = if m.error.is_some() { 14 } else { 13 };
-    let h = want.min(area.height.saturating_sub(2));
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 64, want, 44, 8);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -216,15 +229,8 @@ fn draw_login_browser(f: &mut Frame, app: &App, area: Rect) {
     let provider = crate::providers::by_id(&m.provider_id)
         .copied()
         .unwrap_or(*crate::providers::default_provider());
-    let w = 72u16.min(area.width.saturating_sub(4)).max(48);
     let want: u16 = if m.error.is_some() { 14 } else { 13 };
-    let h = want.min(area.height.saturating_sub(2));
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 72, want, 48, 8);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -320,14 +326,7 @@ fn draw_login_browser(f: &mut Frame, app: &App, area: Rect) {
 /// Scroll/select contract matches `draw_session_picker`: one entry per ↑↓/wheel
 /// notch (`step` / `wheel_step`), click row to select, second click confirms.
 fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
-    let w = 74u16.min(area.width.saturating_sub(4)).max(48);
-    let h = 28u16.min(area.height.saturating_sub(2)).max(12);
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 74, 28, 48, 12);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -488,14 +487,7 @@ fn draw_login_picker(f: &mut Frame, app: &mut App, area: Rect) {
 /// picker. Shows the active provider's `/models` list; type to filter (or to
 /// enter a custom id), ↵ to switch.
 fn draw_model_picker(f: &mut Frame, app: &mut App, area: Rect) {
-    let w = 74u16.min(area.width.saturating_sub(4)).max(48);
-    let h = 28u16.min(area.height.saturating_sub(2)).max(12);
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 74, 28, 48, 12);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -657,14 +649,7 @@ fn draw_model_picker(f: &mut Frame, app: &mut App, area: Rect) {
 // ── plugin marketplace (`/plugins`) ──────────────────────────────────────────
 /// Same scroll/select/filter contract as the provider picker.
 fn draw_plugin_picker(f: &mut Frame, app: &mut App, area: Rect) {
-    let w = 78u16.min(area.width.saturating_sub(4)).max(52);
-    let h = 28u16.min(area.height.saturating_sub(2)).max(12);
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 78, 28, 52, 12);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -838,15 +823,8 @@ fn draw_login_key(f: &mut Frame, app: &App, area: Rect) {
     let provider = crate::providers::by_id(&m.provider_id)
         .copied()
         .unwrap_or(*crate::providers::default_provider());
-    let w = 64u16.min(area.width.saturating_sub(4)).max(44);
     let want: u16 = if m.error.is_some() { 12 } else { 11 };
-    let h = want.min(area.height.saturating_sub(2));
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 64, want, 44, 8);
     f.render_widget(Clear, rect);
     f.render_widget(Block::default().style(Style::default().bg(theme::SURFACE_2)), rect);
     let phase = modal_phase(app);
@@ -937,14 +915,7 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
         (total, p.this_cwd_only, p.foreign_only, p.idx, p.scroll)
     };
 
-    let w = 82.min(area.width.saturating_sub(4)).max(54);
-    let h = 40.min(area.height.saturating_sub(2)).max(4);
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 82, 40, 54, 8);
     f.render_widget(Clear, rect);
     f.render_widget(
         Block::default().style(Style::default().bg(theme::SURFACE_2)),
@@ -1315,6 +1286,41 @@ fn modal_inner(rect: Rect) -> Rect {
         y: rect.y.saturating_add(pad),
         width: rect.width.saturating_sub(pad * 2),
         height: rect.height.saturating_sub(pad * 2),
+    }
+}
+
+/// Fit a modal inside the current terminal, relaxing its preferred minimums
+/// when the window is smaller than the design target. Every overlay must stay
+/// inside the frame so a resize immediately produces a visible, usable modal.
+fn fit_modal_rect(area: Rect, desired_w: u16, desired_h: u16, min_w: u16, min_h: u16) -> Rect {
+    let max_w = area.width.saturating_sub(2).max(1);
+    let max_h = area.height.saturating_sub(2).max(1);
+    let width = desired_w.min(max_w).max(min_w.min(max_w));
+    let height = desired_h.min(max_h).max(min_h.min(max_h));
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    }
+}
+
+fn constrain_rect(area: Rect, rect: Rect) -> Rect {
+    let max_w = area.width.saturating_sub(2).max(1);
+    let max_h = area.height.saturating_sub(2).max(1);
+    let width = rect.width.min(max_w);
+    let height = rect.height.min(max_h);
+    Rect {
+        x: rect
+            .x
+            .max(area.x)
+            .min(area.right().saturating_sub(width)),
+        y: rect
+            .y
+            .max(area.y)
+            .min(area.bottom().saturating_sub(height)),
+        width,
+        height,
     }
 }
 
@@ -2537,21 +2543,13 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
 
     // Freeze geometry once — never re-anchor to mouse or re-center.
     let rect = if let Some(r) = app.peek_frozen {
-        r
+        let fitted = constrain_rect(area, r);
+        app.peek_frozen = Some(fitted);
+        fitted
     } else {
-        let w = (area.width.saturating_mul(7) / 10).clamp(40, 96).min(area.width.saturating_sub(4));
-        let h = (area.height.saturating_mul(6) / 10).clamp(8, 28).min(area.height.saturating_sub(2));
-        if w < 20 || h < 5 {
-            return None;
-        }
-        let x = area.width.saturating_sub(w) / 2;
-        let y = area.height.saturating_sub(h) / 3;
-        let r = Rect {
-            x,
-            y,
-            width: w,
-            height: h,
-        };
+        let desired_w = (area.width.saturating_mul(7) / 10).clamp(40, 96);
+        let desired_h = (area.height.saturating_mul(6) / 10).clamp(8, 28);
+        let r = fit_modal_rect(area, desired_w, desired_h, 20, 5);
         app.peek_frozen = Some(r);
         r
     };
@@ -3337,15 +3335,16 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
     }
     // content rows + 2 border + 2 inner padding, so the ornate frame has room.
     let content = (matches.len() as u16).min(10);
-    let h = content + 4;
-    let w = 60.min(f.area().width.saturating_sub(4)).max(34);
-    let y = input_area.y.saturating_sub(h);
-    let rect = Rect {
-        x: input_area.x + 1,
-        y,
-        width: w,
-        height: h,
-    };
+    let area = f.area();
+    let mut rect = fit_modal_rect(area, 60, content + 4, 34, 4);
+    rect.x = input_area
+        .x
+        .saturating_add(1)
+        .min(area.right().saturating_sub(rect.width));
+    rect.y = input_area
+        .y
+        .saturating_sub(rect.height)
+        .max(area.y);
     f.render_widget(Clear, rect);
     f.render_widget(
         Block::default().style(Style::default().bg(theme::SURFACE_2)),
@@ -3416,14 +3415,7 @@ fn draw_approval(f: &mut Frame, app: &App, area: Rect) {
     let body_lines: Vec<&str> = preview.iter().map(|s| s.as_str()).take(max_body).collect();
     let overflow = preview.len() > max_body;
     let content = body_lines.len() as u16 + if overflow { 1 } else { 0 };
-    let h = (content + 4).min(area.height.saturating_sub(2)).max(7);
-    let w = 78.min(area.width.saturating_sub(4)).max(48);
-    let rect = Rect {
-        x: (area.width.saturating_sub(w)) / 2,
-        y: (area.height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
+    let rect = fit_modal_rect(area, 78, content + 4, 48, 7);
     f.render_widget(Clear, rect);
     f.render_widget(
         Block::default().style(Style::default().bg(theme::SURFACE_2)),
@@ -3965,8 +3957,10 @@ fn draw_ctx_menu(f: &mut Frame, app: &mut App) {
     use super::app::CTX_ACTIONS;
     let area = f.area();
     // content rows + 2 border + 2 inner padding, so the shared ornate frame fits.
-    let menu_w: u16 = 34.min(area.width.saturating_sub(2));
-    let menu_h: u16 = CTX_ACTIONS.len() as u16 + 4;
+    let desired_h: u16 = CTX_ACTIONS.len() as u16 + 4;
+    let fitted = fit_modal_rect(area, 34, desired_h, 20, 4);
+    let menu_w = fitted.width;
+    let menu_h = fitted.height;
     // Anchor to where the menu OPENED (fixed), not the live cursor — so
     // wheeling through the options never drifts the box.
     let (ax, ay) = app.ctx_menu.as_ref().map(|m| m.anchor).unwrap_or((0, 0));
@@ -4088,6 +4082,33 @@ mod tests {
         let wsum = |l: &Line| -> usize { l.spans.iter().map(|s| s.content.width()).sum() };
         assert_eq!(wsum(&add), 40);
         assert_eq!(wsum(&del), 40);
+    }
+
+    #[test]
+    fn modal_rects_stay_inside_small_terminal_after_resize() {
+        let area = Rect::new(0, 0, 38, 10);
+        let rect = fit_modal_rect(area, 82, 40, 54, 8);
+        assert!(rect.right() <= area.right());
+        assert!(rect.bottom() <= area.bottom());
+        assert_eq!(rect.width, 36);
+        assert_eq!(rect.height, 8);
+
+        let tiny = Rect::new(0, 0, 18, 5);
+        let rect = fit_modal_rect(tiny, 82, 40, 54, 8);
+        assert!(rect.right() <= tiny.right());
+        assert!(rect.bottom() <= tiny.bottom());
+        assert_eq!(rect.width, 16);
+        assert_eq!(rect.height, 3);
+    }
+
+    #[test]
+    fn frozen_peek_rect_is_constrained_after_resize() {
+        let area = Rect::new(0, 0, 32, 8);
+        let rect = constrain_rect(area, Rect::new(20, 10, 80, 28));
+        assert!(rect.right() <= area.right());
+        assert!(rect.bottom() <= area.bottom());
+        assert_eq!(rect.width, 30);
+        assert_eq!(rect.height, 6);
     }
 
     // Transcript shape: [banner, PROMPT_A, work…, PROMPT_B, work…]

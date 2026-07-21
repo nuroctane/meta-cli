@@ -129,7 +129,24 @@ struct ShowOut {
     #[serde(default)]
     turns: Vec<Turn>,
     #[serde(default)]
-    warnings: Vec<String>,
+    warnings: Vec<Value>,
+}
+
+fn warning_text(value: &Value) -> String {
+    if let Some(text) = value.as_str() {
+        return text.to_string();
+    }
+    if let Some(object) = value.as_object() {
+        let code = object.get("code").and_then(Value::as_str);
+        let message = object.get("message").and_then(Value::as_str);
+        return match (code, message) {
+            (Some(code), Some(message)) => format!("{code}: {message}"),
+            (None, Some(message)) => message.to_string(),
+            (Some(code), None) => code.to_string(),
+            (None, None) => value.to_string(),
+        };
+    }
+    value.to_string()
 }
 
 /// Result of a migration: the freshly-saved native session plus any reader
@@ -362,7 +379,7 @@ pub fn migrate(tool: &str, reference: &str, home_cwd: &str, model: &str) -> Resu
         source_id: reference.to_string(),
         source_cwd: ir.cwd.filter(|c| !c.is_empty()),
         imported_turns: imported,
-        warnings: ir.warnings,
+        warnings: ir.warnings.iter().map(warning_text).collect(),
     })
 }
 
@@ -430,5 +447,18 @@ mod tests {
         assert_eq!(v["role"], "assistant");
         assert_eq!(v["content"][0]["type"], "output_text");
         assert_eq!(v["content"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn show_json_accepts_structured_reader_warnings() {
+        let raw = r#"{
+            "source":"claude-code",
+            "turns":[],
+            "warnings":[{"code":"malformed-record","message":"skipped one record"}]
+        }"#;
+        let out: ShowOut = serde_json::from_str(raw).unwrap();
+        assert_eq!(out.warnings.iter().map(warning_text).collect::<Vec<_>>(), [
+            "malformed-record: skipped one record"
+        ]);
     }
 }

@@ -2,7 +2,7 @@
 
 use super::mode::{PermissionMode, SharedMode};
 use super::session::Session;
-use super::{AgentEvent, AgentRunner};
+use super::{AgentEvent, AgentRunner, ApprovalDecision};
 use crate::api::ApiClient;
 use crate::config::Config;
 use crate::error::{MuseError, Result};
@@ -22,6 +22,7 @@ pub async fn run_subagent(
     prompt: &str,
     subagent_type: &str,
     cancel: &CancellationToken,
+    parent_tx: &mpsc::UnboundedSender<AgentEvent>,
 ) -> Result<(String, TokenUsage)> {
     let explore = matches!(
         subagent_type.to_ascii_lowercase().as_str(),
@@ -77,6 +78,18 @@ pub async fn run_subagent(
     let mut last_text = String::new();
     while let Some(ev) = rx.recv().await {
         match ev {
+            AgentEvent::Status(status) => {
+                let _ = parent_tx.send(AgentEvent::Status(format!(
+                    "subagent · {status}"
+                )));
+            }
+            AgentEvent::ApprovalRequest {
+                name,
+                args,
+                respond,
+            } => {
+                relay_approval(parent_tx, name, args, respond).await;
+            }
             AgentEvent::TextDelta(d) => last_text.push_str(&d),
             AgentEvent::AssistantMessage(m) => {
                 if !m.is_empty() {
@@ -116,5 +129,58 @@ pub async fn run_subagent(
         Err(MuseError::Other("subagent produced no output".into()))
     } else {
         Ok((last_text, TokenUsage::default()))
+    }
+}
+
+/// Proxy a child approval through the parent event loop, which is the only
+/// runner that has a terminal prompt or TUI approval surface.
+async fn relay_approval(
+    parent_tx: &mpsc::UnboundedSender<AgentEvent>,
+    name: String,
+    args: String,
+    respond: tokio::sync::oneshot::Sender<ApprovalDecision>,
+) {
+    let (proxy_tx, proxy_rx) = tokio::sync::oneshot::channel();
+    if parent_tx
+        .send(AgentEvent::ApprovalRequest {
+            name,
+            args,
+            respond: proxy_tx,
+        })
+        .is_err()
+    {
+        let _ = respond.send(ApprovalDecision::Deny);
+    } else {
+        let decision = proxy_rx.await.unwrap_or(ApprovalDecision::Deny);
+        let _ = respond.send(decision);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn child_approval_is_proxied_to_parent() {
+        let (parent_tx, mut parent_rx) = mpsc::unbounded_channel();
+        let (child_tx, child_rx) = tokio::sync::oneshot::channel();
+        let parent_for_relay = parent_tx.clone();
+        let relay = tokio::spawn(async move {
+            relay_approval(
+                &parent_for_relay,
+                "write_file".into(),
+                "{}".into(),
+                child_tx,
+            )
+            .await;
+        });
+
+        let event = parent_rx.recv().await.expect("parent approval event");
+        let AgentEvent::ApprovalRequest { respond, .. } = event else {
+            panic!("expected approval request");
+        };
+        respond.send(ApprovalDecision::Approve).unwrap();
+        assert_eq!(child_rx.await.unwrap(), ApprovalDecision::Approve);
+        relay.await.unwrap();
     }
 }

@@ -203,4 +203,7 @@ Submit a plan for approval.
 
 ### `agent`
 
-Spawn a subagent for complex tasks.
+Spawn a subagent for complex tasks. `explore` runs read-only research; `general`
+inherits the parent permission mode. In the CLI, child approval requests are
+proxied to the parent prompt, and subagent transcripts stay out of the native
+session list while their usage is folded into the parent turn.
