@@ -13,7 +13,7 @@ All native tools available to the NurCLI agent.
 | **web** | `web_search` `web_fetch` | teal |
 | **git** | `git_status` `git_diff` | cyan |
 | **browser** | `browser` | teal |
-| **knowledge** | `graphify` `plur` `ruflo` `akarso` `executor` `skill` `memory` | indigo / orange |
+| **knowledge** | `graphify` `graphjin` `plur` `ruflo` `akarso` `executor` `skill` `memory` | indigo / orange |
 | **delegate** | `omp` | — |
 | **agent** | `todo_write` `submit_plan` `agent` | — |
 
@@ -121,7 +121,29 @@ Show file changes.
 
 ### `graphify`
 
-Query the code knowledge graph. See [Ecosystem](ecosystem.md).
+Query the code knowledge graph — offline, no API key, graph traversal
+(`query` / `path` / `explain` / `affected`). See [Ecosystem](ecosystem.md).
+
+### `graphjin`
+
+Governed access to **live data**: one GraphQL→SQL surface over 12+ database
+engines, plus the `gj_*` system roots (`gj_catalog` discovery, `gj_code` — the
+repo as queryable tables joinable with live data — `gj_security`, `gj_config`,
+`gj_runtime`).
+
+`action=status|catalog|schema|help|explain|query|security|ask|mutate`. Discovery
+comes first and the server enforces it: a result whose `status` is `blocked`
+means required discovery was skipped, and nur relabels it as a failure rather
+than letting a plausible-looking answer through. `mutate` is the only
+write-class action, so plan mode blocks it and manual mode gates it.
+
+Needs `graphjin` on PATH (`npm i -g graphjin`) and a one-time
+`graphjin cli setup <server-url>`. Also `/graphjin`.
+
+**graphify or graphjin?** graphify traverses a local code graph with no
+prerequisites — reach for it for architecture and impact questions. graphjin
+*joins*: use it when a question spans code and live data, config, or security
+posture. See the [Ax & GraphJin evaluation](integrations-ax-graphjin.md).
 
 ### `plur`
 

@@ -732,8 +732,13 @@ impl ApiClient {
                     if let Some(msg) = v.pointer("/error/message").and_then(|m| m.as_str()) {
                         return Err(MuseError::Api { status: 0, message: msg.to_string() });
                     }
-                    if let Some(delta) = acc.push(&v) {
-                        on_event(StreamEvent::TextDelta(delta));
+                    for delta in acc.push(&v) {
+                        on_event(match delta {
+                            super::chat::ChatDelta::Text(t) => StreamEvent::TextDelta(t),
+                            super::chat::ChatDelta::Reasoning(t) => {
+                                StreamEvent::ReasoningDelta(t)
+                            }
+                        });
                     }
                 }
             }

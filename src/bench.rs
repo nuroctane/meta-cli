@@ -102,6 +102,14 @@ fn task_path(name: &str) -> PathBuf {
     bench_dir().join(format!("{name}.json"))
 }
 
+pub(crate) fn list_tasks_pub() -> Vec<Task> {
+    list_tasks()
+}
+
+pub(crate) fn is_git_repo_pub(dir: &Path) -> bool {
+    is_git_repo(dir)
+}
+
 pub fn load_task(name: &str) -> Option<Task> {
     let s = std::fs::read_to_string(task_path(name)).ok()?;
     serde_json::from_str(&s).ok()
@@ -148,6 +156,9 @@ pub async fn run_bench(action: &BenchCmd, client: ApiClient, cfg: Config, cwd: P
             Ok(())
         }
         BenchCmd::Run { name, models } => run_tasks(name, models.as_deref(), client, cfg, cwd).await,
+        BenchCmd::Optimize { name, gens, pop } => {
+            crate::gepa::run_optimize(name, *gens, *pop, client, cfg, cwd).await
+        }
     }
 }
 
@@ -229,7 +240,7 @@ async fn run_tasks(
         let mut results = Vec::new();
         for model in &model_list {
             theme::print_info(&format!("→ {} · {}", task.name, model));
-            let result = run_one(task, model, &client, &cfg, &cwd).await;
+            let result = run_one(task, model, &client, &cfg, &cwd, "").await;
             match result {
                 Ok(r) => results.push(r),
                 Err(e) => {
@@ -249,12 +260,20 @@ async fn run_tasks(
     Ok(())
 }
 
-async fn run_one(
+/// Replay `task` once with `model` in a throwaway worktree.
+///
+/// `prefix` is prepended to the task prompt — empty for a plain benchmark, and
+/// the candidate instruction when the GEPA optimiser is driving (see
+/// [`crate::gepa`]). Keeping it a parameter rather than a second copy of this
+/// function is what lets the optimiser reuse the whole isolated-worktree,
+/// check-command, token-accounting apparatus unchanged.
+pub(crate) async fn run_one(
     task: &Task,
     model: &str,
     client: &ApiClient,
     cfg: &Config,
     repo: &Path,
+    prefix: &str,
 ) -> Result<BenchResult> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -289,8 +308,15 @@ async fn run_one(
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let start = Instant::now();
+    let prompt = if prefix.trim().is_empty() {
+        task.prompt.clone()
+    } else {
+        format!("{}
+
+{}", prefix.trim(), task.prompt)
+    };
     let (_s, u, result, _interrupted) =
-        agent::run_collect(runner, session, usage, task.prompt.clone(), cancel).await;
+        agent::run_collect(runner, session, usage, prompt, cancel).await;
     let secs = start.elapsed().as_secs_f64();
     let tokens = u.session_usage().total_tokens;
 

@@ -700,6 +700,42 @@ impl AgentRunner {
                     continue;
                 }
 
+                // Contiguous `agent` calls fan out concurrently. Subagents are
+                // whole agent turns — running them one after another wastes the
+                // wall time that made the model ask for several in the first
+                // place. Approval is still collected up front, one prompt at a
+                // time, so the user is never raced by parallel children.
+                if calls[idx].name == "agent" && !self.is_subagent {
+                    let mut batch_end = idx + 1;
+                    while batch_end < calls.len() && calls[batch_end].name == "agent" {
+                        batch_end += 1;
+                    }
+                    if batch_end - idx > 1 {
+                        let outcome = self
+                            .run_agent_fanout(
+                                &calls[idx..batch_end],
+                                &mut tool_seq,
+                                session,
+                                usage,
+                                tx,
+                                cancel,
+                            )
+                            .await;
+                        match outcome {
+                            Ok(()) => {
+                                idx = batch_end;
+                                continue;
+                            }
+                            Err(MuseError::Interrupted) => {
+                                pair_interrupted(&mut session.input_items, &calls);
+                                self.persist_session(session);
+                                return Err(MuseError::Interrupted);
+                            }
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
+
                 // Single sequential tool (mutating / agent / memory append)
                 let call = &calls[idx];
                 tool_seq += 1;
@@ -881,6 +917,159 @@ impl AgentRunner {
 
             self.persist_session(session);
         }
+    }
+
+    /// Run a contiguous run of `agent` calls concurrently, emitting their
+    /// results into `session` in the model's original order (`call_id` pairing
+    /// depends on it).
+    ///
+    /// Approval is collected for the whole batch first, sequentially — the UI
+    /// has one approval slot, and a user should decide about a fan-out before
+    /// any of it starts, not while three children race to ask.
+    async fn run_agent_fanout(
+        &self,
+        batch: &[FunctionCallRef],
+        tool_seq: &mut u64,
+        session: &mut Session,
+        usage: &mut UsageTracker,
+        tx: &mpsc::UnboundedSender<AgentEvent>,
+        cancel: &CancellationToken,
+    ) -> Result<()> {
+        // Phase 1 — announce and gate, in order.
+        let mut gated: Vec<(u64, Option<String>)> = Vec::with_capacity(batch.len());
+        for call in batch {
+            *tool_seq += 1;
+            let id = *tool_seq;
+            let _ = tx.send(AgentEvent::ToolStart {
+                id,
+                name: call.name.clone(),
+                args: call.arguments.clone(),
+            });
+            let mode_at_gate = self.permission_mode.get();
+            let denial = if self.check_approval(&call.name, &call.arguments, tx).await {
+                None
+            } else if mode_at_gate.is_read_only_enforced()
+                && !is_read_only_call(&call.name, &call.arguments)
+            {
+                Some("blocked in plan mode — subagents may edit; switch to manual/auto (Shift+Tab)".to_string())
+            } else {
+                Some("user denied this tool call".to_string())
+            };
+            gated.push((id, denial));
+        }
+
+        // Phase 2 — fan out the approved ones, capped.
+        let permits = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_SUBAGENTS));
+        let approved = gated.iter().filter(|(_, d)| d.is_none()).count();
+        if approved > 1 {
+            let _ = tx.send(AgentEvent::Status(format!(
+                "fan-out · {approved} subagents (max {MAX_CONCURRENT_SUBAGENTS} at once)"
+            )));
+        }
+        usage.set_state("tool:agent");
+
+        let mut handles: Vec<Option<SubagentHandle>> = Vec::with_capacity(batch.len());
+        for (call, (_, denial)) in batch.iter().zip(gated.iter()) {
+            if denial.is_some() {
+                handles.push(None);
+                continue;
+            }
+            let parsed = parse_agent_call(call);
+            let client = self.client.clone();
+            let config = self.config.clone();
+            let cwd = self.cwd.clone();
+            let mode = self.permission_mode.clone();
+            let tx_child = tx.clone();
+            let cancel_child = cancel.clone();
+            let permits = permits.clone();
+            handles.push(Some(tokio::spawn(async move {
+                let (prompt, kind, desc) = parsed?;
+                // Held for the whole child run: this is the concurrency cap.
+                let _permit = permits
+                    .acquire()
+                    .await
+                    .map_err(|e| MuseError::Other(e.to_string()))?;
+                let _ = tx_child.send(AgentEvent::Status(format!("subagent · {desc}")));
+                subagent::run_subagent(
+                    client,
+                    config,
+                    cwd,
+                    mode,
+                    &prompt,
+                    &kind,
+                    &cancel_child,
+                    &tx_child,
+                )
+                .await
+            })));
+        }
+
+        // Phase 3 — collect in submission order so `call_id` pairing holds.
+        for (call, ((id, denial), handle)) in
+            batch.iter().zip(gated.into_iter().zip(handles))
+        {
+            let (body, ok) = match (denial, handle) {
+                (Some(msg), _) => {
+                    let _ = tx.send(AgentEvent::ToolEnd {
+                        id,
+                        name: call.name.clone(),
+                        result: msg.clone(),
+                        ok: false,
+                    });
+                    session
+                        .input_items
+                        .push(function_call_output_item(&call.call_id, &msg));
+                    continue;
+                }
+                (None, Some(handle)) => {
+                    let joined = tokio::select! {
+                        _ = cancel.cancelled() => return Err(MuseError::Interrupted),
+                        r = handle => r,
+                    };
+                    match joined {
+                        Ok(Ok((text, spent))) => {
+                            usage.add_external(&spent);
+                            session.usage.add(&spent);
+                            let _ = tx.send(AgentEvent::Usage {
+                                session: usage.session_usage().clone(),
+                                last: spent,
+                            });
+                            (text, true)
+                        }
+                        Ok(Err(MuseError::Interrupted)) => return Err(MuseError::Interrupted),
+                        Ok(Err(e)) => (format!("error: {e}"), false),
+                        Err(e) => (format!("error: subagent task failed: {e}"), false),
+                    }
+                }
+                (None, None) => ("error: subagent was never started".to_string(), false),
+            };
+            let body = spill::maybe_spill(
+                &session.id,
+                &call.name,
+                body,
+                self.config.tool_result_max_chars as usize,
+            );
+            receipt::record(
+                &session.id,
+                receipt::Event::Tool {
+                    name: call.name.clone(),
+                    args_sha256: None,
+                    result_sha256: receipt::sha256_hex(body.as_bytes()),
+                    ok,
+                },
+            );
+            let _ = tx.send(AgentEvent::ToolEnd {
+                id,
+                name: call.name.clone(),
+                result: body.clone(),
+                ok,
+            });
+            session
+                .input_items
+                .push(function_call_output_item(&call.call_id, &body));
+        }
+        flush_pending_media(&mut session.input_items, tx);
+        Ok(())
     }
 
     async fn check_approval(
@@ -1070,6 +1259,173 @@ mod tests {
         pair_interrupted(&mut items, &calls);
         assert_eq!(pair_interrupted(&mut items, &calls), 0, "must not duplicate");
         assert_fully_paired(&items, &calls);
+    }
+
+    fn agent_call(id: &str, prompt: &str, kind: &str) -> FunctionCallRef {
+        FunctionCallRef {
+            call_id: id.into(),
+            name: "agent".into(),
+            arguments: serde_json::json!({"prompt": prompt, "subagent_type": kind}).to_string(),
+        }
+    }
+
+    #[test]
+    fn agent_calls_parse_into_prompt_kind_and_label() {
+        let (prompt, kind, desc) = parse_agent_call(&FunctionCallRef {
+            call_id: "a".into(),
+            name: "agent".into(),
+            arguments: r#"{"prompt":"map auth","subagent_type":"general","description":"auth map"}"#
+                .into(),
+        })
+        .expect("valid call");
+        assert_eq!((prompt.as_str(), kind.as_str(), desc.as_str()), ("map auth", "general", "auth map"));
+
+        // Defaults: explore, and the label falls back to the kind.
+        let (_, kind, desc) = parse_agent_call(&agent_call("b", "look around", "explore")).unwrap();
+        assert_eq!((kind.as_str(), desc.as_str()), ("explore", "explore"));
+
+        // A missing prompt is a tool error, not a spawned no-op subagent.
+        assert!(parse_agent_call(&call("c", "agent")).is_err());
+    }
+
+    /// The fan-out path must only ever claim a run of `agent` calls — grouping
+    /// anything else would run a mutating tool concurrently and out of order.
+    #[test]
+    fn only_contiguous_agent_calls_form_a_fanout_batch() {
+        let calls = [
+            agent_call("a", "one", "explore"),
+            agent_call("b", "two", "explore"),
+            call("c", "write_file"),
+            agent_call("d", "three", "explore"),
+        ];
+        let mut idx = 0usize;
+        let mut batch_end = idx + 1;
+        while batch_end < calls.len() && calls[batch_end].name == "agent" {
+            batch_end += 1;
+        }
+        assert_eq!(batch_end - idx, 2, "the batch stops at the write");
+
+        // A lone trailing agent call is not a fan-out — it takes the plain path.
+        idx = 3;
+        batch_end = idx + 1;
+        while batch_end < calls.len() && calls[batch_end].name == "agent" {
+            batch_end += 1;
+        }
+        assert_eq!(batch_end - idx, 1);
+    }
+
+    #[test]
+    fn the_concurrency_cap_is_a_real_bound() {
+        assert!(
+            (1..=8).contains(&MAX_CONCURRENT_SUBAGENTS),
+            "cap must throttle fan-out without serialising it"
+        );
+    }
+
+    /// Executable spec for the fan-out shape in `run_agent_fanout`: the permit
+    /// is acquired *inside* the spawned task and held across the whole run, and
+    /// results are collected in submission order regardless of finish order.
+    ///
+    /// The classic ways to get this wrong — acquiring before spawn (serialises
+    /// everything) or dropping the permit early (no bound at all) — both fail
+    /// this test.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn fanout_respects_the_cap_and_preserves_order() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const CAP: usize = 3;
+        const JOBS: usize = 9;
+        let permits = Arc::new(tokio::sync::Semaphore::new(CAP));
+        let in_flight = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        let mut handles = Vec::new();
+        for i in 0..JOBS {
+            let permits = permits.clone();
+            let in_flight = in_flight.clone();
+            let peak = peak.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = permits.acquire().await.unwrap();
+                let now = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(now, Ordering::SeqCst);
+                // Later jobs finish sooner, so ordering cannot come for free.
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    (JOBS - i) as u64 * 8,
+                ))
+                .await;
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                i
+            }));
+        }
+
+        let mut collected = Vec::new();
+        for handle in handles {
+            collected.push(handle.await.unwrap());
+        }
+
+        assert_eq!(
+            collected,
+            (0..JOBS).collect::<Vec<_>>(),
+            "results must arrive in submission order — call_id pairing depends on it"
+        );
+        assert!(
+            peak.load(Ordering::SeqCst) <= CAP,
+            "peak concurrency {} exceeded the cap {CAP}",
+            peak.load(Ordering::SeqCst)
+        );
+        assert!(
+            peak.load(Ordering::SeqCst) > 1,
+            "the batch must actually run concurrently, not one at a time"
+        );
+    }
+
+    /// Concurrent children must not race the parent's single approval slot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_child_approvals_are_serialised() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (parent_tx, mut parent_rx) = mpsc::unbounded_channel();
+        let concurrent = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+
+        // Parent side: answer prompts one at a time, as the TUI does.
+        let seen = Arc::new(AtomicUsize::new(0));
+        let seen_bg = seen.clone();
+        let parent = tokio::spawn(async move {
+            while let Some(ev) = parent_rx.recv().await {
+                if let AgentEvent::ApprovalRequest { respond, .. } = ev {
+                    seen_bg.fetch_add(1, Ordering::SeqCst);
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    let _ = respond.send(ApprovalDecision::Approve);
+                }
+            }
+        });
+
+        let mut children = Vec::new();
+        for _ in 0..4 {
+            let tx = parent_tx.clone();
+            let concurrent = concurrent.clone();
+            let peak = peak.clone();
+            children.push(tokio::spawn(async move {
+                let (child_tx, child_rx) = tokio::sync::oneshot::channel();
+                let ask = tokio::spawn(async move {
+                    super::subagent::relay_approval_for_test(&tx, "bash".into(), "{}".into(), child_tx)
+                        .await;
+                });
+                let decision = child_rx.await;
+                let n = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(n, Ordering::SeqCst);
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                ask.await.unwrap();
+                decision
+            }));
+        }
+        for c in children {
+            assert_eq!(c.await.unwrap().unwrap(), ApprovalDecision::Approve);
+        }
+        drop(parent_tx);
+        let _ = parent.await;
+
+        assert_eq!(seen.load(Ordering::SeqCst), 4, "every child must get an answer");
     }
 
     /// Parallel batches skip the approval gate, so anything parallel-safe MUST
@@ -1458,12 +1814,18 @@ fn emit_side_effects(tx: &mpsc::UnboundedSender<AgentEvent>, name: &str, body: &
     }
 }
 
-async fn run_agent_tool(
-    runner: &AgentRunner,
-    call: &FunctionCallRef,
-    cancel: &CancellationToken,
-    tx: &mpsc::UnboundedSender<AgentEvent>,
-) -> Result<(String, TokenUsage)> {
+/// A spawned subagent run: its report text plus the tokens it spent.
+type SubagentHandle = tokio::task::JoinHandle<Result<(String, TokenUsage)>>;
+
+/// Most subagents to keep in flight at once.
+///
+/// Each one is a full agent turn against the same provider, so this is a
+/// rate-limit and context-budget guard as much as a CPU one. The rest of the
+/// batch queues behind the semaphore and starts as slots free up.
+const MAX_CONCURRENT_SUBAGENTS: usize = 4;
+
+/// `{prompt, subagent_type, description}` out of an `agent` tool call.
+fn parse_agent_call(call: &FunctionCallRef) -> Result<(String, String, String)> {
     let v: Value = serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
     let prompt = v
         .get("prompt")
@@ -1476,11 +1838,23 @@ async fn run_agent_tool(
     let kind = v
         .get("subagent_type")
         .and_then(|x| x.as_str())
-        .unwrap_or("explore");
+        .unwrap_or("explore")
+        .to_string();
     let desc = v
         .get("description")
         .and_then(|x| x.as_str())
-        .unwrap_or(kind);
+        .unwrap_or(&kind)
+        .to_string();
+    Ok((prompt, kind, desc))
+}
+
+async fn run_agent_tool(
+    runner: &AgentRunner,
+    call: &FunctionCallRef,
+    cancel: &CancellationToken,
+    tx: &mpsc::UnboundedSender<AgentEvent>,
+) -> Result<(String, TokenUsage)> {
+    let (prompt, kind, desc) = parse_agent_call(call)?;
     let _ = tx.send(AgentEvent::Status(format!("subagent · {desc}")));
 
     subagent::run_subagent(
@@ -1489,7 +1863,7 @@ async fn run_agent_tool(
         runner.cwd.clone(),
         runner.permission_mode.clone(),
         &prompt,
-        kind,
+        &kind,
         cancel,
         tx,
     )

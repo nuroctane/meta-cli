@@ -14,6 +14,17 @@ Researched July 2026 against `ax-llm/ax` (crates.io `axllm` 23.0.3) and
 | **Ax** | **Don't link the crate. Steal two ideas.** | Its core layer is the one thing nur is already strongest at. Its *unique* value — typed signatures and the GEPA optimizer — is worth building natively on top of `nur bench`. |
 | **GraphJin** | **Integrate as a first-class tool.** | Fills a capability nur simply does not have (governed access to live data), and its evidence ledger is a real answer to a real failure mode. |
 
+!!! success "Shipped"
+    Both verdicts have been acted on.
+
+    - **`graphjin` tool** + `/graphjin` (`/gj`) — see [Tools](tools.md#graphjin).
+      Detect-only in `ecosystem ensure`: it is not installed for you, because
+      without a configured database it does nothing.
+    - **`nur bench optimize`** (`/bench optimize`) — the GEPA-shaped optimiser
+      over the existing bench harness, in `src/gepa.rs`.
+
+    Still open: the native signature layer, and an Ax authoring skill.
+
 ---
 
 ## 1. The baseline: what nur already owns
@@ -95,14 +106,33 @@ parses the response, validates, and retries once on a parse failure would
 consolidate those and make new ones cheap. This is perhaps 300 lines against
 the existing `ResponseRequest` — no new dependency.
 
-**b. GEPA on top of `nur bench`.** This is the strongest finding in the whole
-evaluation. GEPA needs three things: a candidate space (prompt variants), an
-eval set, and a scorer. **nur already has the expensive two.** `src/bench.rs`
-replays recorded real tasks across models in isolated git worktrees and scores
-pass/fail plus wall time plus tokens. Bolting a Pareto-frontier search over
-system-prompt / skill-activation variants onto that turns "the new prompt is
-better" into a number, exactly as `nur bench` already did for models. No other
-coding agent I am aware of has the harness sitting there unused like this.
+**b. GEPA on top of `nur bench`.** This was the strongest finding in the whole
+evaluation, and it is now `src/gepa.rs`. GEPA needs three things: a candidate
+space (prompt variants), an eval set, and a scorer. **nur already had the
+expensive two.** `src/bench.rs` replays recorded real tasks across models in
+isolated git worktrees and scores pass/fail plus wall time plus tokens; the
+optimiser reuses that path unchanged, passing a candidate instruction prefix.
+
+```bash
+nur bench optimize all --gens 3 --pop 4     # or /bench optimize all 3 4
+```
+
+Each generation scores every candidate on the task set, keeps the **Pareto
+front** over (pass rate ↑, seconds ↓, tokens ↓), and asks the model to improve
+a front member — showing it the measured scores *and the actual failures*, which
+is what separates reflection from asking for synonyms. Parents are drawn
+round-robin across the whole front rather than best-first, so the search does
+not collapse onto one scalar. The winner is written to
+`~/.nur/bench/optimized/<task>.md`; nur does not apply it automatically.
+
+Two deliberate choices worth knowing:
+
+- **Timing ties.** A sub-5% difference in seconds counts as equal, so timing
+  jitter cannot evict a candidate that is genuinely just as good.
+- **The baseline can win.** If no proposal beats the untuned prompt, the run
+  says so and writes nothing. That is a result, not a failure.
+
+It costs real tokens: `tasks × population × generations` full agent runs.
 
 **c. An authoring skill.** Ax's real audience is TypeScript and Python. The
 cheapest genuine "Ax integration" for a coding agent is *being good at writing
@@ -191,53 +221,77 @@ it installs through the same npm path nur already uses for `plur`, `ruflo`,
 `akarso`, and `executor`, and its safety model maps onto nur's permission
 modes.
 
-### Proposed shape
+### The shape it took
 
-Follow the established ecosystem-tool pattern exactly (`src/tools/graphify.rs`
-is the closest template):
+`graphjin cli …` is not a local query runner — it is an **MCP/JSON-RPC client**
+against a running GraphJin server, configured once with
+`graphjin cli setup <url>` and storing server + token in
+`~/.config/graphjin/client.json`. So the tool passes no `--path`, holds no
+credentials, and drives the CLI the operator already pointed at their server.
 
-```
-src/tools/graphjin.rs        Tool impl, action schema, read-only classification
-src/ecosystem/packs.rs       ensure_graphjin(node_ok) → npm i -g graphjin
-src/tools/capabilities.rs    read-only + concurrency classification
-src/tools/mod.rs             roster + dispatch (roster_stays_in_sync locks this)
-```
+Where GraphJin ships an ergonomic subcommand it is used directly (`explain`,
+`query exec` / `query run`, `audit`, `health`); discovery and the server-side
+agent go through the **tool-name parity surface**,
+`graphjin cli <tool> --args '{…}'`, whose names are guaranteed stable by the
+server's `MCPAllToolNames` (`query_catalog`, `graphql_help`,
+`ask_graphjin_agent`).
 
-Action schema, with the read-only split that drives permission gating:
-
-| action | read-only | purpose |
+| action | read-only | invocation |
 | :--- | :---: | :--- |
-| `status` | ✓ | binary present? config found? which sources? |
-| `catalog` | ✓ | search `gj_catalog` — discovery, always first |
-| `schema` | ✓ | table/field detail for a catalog id |
-| `explain` | ✓ | compiled SQL for a GraphQL query, unexecuted |
-| `query` | ✓ | run a read query / saved query |
-| `code` | ✓ | `gj_code` — CodeSQL over the repo |
-| `security` | ✓ | `gj_security` posture and findings |
-| `ask` | ✓ | `ask_graphjin_agent` — one instruction, typed evidence-backed answer |
-| `mutate` | ✗ | writes — gated by manual/auto, blocked in plan mode |
+| `status` | ✓ | `version` + client config + `cli health` |
+| `catalog` | ✓ | `cli query_catalog --args '{"search":…}'` |
+| `schema` | ✓ | `cli query_catalog --args '{"ids":[…]}'` |
+| `help` | ✓ | `cli graphql_help` |
+| `explain` | ✓ | `cli explain <graphql>` — compiled SQL, unexecuted |
+| `query` | ✓ | `cli query exec <doc>` or `cli query run <name>` |
+| `security` | ✓ | `cli audit [role]` — role permission matrix |
+| `ask` | ✓ | `cli ask_graphjin_agent --args '{"instruction":…}'` |
+| `mutate` | ✗ | `cli query exec` — gated, blocked in plan mode |
 
-Two design notes worth getting right at the start:
+Two things the wrapper gets right on purpose:
 
-1. **Surface the evidence, don't flatten it.** GraphJin returns
-   `status`/`answer`/`data`/`evidence`/`actions`/`next`. A wrapper that returns
-   only `answer` throws away the entire reason to prefer GraphJin. The tool
-   result should carry `status` and `evidence` through to the model, and
-   `status: blocked` must read as a failure, not a soft answer.
-2. **Bind `agent.read_only` to plan mode.** When nur is in plan mode, the
-   `graphjin` invocation should pass the read-only kill-switch, so the
-   guarantee is enforced server-side rather than by nur's classification alone.
+1. **The evidence is surfaced, not flattened.** GraphJin returns
+   `status`/`answer`/`data`/`evidence`/`actions`/`next`. Returning only
+   `answer` would throw away the entire reason to prefer GraphJin, so the raw
+   envelope passes through and a `blocked` or `refused` status is relabelled as
+   the failure it is — a model reads a bare JSON blob as success otherwise.
+2. **Honest about where enforcement lives.** nur's read-only classification is
+   its permission layer, not a security boundary; the server's own roles, RLS,
+   and `agent.read_only` kill-switch are what actually stop a write. The tool
+   docs say so rather than implying nur is the guard.
 
-Estimated: ~250 lines plus tests, one ecosystem entry, one docs section.
+`ecosystem ensure` **detects** GraphJin rather than installing it — unlike every
+other component, it does nothing without a configured database, and it is a far
+heavier install than a memory CLI.
 
 ---
 
-## 4. Recommended order
+## 4. Order of work
 
-1. **GraphJin tool** — biggest capability delta, lowest architectural risk,
-   fits an existing pattern.
-2. **GEPA-style optimizer over `nur bench`** — highest leverage per line,
-   because the expensive half already exists.
-3. **Native signature layer** — consolidates existing ad-hoc extraction.
+1. ~~**GraphJin tool**~~ — done. Biggest capability delta, lowest architectural
+   risk, fits an existing pattern.
+2. ~~**GEPA-style optimizer over `nur bench`**~~ — done. Highest leverage per
+   line, because the expensive half already existed.
+3. **Native signature layer** — consolidates the ad-hoc structured extraction
+   in skill-intent classification, plan parsing, and fusion synthesis. Roughly
+   300 lines against `ResponseRequest`; no new dependency.
 4. **Ax authoring skill** — cheap, and the only form of "Ax integration" whose
    value does not depend on an unproven Rust port.
+
+---
+
+## 5. Postscript: what a third repo was worth
+
+While evaluating these, [hermes-agent](https://github.com/NousResearch/hermes-agent)
+was read for transferable ideas. Two paid off immediately:
+
+- **`pane-shell/tree/grid-model.ts`** — its FancyZones-derived zone grid is the
+  basis for `src/tui/grid.rs`, which lays out the `/swarm` subagent card.
+- **`agent/lmstudio_reasoning.py`** — reading it surfaced a live bug rather than
+  a feature: nur had no handling for reasoning from local runtimes. Models like
+  Qwen3 and DeepSeek-R1 behind llama.cpp emit their chain of thought as
+  `<think>…</think>` *inside* `content`, and LM Studio/vLLM/DeepSeek use a
+  separate `reasoning_content` delta. nur handled neither, so local reasoning
+  either landed in the answer or vanished — which is why the TUI reported
+  "thought 0ms" on a local model. Both paths are now parsed in
+  `src/api/chat.rs`, including markers split across SSE frames.

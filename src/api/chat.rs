@@ -275,7 +275,10 @@ fn collect_images(content: Option<&Value>) -> Vec<String> {
 /// Reconstruct a Responses `ApiResponse` from a non-streamed chat completion.
 pub fn parse_completion(v: &Value) -> Value {
     let msg = v.pointer("/choices/0/message").cloned().unwrap_or(json!({}));
-    let content = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    let raw = msg.get("content").and_then(|c| c.as_str()).unwrap_or("");
+    // Local reasoning models fold their scratchpad into `content`; keep it out
+    // of the answer. (The dedicated field, when present, is already separate.)
+    let (_reasoning, content) = split_think(raw);
     let tool_calls = msg
         .get("tool_calls")
         .and_then(|t| t.as_array())
@@ -284,7 +287,7 @@ pub fn parse_completion(v: &Value) -> Value {
     build_response_value(
         v.get("id").and_then(|x| x.as_str()),
         v.get("model").and_then(|x| x.as_str()),
-        content,
+        &content,
         &tool_calls,
         v.get("usage"),
     )
@@ -333,20 +336,137 @@ pub fn build_response_value(
     })
 }
 
+/// One piece of a streamed reply, routed by kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChatDelta {
+    Text(String),
+    Reasoning(String),
+}
+
+/// Opening / closing markers for inline reasoning.
+const THINK_OPEN: &str = "<think>";
+const THINK_CLOSE: &str = "</think>";
+
+/// Splits a streamed content field into answer text and inline reasoning.
+///
+/// Reasoning models served locally (Qwen3, DeepSeek-R1 and friends behind
+/// llama.cpp / LM Studio / Ollama) do not use a separate reasoning field — they
+/// emit `<think>…</think>` in the middle of `content`. Without this the chain of
+/// thought lands in the assistant's answer and the TUI reports "thought 0ms".
+///
+/// The markers can straddle chunk boundaries, so a short tail is held back
+/// whenever the buffer ends with something that could still become a marker.
+#[derive(Default)]
+pub struct ThinkSplitter {
+    in_think: bool,
+    pending: String,
+}
+
+impl ThinkSplitter {
+    pub fn push(&mut self, chunk: &str) -> Vec<ChatDelta> {
+        self.pending.push_str(chunk);
+        let mut out = Vec::new();
+        loop {
+            let marker = if self.in_think { THINK_CLOSE } else { THINK_OPEN };
+            match self.pending.find(marker) {
+                Some(at) => {
+                    let head: String = self.pending[..at].to_string();
+                    if !head.is_empty() {
+                        out.push(self.wrap(head));
+                    }
+                    self.pending = self.pending[at + marker.len()..].to_string();
+                    self.in_think = !self.in_think;
+                }
+                None => {
+                    // Hold back anything that could be the start of a marker.
+                    let keep = partial_marker_len(&self.pending, marker);
+                    let split = self.pending.len() - keep;
+                    if split > 0 {
+                        let head: String = self.pending[..split].to_string();
+                        self.pending = self.pending[split..].to_string();
+                        out.push(self.wrap(head));
+                    }
+                    return out;
+                }
+            }
+        }
+    }
+
+    /// Emit whatever is still buffered when the stream ends.
+    pub fn flush(&mut self) -> Option<ChatDelta> {
+        if self.pending.is_empty() {
+            return None;
+        }
+        let rest = std::mem::take(&mut self.pending);
+        Some(self.wrap(rest))
+    }
+
+    fn wrap(&self, text: String) -> ChatDelta {
+        if self.in_think {
+            ChatDelta::Reasoning(text)
+        } else {
+            ChatDelta::Text(text)
+        }
+    }
+}
+
+/// Length of the longest suffix of `buf` that is a proper prefix of `marker`.
+fn partial_marker_len(buf: &str, marker: &str) -> usize {
+    // A held-back suffix can be as long as the buffer, but never a whole
+    // marker — that case was already matched and consumed by the caller.
+    let max = (marker.len() - 1).min(buf.len());
+    (1..=max)
+        .rev()
+        .find(|&n| buf.is_char_boundary(buf.len() - n) && marker.starts_with(&buf[buf.len() - n..]))
+        .unwrap_or(0)
+}
+
+/// Strip `<think>` blocks out of a non-streamed completion.
+///
+/// Returns `(reasoning, answer)`. An unterminated block is treated as reasoning
+/// to the end — a truncated reply should not spill its scratchpad into the
+/// answer.
+pub fn split_think(content: &str) -> (String, String) {
+    let mut splitter = ThinkSplitter::default();
+    let mut reasoning = String::new();
+    let mut answer = String::new();
+    let mut take = |d: ChatDelta| match d {
+        ChatDelta::Text(t) => answer.push_str(&t),
+        ChatDelta::Reasoning(t) => reasoning.push_str(&t),
+    };
+    for d in splitter.push(content) {
+        take(d);
+    }
+    if let Some(d) = splitter.flush() {
+        take(d);
+    }
+    (reasoning.trim().to_string(), answer.trim().to_string())
+}
+
 /// Accumulates streamed chat-completions deltas into a final response.
 #[derive(Default)]
 pub struct StreamAccumulator {
     pub id: Option<String>,
     pub model: Option<String>,
     pub content: String,
+    /// Reasoning seen this stream, from either transport.
+    pub reasoning: String,
     /// tool_calls by index: (id, name, arguments-fragments).
     calls: Vec<(String, String, String)>,
     usage: Option<Value>,
+    think: ThinkSplitter,
 }
 
 impl StreamAccumulator {
-    /// Feed one SSE `data:` JSON object. Returns any text delta to surface.
-    pub fn push(&mut self, v: &Value) -> Option<String> {
+    /// Feed one SSE `data:` JSON object. Returns the deltas to surface, split
+    /// into answer text and reasoning.
+    ///
+    /// Reasoning arrives two different ways depending on the runtime: a
+    /// dedicated `reasoning_content` / `reasoning` delta field (DeepSeek, vLLM,
+    /// LM Studio, OpenRouter), or inline `<think>` markers inside `content`
+    /// (llama.cpp serving Qwen3/R1-style models). Both are handled here so the
+    /// TUI's thinking cell works against a local server, not just a cloud API.
+    pub fn push(&mut self, v: &Value) -> Vec<ChatDelta> {
         if self.id.is_none() {
             self.id = v.get("id").and_then(|x| x.as_str()).map(String::from);
         }
@@ -359,12 +479,26 @@ impl StreamAccumulator {
             }
         }
         let delta = v.pointer("/choices/0/delta");
-        let mut text_out = None;
+        let mut out: Vec<ChatDelta> = Vec::new();
         if let Some(delta) = delta {
+            // Dedicated reasoning field, under either of its two spellings.
+            for key in ["reasoning_content", "reasoning"] {
+                if let Some(r) = delta.get(key).and_then(|c| c.as_str()) {
+                    if !r.is_empty() {
+                        self.reasoning.push_str(r);
+                        out.push(ChatDelta::Reasoning(r.to_string()));
+                    }
+                }
+            }
             if let Some(c) = delta.get("content").and_then(|c| c.as_str()) {
                 if !c.is_empty() {
-                    self.content.push_str(c);
-                    text_out = Some(c.to_string());
+                    for d in self.think.push(c) {
+                        match &d {
+                            ChatDelta::Text(t) => self.content.push_str(t),
+                            ChatDelta::Reasoning(t) => self.reasoning.push_str(t),
+                        }
+                        out.push(d);
+                    }
                 }
             }
             if let Some(tcs) = delta.get("tool_calls").and_then(|t| t.as_array()) {
@@ -392,11 +526,23 @@ impl StreamAccumulator {
                 }
             }
         }
-        text_out
+        out
     }
 
     /// Assemble the final Responses-shaped value once the stream ends.
-    pub fn finish(&self) -> Value {
+    pub fn finish(&mut self) -> Value {
+        // A stream can end mid-marker (or mid-think on a truncated reply);
+        // whatever is still buffered belongs to the side we were on.
+        if let Some(d) = self.think.flush() {
+            match d {
+                ChatDelta::Text(t) => self.content.push_str(&t),
+                ChatDelta::Reasoning(t) => self.reasoning.push_str(&t),
+            }
+        }
+        self.finish_ref()
+    }
+
+    fn finish_ref(&self) -> Value {
         let tool_calls: Vec<Value> = self
             .calls
             .iter()
@@ -588,5 +734,101 @@ mod tests {
         assert_eq!(calls[0].name, "grep");
         assert_eq!(calls[0].arguments, "{\"p\":\"x\"}");
         assert_eq!(resp.usage.as_ref().unwrap().output_tokens, 4);
+    }
+
+    // ── local reasoning models ───────────────────────────────────────────
+
+    fn drain(acc: &mut StreamAccumulator, chunks: &[&str]) -> (String, String) {
+        let (mut text, mut reasoning) = (String::new(), String::new());
+        for c in chunks {
+            for d in acc.push(&json!({"choices":[{"delta":{"content": c}}]})) {
+                match d {
+                    ChatDelta::Text(t) => text.push_str(&t),
+                    ChatDelta::Reasoning(t) => reasoning.push_str(&t),
+                }
+            }
+        }
+        (text, reasoning)
+    }
+
+    #[test]
+    fn inline_think_blocks_are_routed_to_reasoning_not_the_answer() {
+        let mut acc = StreamAccumulator::default();
+        let (text, reasoning) = drain(
+            &mut acc,
+            &["<think>let me check", " the tests</think>", "The answer is 42."],
+        );
+        assert_eq!(reasoning, "let me check the tests");
+        assert_eq!(text, "The answer is 42.");
+        let resp = to_api_response(acc.finish()).unwrap();
+        assert_eq!(
+            resp.output_text(),
+            "The answer is 42.",
+            "the scratchpad must never reach the transcript"
+        );
+    }
+
+    /// The marker can be split across SSE frames — the classic way a naive
+    /// implementation leaks `<thi` into the answer.
+    #[test]
+    fn think_markers_split_across_chunks_still_parse() {
+        let mut acc = StreamAccumulator::default();
+        let (text, reasoning) = drain(&mut acc, &["<th", "ink>hmm</thi", "nk>done"]);
+        assert_eq!(reasoning, "hmm");
+        assert_eq!(text, "done");
+    }
+
+    /// Text that merely *starts* like a marker must not be swallowed.
+    #[test]
+    fn a_lone_angle_bracket_is_not_held_hostage() {
+        let mut acc = StreamAccumulator::default();
+        let (text, _) = drain(&mut acc, &["a < b and c > d"]);
+        assert_eq!(text, "a < b and c > d");
+    }
+
+    #[test]
+    fn an_unterminated_think_block_does_not_leak_on_flush() {
+        let mut acc = StreamAccumulator::default();
+        let (text, reasoning) = drain(&mut acc, &["<think>cut off mid-thou"]);
+        assert_eq!(text, "");
+        assert_eq!(reasoning, "cut off mid-thou");
+        let resp = to_api_response(acc.finish()).unwrap();
+        assert_eq!(resp.output_text(), "", "truncated thinking is not an answer");
+        assert!(acc.reasoning.contains("cut off"));
+    }
+
+    /// DeepSeek/vLLM/LM Studio use a dedicated field; OpenRouter spells it
+    /// `reasoning`. Both must reach the thinking cell.
+    #[test]
+    fn dedicated_reasoning_fields_are_recognised() {
+        for key in ["reasoning_content", "reasoning"] {
+            let mut acc = StreamAccumulator::default();
+            let out = acc.push(&json!({"choices":[{"delta":{ key: "weighing options" }}]}));
+            assert_eq!(
+                out,
+                vec![ChatDelta::Reasoning("weighing options".into())],
+                "{key} must be surfaced as reasoning"
+            );
+            let out = acc.push(&json!({"choices":[{"delta":{"content":"ok"}}]}));
+            assert_eq!(out, vec![ChatDelta::Text("ok".into())]);
+            assert_eq!(acc.reasoning, "weighing options");
+        }
+    }
+
+    #[test]
+    fn non_streamed_completions_are_stripped_too() {
+        let v = json!({
+            "id": "r", "model": "m",
+            "choices": [{"message": {"content": "<think>plan</think>Final answer."}}]
+        });
+        let resp = to_api_response(parse_completion(&v)).unwrap();
+        assert_eq!(resp.output_text(), "Final answer.");
+
+        let (reasoning, answer) = split_think("<think>a</think>b<think>c</think>d");
+        assert_eq!(reasoning, "ac", "every block is collected");
+        assert_eq!(answer, "bd");
+
+        // Content with no markers is returned untouched.
+        assert_eq!(split_think("just an answer"), (String::new(), "just an answer".into()));
     }
 }

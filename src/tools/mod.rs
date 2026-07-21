@@ -11,6 +11,7 @@ mod glob;
 pub mod executor_tool;
 pub use executor_tool::is_read_only_action as executor_is_read_only;
 pub mod graphify;
+pub mod graphjin;
 pub mod excalidraw;
 mod grep;
 mod list_dir;
@@ -137,6 +138,7 @@ impl ToolHost {
             Box::new(git_status::GitStatus),
             Box::new(git_diff::GitDiff),
             Box::new(graphify::Graphify),
+            Box::new(graphjin::GraphJin),
             Box::new(excalidraw::Excalidraw),
             Box::new(tldraw::Tldraw),
             Box::new(plur::Plur),
@@ -215,6 +217,7 @@ impl ToolHost {
             "git_status" => git_status::GitStatus.execute(&args, ctx),
             "git_diff" => git_diff::GitDiff.execute(&args, ctx),
             "graphify" => graphify::Graphify.execute(&args, ctx),
+            "graphjin" => graphjin::GraphJin.execute(&args, ctx),
             "excalidraw" => excalidraw::Excalidraw.execute(&args, ctx),
             "tldraw" => tldraw::Tldraw.execute(&args, ctx),
             "plur" => plur::Plur.execute(&args, ctx),
@@ -252,7 +255,12 @@ impl Tool for AgentStub {
     fn description(&self) -> &str {
         "Spawn a subagent for a focused subtask. \
          subagent_type: explore (read-only research) | general (same tools as parent). \
-         Returns a text report. Use for parallel research or isolated investigation."
+         Returns a text report. \
+         **Issue several agent calls in one response to fan them out — they run \
+         concurrently** (up to 4 at a time), so independent investigations cost \
+         roughly one investigation's wall time. Split work that does not share \
+         state: one subagent per subsystem, per hypothesis, or per file cluster. \
+         Watch them live in the TUI with /swarm."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -315,7 +323,7 @@ mod tests {
         let mut want = vec![
             "read_file", "list_dir", "write_file", "edit_file", "multi_edit", "apply_patch",
             "bash", "grep", "glob", "web_fetch", "web_search", "browser", "look",
-            "extract_frames", "git_status", "git_diff", "graphify", "excalidraw", "tldraw",
+            "extract_frames", "git_status", "git_diff", "graphify", "graphjin", "excalidraw", "tldraw",
             "plur", "ruflo", "akarso", "executor", "omp", "skill", "memory", "todo_write",
             "submit_plan", "agent",
         ];

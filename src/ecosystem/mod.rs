@@ -54,6 +54,9 @@ pub struct EcosystemStatus {
     pub executor: ComponentStatus,
     #[serde(default)]
     pub omp: ComponentStatus,
+    /// GraphJin — governed GraphQL→SQL over live data (detect-only; opt-in).
+    #[serde(default)]
+    pub graphjin: ComponentStatus,
     #[serde(default)]
     pub browser: ComponentStatus,
     #[serde(default)]
@@ -231,6 +234,7 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
     status.akm = packs::ensure_akm(status.node_ok);
     status.executor = packs::ensure_executor(status.node_ok);
     status.omp = packs::ensure_omp();
+    status.graphjin = packs::ensure_graphjin();
     status.browser = packs::ensure_browser_cli(status.node_ok);
     status.excalidraw = ensure_excalidraw(status.node_ok);
     status.cua = ensure_cua();

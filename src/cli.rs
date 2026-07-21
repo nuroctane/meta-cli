@@ -187,6 +187,20 @@ pub enum BenchCmd {
         #[arg(long)]
         models: Option<String>,
     },
+    /// GEPA: evolve the standing instruction against your recorded tasks.
+    /// Scores candidates on the real bench (pass rate / seconds / tokens),
+    /// keeps the Pareto front, and asks the model to improve front members.
+    /// Costs real tokens — every candidate is a full agent run per task.
+    Optimize {
+        /// Task name (or "all")
+        name: String,
+        /// Generations to evolve (1-10)
+        #[arg(long, default_value_t = 3)]
+        gens: u32,
+        /// Candidates kept per generation (2-8)
+        #[arg(long, default_value_t = 4)]
+        pop: usize,
+    },
 }
 
 #[derive(Subcommand, Debug)]

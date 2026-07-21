@@ -161,6 +161,34 @@ pub fn ensure_executor(node_ok: bool) -> ComponentStatus {
     c
 }
 
+/// GraphJin — governed GraphQL→SQL over live databases (`graphjin` tool).
+///
+/// **Detect-only, deliberately.** Every other component here is auto-installed
+/// because it is useful the moment it exists. GraphJin is not: without a
+/// `config/` pointing at a real database it does nothing, and it is a far
+/// heavier install than a memory CLI. Pulling it onto every machine that runs
+/// `nur ecosystem ensure` would be presumptuous. So we report presence and how
+/// to get it, and let the user opt in.
+pub fn ensure_graphjin() -> ComponentStatus {
+    let mut c = ComponentStatus {
+        name: "graphjin".into(),
+        ..Default::default()
+    };
+    match find_bin("graphjin") {
+        Some(bin) => {
+            c.available = true;
+            c.version = super::cmd_version_pub(&bin, &["version"]);
+            c.path = Some(bin);
+            c.detail = "governed data surface ready — point GRAPHJIN_CONFIG_PATH at a config".into();
+        }
+        None => {
+            c.detail = "optional — npm i -g graphjin (needed only for the `graphjin` data tool)"
+                .into();
+        }
+    }
+    c
+}
+
 /// Oh My Pi (omp.sh) — the coding-agent *backend* the `omp` tool delegates to
 /// (headless `omp -p` runs; we deliberately skip its IDE/ACP surface).
 /// Ships on npm as @oh-my-pi/pi-coding-agent but runs on Bun, so install via

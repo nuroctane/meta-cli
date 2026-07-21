@@ -168,6 +168,10 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/todos", "show session task list"),
     ("/graph", "inline live execution-graph card for the current turn"),
     (
+        "/graphjin",
+        "governed live data: catalog | schema | explain | query | code | security | ask",
+    ),
+    (
         "/swarm",
         "inline subagent grid · live panes per agent · detail | off | clear | hide",
     ),

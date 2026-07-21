@@ -60,6 +60,7 @@ pub fn is_read_only(name: &str, args: &Value) -> bool {
             .unwrap_or(false),
         // Action helpers take the raw JSON string form used across the codebase.
         "graphify" => crate::tools::graphify::is_read_only_action(&args.to_string()),
+        "graphjin" => crate::tools::graphjin::is_read_only_action(&args.to_string()),
         "excalidraw" => crate::tools::excalidraw::is_read_only_action(&args.to_string()),
         "tldraw" => crate::tools::tldraw::is_read_only_action(&args.to_string()),
         "plur" => crate::tools::plur::is_read_only_action(&args.to_string()),
@@ -105,6 +106,7 @@ pub fn is_destructive(name: &str, args: &Value) -> bool {
         | "extract_frames" => true,
         "memory" => !is_read_only("memory", args),
         "graphify" => !is_read_only("graphify", args),
+        "graphjin" => !is_read_only("graphjin", args),
         "excalidraw" => !is_read_only("excalidraw", args),
         "tldraw" => !is_read_only("tldraw", args),
         "plur" => !is_read_only("plur", args),
@@ -155,7 +157,7 @@ mod tests {
             "read_file", "list_dir", "grep", "glob", "web_fetch", "web_search", "look",
             "extract_frames", "git_status", "git_diff", "skill", "write_file", "edit_file",
             "multi_edit", "apply_patch", "bash", "agent", "memory", "todo_write", "submit_plan",
-            "browser", "omp", "graphify", "plur", "ruflo",
+            "browser", "omp", "graphify", "graphjin", "plur", "ruflo",
         ] {
             let c = classify(name, "{}");
             if c.concurrency_safe {

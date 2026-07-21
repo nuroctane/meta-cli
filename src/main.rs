@@ -9,6 +9,7 @@ mod config;
 mod ecosystem;
 mod error;
 mod gateway;
+mod gepa;
 mod local;
 mod oauth;
 mod open_uri;

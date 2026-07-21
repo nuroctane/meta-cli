@@ -127,6 +127,11 @@ than wrapping:
 | Medium | Fewer columns; panes it dropped are disclosed as `+N more` |
 | Narrow (< 28 cols) | Frames are dropped for a one-line-per-agent list |
 
+Subagents **fan out concurrently**: several `agent` calls in one model response
+run in parallel (up to 4 at a time), so the card usually shows more than one
+live pane. Approval for the whole batch is collected up front, one prompt at a
+time, so concurrent children never race you for the approval dialogue.
+
 The card re-arms itself on each new turn and freezes when the turn ends.
 `/swarm detail` adds a status row, `/swarm off` freezes it, `/swarm clear`
 forgets finished runs, `/swarm hide` removes the card.

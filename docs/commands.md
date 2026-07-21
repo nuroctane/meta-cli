@@ -418,7 +418,7 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/doctor` | Health check: version · auth · ecosystem · shell |
 | `/fusion` | Multi-model debate → one synthesized answer |
 | `/local` | Run a model locally via bundled llama.cpp |
-| `/bench` | Benchmark models on your tasks |
+| `/bench` | Benchmark models on your tasks; `/bench optimize <name\|all> [gens] [pop]` evolves the standing instruction against them (GEPA — costs tokens) |
 | `/failover` | Cross-provider failover + privacy tiers |
 | `/undo` | Revert the last file edit this session |
 | `/receipt` | Session receipt — hash-chained verification |
@@ -446,6 +446,7 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/skills` | List installed skills |
 | `/memory` | Show the `~/.nur` memory excerpt |
 | `/graphify` | Knowledge graph: status / query / extract |
+| `/graphjin` | Live data (`/gj`): `catalog` \| `schema` \| `help` \| `explain` \| `query` \| `security` \| `ask`. Writes go through the model so they hit the approval gate. |
 | `/plur` | Shared engram memory |
 | `/ruflo` | Vector memory / swarm |
 | `/ecosystem` | Check / provision the ecosystem |

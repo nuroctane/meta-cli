@@ -148,6 +148,27 @@ pub async fn run_subagent(
     }
 }
 
+/// One approval prompt at a time, across every concurrent subagent.
+///
+/// The parent has a single approval slot (TUI dialogue / terminal prompt), so
+/// two children asking at once would clobber each other — the loser's channel
+/// drops and it silently reads as a denial. Children queue here instead.
+fn approval_turnstile() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+/// Exposes the turnstile-guarded relay to the loop's concurrency tests.
+pub async fn relay_approval_for_test(
+    parent_tx: &mpsc::UnboundedSender<AgentEvent>,
+    name: String,
+    args: String,
+    respond: tokio::sync::oneshot::Sender<ApprovalDecision>,
+) {
+    relay_approval(parent_tx, name, args, respond).await
+}
+
 /// Proxy a child approval through the parent event loop, which is the only
 /// runner that has a terminal prompt or TUI approval surface.
 async fn relay_approval(
@@ -156,6 +177,7 @@ async fn relay_approval(
     args: String,
     respond: tokio::sync::oneshot::Sender<ApprovalDecision>,
 ) {
+    let _turn = approval_turnstile().lock().await;
     let (proxy_tx, proxy_rx) = tokio::sync::oneshot::channel();
     if parent_tx
         .send(AgentEvent::ApprovalRequest {

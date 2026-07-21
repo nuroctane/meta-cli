@@ -178,6 +178,7 @@ impl App {
             }
             "/scan" => self.cmd_scan(&arg),
             "/graphify" => self.cmd_graphify(&arg),
+            "/graphjin" | "/gj" => self.cmd_graphjin(&arg),
             "/plur" => self.cmd_plur(&arg),
             "/ruflo" => self.cmd_ruflo(&arg),
             "/akarso" => self.cmd_akarso(&arg),
@@ -462,6 +463,69 @@ impl App {
              skill: /openseo activates the workflow guidance"
                 .into(),
         );
+    }
+
+    /// Run graphjin actions from the TUI without going through the model.
+    ///
+    /// Read-only by construction: the write path (`mutate`) is deliberately not
+    /// reachable from a slash command — a data mutation should go through the
+    /// agent loop's approval gate, not a one-liner.
+    fn cmd_graphjin(&mut self, arg: &str) {
+        let arg = arg.trim();
+        let mut parts = arg.splitn(2, char::is_whitespace);
+        let action = parts.next().unwrap_or("").trim();
+        let rest = parts.next().unwrap_or("").trim();
+
+        let json = match action {
+            "" | "status" => r#"{"action":"status"}"#.to_string(),
+            "catalog" | "search" if !rest.is_empty() => {
+                serde_json::json!({"action": "catalog", "search": rest}).to_string()
+            }
+            "schema" if !rest.is_empty() => {
+                serde_json::json!({"action": "schema", "id": rest}).to_string()
+            }
+            "help" => serde_json::json!({"action": "help", "search": rest}).to_string(),
+            "explain" if !rest.is_empty() => {
+                serde_json::json!({"action": "explain", "query": rest}).to_string()
+            }
+            "query" | "q" if !rest.is_empty() => {
+                serde_json::json!({"action": "query", "query": rest}).to_string()
+            }
+            "security" => serde_json::json!({"action": "security", "role": rest}).to_string(),
+            "ask" if !rest.is_empty() => {
+                serde_json::json!({"action": "ask", "instruction": rest}).to_string()
+            }
+            _ => {
+                self.push_note(
+                    Tone::Skill,
+                    "graphjin — governed access to live data\n  \
+                     /graphjin                        status (CLI · client config · server reachable?)\n  \
+                     /graphjin catalog <intent>       search gj_catalog — always start here\n  \
+                     /graphjin schema <id>            detail for a catalog entry\n  \
+                     /graphjin help [topic]           GraphQL shape guidance from the server\n  \
+                     /graphjin explain <graphql>      compile to SQL without running it\n  \
+                     /graphjin query <graphql|name>   run a read query, or a saved query by name\n  \
+                     /graphjin security [role]        role permission matrix\n  \
+                     /graphjin ask <instruction>      server-side agent, evidence-backed\n\n\
+                     writes go through the model (graphjin tool, action=mutate) so they hit \
+                     the approval gate.\n\
+                     install:  npm install -g graphjin\n\
+                     connect:  graphjin cli setup <server-url>   (serve one: graphjin serve --path ./config)"
+                        .to_string(),
+                );
+                return;
+            }
+        };
+
+        let host = ToolHost::default();
+        let ctx = crate::tools::ToolContext {
+            cwd: self.cwd.clone(),
+            cancel: CancellationToken::new(),
+        };
+        match host.dispatch("graphjin", &json, &ctx) {
+            Ok(s) => self.push_note(Tone::Skill, s),
+            Err(e) => self.push_error(e.to_string()),
+        }
     }
 
     /// Run graphify CLI actions from the TUI without going through the model.
@@ -1075,8 +1139,32 @@ impl App {
                 }
                 self.launch_console(args);
             }
+            "optimize" | "opt" | "gepa" => {
+                let mut p = rest.split_whitespace();
+                let name = p.next().unwrap_or("").trim();
+                if name.is_empty() {
+                    self.push_error(
+                        "usage: /bench optimize <name|all> [gens] [pop]   — evolves the standing \
+                         instruction against your recorded tasks (costs tokens)"
+                            .into(),
+                    );
+                    return;
+                }
+                let mut args =
+                    vec!["bench".to_string(), "optimize".to_string(), name.to_string()];
+                if let Some(gens) = p.next() {
+                    args.push("--gens".into());
+                    args.push(gens.to_string());
+                }
+                if let Some(pop) = p.next() {
+                    args.push("--pop".into());
+                    args.push(pop.to_string());
+                }
+                self.launch_console(args);
+            }
             _ => self.push_error(
-                "usage: /bench [list | add <name> <prompt> | remove <name> | run <name> [models]]"
+                "usage: /bench [list | add <name> <prompt> | remove <name> | run <name> [models] \
+                 | optimize <name|all> [gens] [pop]]"
                     .into(),
             ),
         }
