@@ -485,83 +485,63 @@ pub fn maybe_auto_update_on_launch(enabled: bool) -> bool {
         return false;
     }
 
-    let mut st = load_auto_update_state();
+    let st = load_auto_update_state();
     let now = now_secs();
-    if st.last_check_at > 0
-        && now.saturating_sub(st.last_check_at) < AUTO_UPDATE_TTL_SECS
-        && st.last_result == "current"
-    {
+    // Throttle on the timestamp alone. Keying this on `last_result == "current"`
+    // meant a failed check re-downloaded on every single launch — invisible now
+    // that the attempt happens on a background thread.
+    if st.last_check_at > 0 && now.saturating_sub(st.last_check_at) < AUTO_UPDATE_TTL_SECS {
         return false;
     }
 
-    match try_install_from_github(false) {
-        Ok(UpdateOutcome::Updated { version }) => {
-            st.last_check_at = now;
-            st.last_remote_version = version.clone();
-            st.last_result = "updated".into();
-            save_auto_update_state(&st);
-            // Refresh bootstrap marker so doctor/status show the new version.
-            let dest = install_binary_path();
-            let marker = BootstrapMarker {
-                schema: BOOTSTRAP_SCHEMA,
-                version: version.clone(),
-                binary: dest.display().to_string(),
-                completed_at: now,
-                ecosystem_ok: true,
-            };
-            if let Ok(text) = serde_json::to_string_pretty(&marker) {
-                let _ = fs::write(marker_path(), text);
+    // Non-blocking: spawn background thread so TUI startup stays instant.
+    // Previously this did a blocking 8s HTTP call to api.github.com on the main thread,
+    // adding 1s+ latency to every cold launch when cache stale.
+    // Now we return immediately and let background handle it; next launch uses new binary.
+    std::thread::Builder::new()
+        .name("nur-auto-update".into())
+        .spawn(move || {
+            // Re-load state inside thread to avoid race, use fresh now
+            let now_inner = now_secs();
+            let mut st_inner = load_auto_update_state();
+            match try_install_from_github(false) {
+                Ok(UpdateOutcome::Updated { version }) => {
+                    st_inner.last_check_at = now_inner;
+                    st_inner.last_remote_version = version.clone();
+                    st_inner.last_result = "updated".into();
+                    save_auto_update_state(&st_inner);
+                    let dest = install_binary_path();
+                    let marker = BootstrapMarker {
+                        schema: BOOTSTRAP_SCHEMA,
+                        version: version.clone(),
+                        binary: dest.display().to_string(),
+                        completed_at: now_inner,
+                        ecosystem_ok: true,
+                    };
+                    if let Ok(text) = serde_json::to_string_pretty(&marker) {
+                        let _ = fs::write(marker_path(), text);
+                    }
+                    // No re-exec and no printing: the TUI owns the alternate
+                    // screen by the time this lands, so stdout here would
+                    // scribble over the render. The state file carries the
+                    // result to the next launch.
+                }
+                Ok(UpdateOutcome::AlreadyCurrent { version }) => {
+                    st_inner.last_check_at = now_inner;
+                    st_inner.last_remote_version = version;
+                    st_inner.last_result = "current".into();
+                    save_auto_update_state(&st_inner);
+                }
+                Err(e) => {
+                    st_inner.last_check_at = now_inner;
+                    st_inner.last_result = format!("error: {e}");
+                    save_auto_update_state(&st_inner);
+                }
             }
-            theme::print_ok(&format!("Auto-updated to v{version} — restarting…"));
-            // Re-exec installed binary; skip bootstrap + another update loop.
-            if reexec_after_auto_update().is_ok() {
-                return true;
-            }
-            theme::print_info("Restart nur to use the new version");
-            false
-        }
-        Ok(UpdateOutcome::AlreadyCurrent { version }) => {
-            st.last_check_at = now;
-            st.last_remote_version = version;
-            st.last_result = "current".into();
-            save_auto_update_state(&st);
-            false
-        }
-        Err(e) => {
-            // Soft fail — never block the TUI.
-            st.last_check_at = now;
-            st.last_result = format!("error: {e}");
-            save_auto_update_state(&st);
-            false
-        }
-    }
-}
+        })
+        .ok();
 
-fn reexec_after_auto_update() -> Result<()> {
-    let dest = install_binary_path();
-    if !dest.is_file() {
-        return Err(MuseError::Other(format!(
-            "installed binary missing at {}",
-            dest.display()
-        )));
-    }
-    // Spawn the new binary (Windows cannot replace a running image in-place;
-    // Unix could exec, but spawn+exit is consistent and avoids leaving a
-    // half-updated parent).
-    let status = Command::new(&dest)
-        .env("NUR_SKIP_BOOTSTRAP", "1")
-        .env("META_SKIP_BOOTSTRAP", "1")
-        .env("NUR_SKIP_AUTO_UPDATE", "1")
-        .status()
-        .map_err(|e| {
-            MuseError::Other(format!("failed to launch {}: {e}", dest.display()))
-        })?;
-    if status.success() {
-        Ok(())
-    } else {
-        let code = status.code().unwrap_or(1);
-        Err(MuseError::Other(format!("nur exited with status {code}")))
-    }
+    false
 }
 
 /// Query GitHub Releases and install a newer binary when available.

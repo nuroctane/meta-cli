@@ -391,6 +391,7 @@ fn mirror_agents_to_muse() {
             }
         }
     }
+    crate::agent::skill_cache::invalidate_cache();
 }
 
 /// Catalog / index skills that point the agent at large packs without loading

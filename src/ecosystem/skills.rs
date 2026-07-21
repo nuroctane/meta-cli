@@ -6,9 +6,32 @@ use crate::error::Result;
 use std::fs;
 use std::path::PathBuf;
 
+/// Skills we used to ship and now retire on upgrade. Without this sweep an
+/// existing install keeps discovering (and NL-activating) them forever, since
+/// the installer only ever writes files. Superseded by `/takeover`.
+const RETIRED_SKILLS: &[&str] = &[
+    "resume-claude",
+    "resume-codex",
+    "resume-cursor",
+    "resume-grok",
+    "resume-nur",
+    "resume-meta", // legacy name for resume-nur
+];
+
+/// Remove retired skill dirs, plus the SKILL.md that used to make the
+/// `resume-session` reader a user-facing skill (the reader itself stays —
+/// `chagent` shells out to it).
+fn retire_stale_skills(root: &std::path::Path) {
+    for name in RETIRED_SKILLS {
+        let _ = fs::remove_dir_all(root.join(name));
+    }
+    let _ = fs::remove_file(root.join("resume-session").join("SKILL.md"));
+}
+
 pub fn install_bundled_skills() -> Result<Vec<String>> {
     let root = muse_home().join("skills");
     fs::create_dir_all(&root)?;
+    retire_stale_skills(&root);
     let mut installed = Vec::new();
 
     for (name, body) in BUNDLED {
@@ -20,7 +43,7 @@ pub fn install_bundled_skills() -> Result<Vec<String>> {
         installed.push(name.to_string());
     }
 
-    // Multi-file packs (resume-session reader + thin wrappers).
+    // Multi-file packs (the resume-session reader, dmmulroy skills, …).
     for (name, files) in MULTI_FILE_PACKS {
         let dir = root.join(name);
         fs::create_dir_all(&dir)?;
@@ -36,6 +59,7 @@ pub fn install_bundled_skills() -> Result<Vec<String>> {
     if let Some(home) = dirs::home_dir() {
         let agents = home.join(".agents").join("skills");
         let _ = fs::create_dir_all(&agents);
+        retire_stale_skills(&agents);
         for (name, body) in BUNDLED {
             let dir = agents.join(name);
             let _ = fs::create_dir_all(&dir);
@@ -71,13 +95,11 @@ const BUNDLED: &[(&str, &str)] = &[
 
 /// Packs with extra files (Python reader, CORE.md). Paths relative to crate root.
 const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
+    // Engine for `/takeover`, not a user-facing skill: no SKILL.md, so it is
+    // never indexed or activated. `chagent` shells out to `session_reader.py`.
     (
         "resume-session",
         &[
-            (
-                "SKILL.md",
-                include_str!("../../skills/resume-session/SKILL.md"),
-            ),
             (
                 "CORE.md",
                 include_str!("../../skills/resume-session/CORE.md"),
@@ -87,41 +109,6 @@ const MULTI_FILE_PACKS: &[(&str, &[(&str, &str)])] = &[
                 include_str!("../../skills/resume-session/session_reader.py"),
             ),
         ],
-    ),
-    (
-        "resume-claude",
-        &[(
-            "SKILL.md",
-            include_str!("../../skills/resume-claude/SKILL.md"),
-        )],
-    ),
-    (
-        "resume-codex",
-        &[(
-            "SKILL.md",
-            include_str!("../../skills/resume-codex/SKILL.md"),
-        )],
-    ),
-    (
-        "resume-cursor",
-        &[(
-            "SKILL.md",
-            include_str!("../../skills/resume-cursor/SKILL.md"),
-        )],
-    ),
-    (
-        "resume-nur",
-        &[(
-            "SKILL.md",
-            include_str!("../../skills/resume-nur/SKILL.md"),
-        )],
-    ),
-    (
-        "resume-grok",
-        &[(
-            "SKILL.md",
-            include_str!("../../skills/resume-grok/SKILL.md"),
-        )],
     ),
     // dmmulroy/skills (MIT) — baked in so a fresh install ships them.
     (

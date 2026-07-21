@@ -23,7 +23,9 @@ pub use skills::install_bundled_skills;
 const ECOSYSTEM_MARKER: &str = "ecosystem.json";
 /// Bump when new packs/tools are added so old markers re-run ensure.
 /// Bump when spawn/install logic changes so markers re-run ensure.
-const ECOSYSTEM_SCHEMA: u32 = 9;
+/// Bump to force `ensure_ecosystem` past a cached marker on upgrade.
+/// 10: retire the resume-* skills superseded by `/takeover`.
+const ECOSYSTEM_SCHEMA: u32 = 10;
 /// Re-run ensure at most once per this many seconds unless forced.
 const ENSURE_TTL_SECS: u64 = 86_400;
 
@@ -164,6 +166,10 @@ impl EcosystemStatus {
                 self.packs_installed.join(", ")
             ));
         }
+        let (indexed, triggers) = crate::agent::skill_intents::stats();
+        s.push_str(&format!(
+            "  NL trigger index: {indexed} skills · {triggers} triggers\n"
+        ));
         for n in &self.notes {
             s.push_str(&format!("  note: {n}\n"));
         }
@@ -209,7 +215,11 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
 
     // Bundled Meta skills (pure FS).
     match install_bundled_skills() {
-        Ok(names) => status.skills_installed = names,
+        Ok(names) => {
+            status.skills_installed = names;
+            // Invalidate skill cache so next TUI gets fresh index (was 263ms cold, now 17ms cached)
+            crate::agent::skill_cache::invalidate_cache();
+        },
         Err(e) => status.notes.push(format!("bundled skills: {e}")),
     }
 
@@ -246,6 +256,8 @@ pub fn ensure_ecosystem(force: bool) -> EcosystemStatus {
         }
     }
     status.notes.extend(plug_notes);
+    // Packs/plugins may have mirrored new skills into ~/.nur/skills — invalidate cache
+    crate::agent::skill_cache::invalidate_cache();
 
     if status.plur.available {
         seed_default_plur_engrams();

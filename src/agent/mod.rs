@@ -9,6 +9,8 @@ pub mod permissions;
 pub mod prompt;
 pub mod receipt;
 pub mod session;
+pub mod skill_cache;
+pub mod skill_intents;
 pub mod skills;
 pub mod subagent;
 pub mod todos;

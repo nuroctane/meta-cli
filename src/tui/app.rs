@@ -207,12 +207,13 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/plugins", "browse · install · enable marketplace plugins"),
     ("/plugin", "browse · install · enable marketplace plugins  (alias of /plugins)"),
     ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
-    ("/sessions", "browse & open past sessions  (same as /resume)"),
+    ("/sessions", "browse & open past sessions  ·  c → takeover  (same as /resume)"),
     ("/resume", "browse & open past sessions  (same as /sessions)"),
-    ("/chagent", "import a session from Claude/Codex/Cursor/Grok  (picker)"),
-    ("/hijack", "take over a foreign agent session  (alias of /chagent)"),
-    ("/takeover", "take over a foreign agent session  (alias of /chagent)"),
-    ("/sessionresume", "import a foreign agent session  (alias of /chagent)"),
+    (
+        "/takeover",
+        "import a Claude/Codex/Cursor/Grok session  ·  c → sessions  (same as /hijack)",
+    ),
+    ("/hijack", "import a foreign agent session  (same as /takeover)"),
     ("/skeuo", "activate the skeuomorphic-ui skill  (/skeuomorphic-ui)"),
     ("/akarso", "post/schedule across 14 social platforms (akarso tool + skill)"),
     ("/openseo", "SEO research/audits via OpenSEO MCP (open-source Semrush/Ahrefs alt)"),
@@ -1053,12 +1054,9 @@ pub struct SessionPicker {
     pub vis_page: usize,
     /// Only show sessions from this workspace.
     pub this_cwd_only: bool,
-    /// Include chagent-migratable foreign sessions (Claude/Codex/Cursor/Grok).
-    pub show_foreign: bool,
-    /// Foreign sessions have been discovered (avoid re-spawning the reader).
-    pub foreign_loaded: bool,
-    /// Dedicated chagent picker: show *only* foreign sessions (import mode).
-    /// Same chrome/scroll/confirm as the default picker, different contents.
+    /// Which of the two windows this is: `false` = native sessions (`/sessions`),
+    /// `true` = foreign takeover imports (`/takeover`). Same chrome and scroll
+    /// behaviour either way; `c` switches between them.
     pub foreign_only: bool,
     /// Hit-test geometry filled by the last draw (screen coords).
     pub hit: PickerHit,
@@ -1077,8 +1075,8 @@ pub struct PickerHit {
     pub body: ratatui::layout::Rect,
     /// Scope chip ("here" / "all") — click to toggle.
     pub scope: ratatui::layout::Rect,
-    /// Foreign-import chip ("import") — click to toggle chagent sources.
-    /// Reserved for a future clickable chip; the toggle is keyboard-driven (`c`).
+    /// Window-switch chip ("takeover" / "sessions").
+    /// Reserved for a future clickable chip; the switch is keyboard-driven (`c`).
     #[allow(dead_code)]
     pub foreign: ratatui::layout::Rect,
     /// Visible row index → screen rect (for click-to-select).
@@ -1090,7 +1088,7 @@ impl SessionPicker {
         if self.foreign_only {
             return r.is_foreign();
         }
-        (!self.this_cwd_only || r.here) && (self.show_foreign || !r.is_foreign())
+        (!self.this_cwd_only || r.here) && !r.is_foreign()
     }
 
     pub fn visible(&self) -> Vec<&SessionRow> {
@@ -1497,14 +1495,21 @@ pub async fn run_tui(
     let mut terminal = Terminal::new(backend)
         .map_err(|e| crate::error::MuseError::Other(format!("terminal init: {e}")))?;
 
-    // Query the terminal's graphics protocol + font size for inline image
-    // peeks (sixel / kitty / iTerm2, halfblocks fallback). 1s timeout inside;
-    // any failure degrades to a sane halfblocks picker, never an error.
+    // Fast image picker: from_query_stdio blocks 1s on Windows cmd/conhost
+    // and many Unix terms (bench 1000ms vs 0.008ms for from_fontsize).
+    // Use instant path by default; opt-in probing via NUR_IMAGE_QUERY=1.
     #[cfg(feature = "image-peek")]
-    let img_picker = Some(
-        ratatui_image::picker::Picker::from_query_stdio()
-            .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((9, 18))),
-    );
+    let img_picker = Some({
+        if std::env::var("NUR_IMAGE_QUERY")
+            .map(|v| !v.is_empty() && v != "0")
+            .unwrap_or(false)
+        {
+            ratatui_image::picker::Picker::from_query_stdio()
+                .unwrap_or_else(|_| ratatui_image::picker::Picker::from_fontsize((9, 18)))
+        } else {
+            ratatui_image::picker::Picker::from_fontsize((9, 18))
+        }
+    });
 
     let (tx, rx) = mpsc::unbounded_channel();
     let u_session = usage.session_usage().clone();
@@ -3667,19 +3672,11 @@ impl App {
     }
 
     // ── session picker (`/sessions` · `/resume`) ─────────────
-    fn open_session_picker(&mut self) {
-        if self.busy {
-            self.push_error("wait for the current turn to finish".into());
-            return;
-        }
+    /// Native nur sessions as picker rows. `Err` carries a message to surface.
+    fn native_session_rows(&self) -> std::result::Result<Vec<SessionRow>, String> {
         // Lightweight summaries (no input_items) from ~/.nur + legacy ~/.muse.
-        let sessions = match crate::agent::session::list_session_summaries() {
-            Ok(s) => s,
-            Err(e) => {
-                self.push_error(format!("could not list sessions: {e}"));
-                return;
-            }
-        };
+        let sessions = crate::agent::session::list_session_summaries()
+            .map_err(|e| format!("could not list sessions: {e}"))?;
         let here_key = self.cwd.display().to_string().to_lowercase();
         let mut rows: Vec<SessionRow> = sessions
             .into_iter()
@@ -3713,7 +3710,21 @@ impl App {
         if has_real {
             rows.retain(|r| r.messages > 0);
         }
+        Ok(rows)
+    }
 
+    fn open_session_picker(&mut self) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish".into());
+            return;
+        }
+        let rows = match self.native_session_rows() {
+            Ok(r) => r,
+            Err(e) => {
+                self.push_error(e);
+                return;
+            }
+        };
         if rows.is_empty() {
             self.push_note(
                 Tone::Session,
@@ -3732,8 +3743,6 @@ impl App {
             scroll: 0,
             vis_page: 6,
             this_cwd_only: false,
-            show_foreign: false,
-            foreign_loaded: false,
             foreign_only: false,
             hit: PickerHit::default(),
             last_step_at: Instant::now()
@@ -3742,29 +3751,14 @@ impl App {
         });
     }
 
-    /// Dedicated chagent picker — same chrome as `/sessions`, but populated only
-    /// with migratable foreign sessions (Claude/Codex/Cursor/Grok) for this
-    /// workspace. Enter imports the selected one and resumes it natively.
-    pub(super) fn open_chagent_picker(&mut self) {
-        if self.busy {
-            self.push_error("wait for the current turn to finish".into());
-            return;
-        }
+    /// Migratable foreign sessions (Claude/Codex/Cursor/Grok) for this workspace,
+    /// as picker rows. Spawns the bundled reader once per tool, so only call it
+    /// on an explicit user action (opening or switching the modal).
+    fn foreign_session_rows(&self) -> (Vec<SessionRow>, Vec<String>) {
         let cwd = self.cwd.display().to_string();
         let mut errors = Vec::new();
         let found = crate::agent::chagent::list_all(&cwd, 0, &mut errors);
-        if found.is_empty() {
-            let mut m =
-                "chagent · no migratable Claude/Codex/Cursor/Grok sessions for this workspace"
-                    .to_string();
-            if !errors.is_empty() {
-                m.push_str(&format!("\n  {}", errors.join("\n  ")));
-            }
-            m.push_str("\n  (imports are cwd-scoped — open the picker from the project folder)");
-            self.push_note(Tone::Session, m);
-            return;
-        }
-        let rows: Vec<SessionRow> = found
+        let rows = found
             .into_iter()
             .take(120)
             .map(|fs| SessionRow {
@@ -3783,14 +3777,35 @@ impl App {
                 },
             })
             .collect();
+        (rows, errors)
+    }
+
+    /// Takeover picker — same chrome as `/sessions`, but populated only
+    /// with migratable foreign sessions (Claude/Codex/Cursor/Grok) for this
+    /// workspace. Enter imports the selected one and resumes it natively.
+    pub(super) fn open_chagent_picker(&mut self) {
+        if self.busy {
+            self.push_error("wait for the current turn to finish".into());
+            return;
+        }
+        let (rows, errors) = self.foreign_session_rows();
+        if rows.is_empty() {
+            let mut m =
+                "takeover · no migratable Claude/Codex/Cursor/Grok sessions for this workspace"
+                    .to_string();
+            if !errors.is_empty() {
+                m.push_str(&format!("\n  {}", errors.join("\n  ")));
+            }
+            m.push_str("\n  (imports are cwd-scoped — open the picker from the project folder)");
+            self.push_note(Tone::Session, m);
+            return;
+        }
         self.picker = Some(SessionPicker {
             rows,
             idx: 0,
             scroll: 0,
             vis_page: 6,
             this_cwd_only: false,
-            show_foreign: true,
-            foreign_loaded: true,
             foreign_only: true,
             hit: PickerHit::default(),
             last_step_at: Instant::now()
@@ -3799,58 +3814,26 @@ impl App {
         });
     }
 
-    /// Toggle chagent's foreign sources in the picker. On first enable, discover
-    /// migratable Claude/Codex/Cursor/Grok sessions for the current workspace and
-    /// splice them in as tagged rows (bounded, one reader pass per tool).
-    fn picker_toggle_foreign(&mut self) {
-        let cwd = self.cwd.display().to_string();
+    /// Switch the open modal between its two windows — native `/sessions` and
+    /// foreign `/takeover` imports — reloading that side's rows in place. The
+    /// modal stays open even when the other side is empty; its empty state
+    /// tells you how to get back.
+    fn picker_switch_window(&mut self) {
+        let Some(p) = &self.picker else { return };
+        let to_foreign = !p.foreign_only;
+
+        let rows = if to_foreign {
+            self.foreign_session_rows().0
+        } else {
+            self.native_session_rows().unwrap_or_default()
+        };
+
         let Some(p) = &mut self.picker else { return };
-        p.show_foreign = !p.show_foreign;
+        p.rows = rows;
+        p.foreign_only = to_foreign;
         p.idx = 0;
         p.scroll = 0;
-        if !p.show_foreign || p.foreign_loaded {
-            return;
-        }
-        p.foreign_loaded = true;
-        // Discovery spawns the bundled reader once per tool — user-initiated, so
-        // a brief synchronous pause here is acceptable (same as opening a modal).
-        let mut errors = Vec::new();
-        let found = crate::agent::chagent::list_all(&cwd, 0, &mut errors);
-        let Some(p) = &mut self.picker else { return };
-        let mut added = 0usize;
-        for fs in found.into_iter().take(60) {
-            // Skip a foreign session already imported (same short id already present).
-            let mut row = SessionRow {
-                id: fs.session_id.clone(),
-                when: relative_when(fs.updated()),
-                messages: 0,
-                tokens: 0,
-                cost: 0.0,
-                cwd: fs.cwd.clone().unwrap_or_else(|| cwd.clone()),
-                preview: fs.preview(),
-                here: true,
-                source: fs.tool.clone(),
-            };
-            if row.source.is_empty() {
-                row.source = "claude".into();
-            }
-            p.rows.push(row);
-            added += 1;
-        }
         p.clamp_scroll();
-        if added == 0 {
-            let hint = if errors.is_empty() {
-                "no migratable Claude/Codex/Cursor/Grok sessions found for this workspace".to_string()
-            } else {
-                format!("no imports found · {}", errors.join(" · "))
-            };
-            self.push_note(Tone::Session, hint);
-        } else {
-            self.push_note(
-                Tone::Session,
-                format!("chagent · {added} foreign session(s) available to import (tagged)"),
-            );
-        }
     }
 
     fn close_picker(&mut self) {
@@ -3903,8 +3886,8 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('a') | KeyCode::Char(' ') => {
                 self.picker_toggle_scope();
             }
-            // Toggle chagent foreign-import category (Claude/Codex/Cursor/Grok).
-            KeyCode::Char('c') | KeyCode::Char('i') => self.picker_toggle_foreign(),
+            // Switch between the sessions window and the takeover window.
+            KeyCode::Char('c') | KeyCode::Char('i') => self.picker_switch_window(),
             KeyCode::Enter => self.picker_confirm(),
             _ => {}
         }
@@ -6979,8 +6962,6 @@ body".to_string()];
             scroll: 0,
             vis_page: page,
             this_cwd_only: true,
-            show_foreign: false,
-            foreign_loaded: false,
             foreign_only: false,
             hit: PickerHit::default(),
             last_step_at: Instant::now()

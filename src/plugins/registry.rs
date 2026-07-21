@@ -326,6 +326,8 @@ fn mirror_skills_to_nur_home(plugin_root: &Path) -> Result<(), String> {
         let _ = fs::remove_dir_all(&dest);
         copy_dir_recursive(&src, &dest)?;
     }
+    // Invalidate skill cache after mirroring
+    crate::agent::skill_cache::invalidate_cache();
     Ok(())
 }
 

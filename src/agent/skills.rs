@@ -433,72 +433,8 @@ const INTENT_RULES: &[IntentRule] = &[
         label: "gateway-cache-awareness",
         why: "protect prompt-cache hit rate behind a custom gateway/proxy",
     },
-    // ── Resume foreign agents ────────────────────────────────────────────
-    IntentRule {
-        skill_names: &["resume-claude"],
-        phrases: &[
-            "resume claude",
-            "resume from claude",
-            "continue from claude",
-            "pick up claude",
-            "claude's session",
-            "claude session",
-        ],
-        label: "resume-claude",
-        why: "resume a Claude Code session",
-    },
-    IntentRule {
-        skill_names: &["resume-grok"],
-        phrases: &[
-            "resume grok",
-            "resume from grok",
-            "continue from grok",
-            "pick up grok",
-            "grok's session",
-            "grok session",
-            "grok build session",
-        ],
-        label: "resume-grok",
-        why: "resume a Grok Build session",
-    },
-    IntentRule {
-        skill_names: &["resume-codex"],
-        phrases: &[
-            "resume codex",
-            "resume from codex",
-            "continue from codex",
-            "pick up codex",
-            "codex session",
-        ],
-        label: "resume-codex",
-        why: "resume a Codex session",
-    },
-    IntentRule {
-        skill_names: &["resume-cursor"],
-        phrases: &[
-            "resume cursor",
-            "resume from cursor",
-            "continue from cursor",
-            "pick up cursor",
-            "cursor session",
-        ],
-        label: "resume-cursor",
-        why: "resume a Cursor session",
-    },
-    IntentRule {
-        skill_names: &["resume-nur", "resume-meta"],
-        phrases: &[
-            "resume nur",
-            "resume from nur",
-            "continue from nur",
-            "resume my nur session",
-            "continue my nur session",
-            "resume meta session",
-            "continue meta session",
-        ],
-        label: "resume-nur",
-        why: "resume a prior NurCLI session",
-    },
+    // Resuming another agent's session is `/takeover` (alias `/hijack`), not a
+    // skill — the picker imports it natively, so there are no resume-* rules.
     // ── Knowledge / security routers ─────────────────────────────────────
     IntentRule {
         skill_names: &["graphify"],
@@ -678,16 +614,6 @@ const INTENT_RULES: &[IntentRule] = &[
         why: "control herdr from inside it",
     },
     IntentRule {
-        skill_names: &["resume-session"],
-        phrases: &[
-            "/resume-session",
-            "resume-session",
-            "resume this session skill",
-        ],
-        label: "resume-session",
-        why: "resume session handoff skill",
-    },
-    IntentRule {
         skill_names: &["akm-manager"],
         phrases: &[
             "/akm-manager",
@@ -759,7 +685,7 @@ pub fn normalize_intent_text(s: &str) -> String {
 /// This is the fix for short phrases matching *inside* a longer word — e.g.
 /// `excalidraw` must not fire on `excalidrawings`, and `use fable` must not
 /// fire on `use fables`.
-fn phrase_matches(haystack: &str, needle: &str) -> bool {
+pub(crate) fn phrase_matches(haystack: &str, needle: &str) -> bool {
     if needle.is_empty() {
         return false;
     }
@@ -845,6 +771,12 @@ pub fn detect_skill_activation<'a>(
                 return Some((sk, rule));
             }
         }
+    }
+
+    // Expanded triggers from comprehensive JSON index (700+ skills).
+    // This covers all installed skills via generated bigrams/trigrams from name+description.
+    if let Some(sk) = crate::agent::skill_intents::find_by_expanded_triggers(&t, skills) {
+        return Some((sk, &DISCOVERY_RULE));
     }
 
     // Accidental / free-form discovery against *installed* skills only.
@@ -1052,7 +984,7 @@ pub fn slash_activation_section(sk: &Skill) -> String {
 /// - `~/.agents/skills` (Agent Skills / graphify install --platform agents)
 /// - `<cwd>/.meta/skills` · `<cwd>/.muse/skills` · `<cwd>/.agents/skills` · `<cwd>/.nur/skills`
 /// Max directory depth when walking for nested SKILL.md (category/pack layouts).
-const SKILL_WALK_MAX_DEPTH: usize = 5;
+pub(crate) const SKILL_WALK_MAX_DEPTH: usize = 5;
 
 /// Collect every `SKILL.md` under `root` up to `max_depth` directory levels.
 /// Skips obvious junk (`.git`, `node_modules`, `target`, …).
@@ -1107,39 +1039,11 @@ pub fn find_skill_mds(root: &Path, max_depth: usize) -> Vec<PathBuf> {
 }
 
 pub fn load_skills(cwd: &Path) -> Vec<Skill> {
-    let mut out = Vec::new();
-    let mut dirs = Vec::new();
-    // Honor NUR_HOME / META_HOME / MUSE_HOME via meta_home() — not a hard-coded path.
-    dirs.push(crate::config::meta_home().join("skills"));
-    // Marketplace plugins (enabled only) — after core home skills so user overrides win.
-    dirs.extend(crate::plugins::enabled_skill_roots());
-    dirs.push(crate::config::legacy_muse_home().join("skills"));
-    if let Some(home) = dirs::home_dir() {
-        dirs.push(home.join(".agents").join("skills"));
-    }
-    dirs.push(cwd.join(".nur").join("skills"));
-    dirs.push(cwd.join(".meta").join("skills"));
-    dirs.push(cwd.join(".muse").join("skills")); // legacy workspace
-    dirs.push(cwd.join(".agents").join("skills"));
-
-    for root in dirs {
-        if !root.is_dir() {
-            continue;
-        }
-        for skill_md in find_skill_mds(&root, SKILL_WALK_MAX_DEPTH) {
-            if let Some(skill) = parse_skill(&skill_md) {
-                // dedupe by name
-                if !out.iter().any(|s: &Skill| s.name == skill.name) {
-                    out.push(skill);
-                }
-            }
-        }
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
+    // Fast path: cached global skills + fresh cwd scan (~15ms vs 263ms cold)
+    crate::agent::skill_cache::load_skills_cached(cwd)
 }
 
-fn parse_skill(path: &Path) -> Option<Skill> {
+pub(crate) fn parse_skill(path: &Path) -> Option<Skill> {
     let text = std::fs::read_to_string(path).ok()?;
     let folder_name = path
         .parent()
@@ -1259,11 +1163,10 @@ mod intent_tests {
     }
 
     #[test]
-    fn detects_tdd_and_debug_and_resume() {
+    fn detects_tdd_and_debug() {
         let skills = vec![
             fake_skill("test-driven-development"),
             fake_skill("systematic-debugging"),
-            fake_skill("resume-claude"),
             fake_skill("design-eng"),
         ];
         let (sk, rule) =
@@ -1276,10 +1179,6 @@ mod intent_tests {
                 .unwrap();
         assert_eq!(sk.name, "systematic-debugging");
 
-        let (sk, _) =
-            detect_skill_activation("pick up claude's session and finish it", &skills).unwrap();
-        assert_eq!(sk.name, "resume-claude");
-
         let (sk, _) = detect_skill_activation("polish the UI like emil", &skills).unwrap();
         assert_eq!(sk.name, "design-eng");
 
@@ -1287,6 +1186,28 @@ mod intent_tests {
         let (sk, rule) = detect_skill_activation("use toolcraft for this scaffold", &skills).unwrap();
         assert_eq!(sk.name, "toolcraft");
         assert_eq!(rule.label, "toolcraft");
+    }
+
+    /// Resuming another agent is `/takeover`, not a skill. Talking about another
+    /// tool's session must not activate anything.
+    #[test]
+    fn foreign_session_talk_activates_no_skill() {
+        let skills = vec![
+            fake_skill("test-driven-development"),
+            fake_skill("systematic-debugging"),
+        ];
+        for t in [
+            "pick up claude's session and finish it",
+            "resume from codex",
+            "continue from cursor",
+            "resume my nur session",
+            "resume grok",
+        ] {
+            assert!(
+                detect_skill_activation(t, &skills).is_none(),
+                "should NOT activate a skill on: {t}"
+            );
+        }
     }
 
     #[test]

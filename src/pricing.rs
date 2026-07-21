@@ -340,8 +340,11 @@ pub fn spawn_catalog_refresh() {
     if pricing_disabled() {
         return;
     }
+    // The disk parse has to stay on this thread: `main` reads the catalog for
+    // `maybe_apply_context_window` on the very next line, and a background load
+    // loses that race, pinning every session to the 1M default window.
+    // Only the network fetch is deferred.
     load_cached_catalog();
-    // Refresh off the main thread so TUI startup stays snappy.
     let _ = std::thread::Builder::new()
         .name("nur-pricing".into())
         .spawn(|| {
@@ -464,6 +467,31 @@ pub fn maybe_apply_context_window(cfg: &mut crate::config::Config) {
 mod tests {
     use super::*;
     use crate::usage::TokenUsage;
+
+    /// `main.rs` calls `spawn_catalog_refresh()` and then immediately
+    /// `maybe_apply_context_window()`. The cached catalog therefore has to be
+    /// readable by the time the spawn call returns — if the disk parse moves
+    /// onto the background thread, the main thread wins the race and every
+    /// session silently keeps the 1M default window.
+    #[test]
+    fn startup_resolves_context_window_before_main_reads_it() {
+        {
+            let mut g = state().lock().unwrap();
+            g.ready = false;
+        }
+        spawn_catalog_refresh();
+
+        let mut cfg = crate::config::Config::default();
+        cfg.provider = "anthropic".into();
+        cfg.model = "claude-opus-4-5".into();
+        cfg.context_window = 1_000_000;
+        maybe_apply_context_window(&mut cfg);
+
+        assert_eq!(
+            cfg.context_window, 200_000,
+            "catalog window must be applied synchronously at startup"
+        );
+    }
 
     #[test]
     fn cost_splits_cached_input() {

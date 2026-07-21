@@ -104,9 +104,8 @@ See [Permission modes](#permission-modes) below for exactly what each mode allow
 
 | Command | Purpose |
 |---------|---------|
-| `/sessions` | Open sessions browser (same as Ctrl+R); press `c` for chagent imports |
-| `/resume` | Resume a session |
-| `/chagent` · `/hijack` · `/takeover` · `/sessionresume` | chagent: import a Claude/Codex/Cursor/Grok session and resume it |
+| `/sessions` · `/resume` | Open the sessions window (same as Ctrl+R); press `c` to switch to takeover |
+| `/takeover` · `/hijack` | Open the takeover window: import a Claude/Codex/Cursor/Grok session and resume it; press `c` to switch back |
 | `/todos` | Show current todos |
 | `/clear` | Clear current screen |
 | `/new` | Start a new session |
@@ -324,13 +323,21 @@ No keyboard shortcuts — move the highlight with the wheel or `↑`/`↓`, choo
 
 ### Sessions browser
 
-Open with `Ctrl+R` or `/sessions`. Browse recent sessions with a prompt-first picker — see the first user message of each session to find the one you want.
+Open with `Ctrl+R` or `/sessions` (alias `/resume`). Browse recent sessions with a prompt-first picker — see the first user message of each session to find the one you want.
 
 - Defaults to **all** workspaces (not only the current cwd). Toggle **here** / **all** with Tab or the scope chip.
 - Scans both `~/.nur/sessions` and legacy `~/.muse/sessions`; when the same id exists twice, the **richer** copy wins.
 - Lists show message counts, tokens, and **estimated cost** so high-spend sessions are easy to spot.
 - Session saves write a sidecar **`.json.bak`** before overwrite.
-- Press **`c`** (or `i`) to fold in **chagent** imports — migratable **Claude Code · Codex · Cursor · Grok Build** sessions for this workspace appear as tagged rows; ↵ on one imports it into a native session and resumes. `/chagent` (aliases `/hijack`, `/takeover`, `/sessionresume`) opens a dedicated import-only picker with the same chrome.
+
+### Takeover window
+
+The same modal has a second window for foreign sessions. Press **`c`** (or `i`) in either one to switch; the footer always names the window you'd switch to.
+
+- `/takeover` (alias `/hijack`) opens it directly; `/sessions` → `c` gets there too.
+- Lists migratable **Claude Code · Codex · Cursor · Grok Build** sessions for this workspace. **↵** imports one into a native session and resumes it.
+- Imports are cwd-scoped, so open it from the project folder.
+- Press **`c`** again to go back to the sessions window.
 
 ### Sticky prompt
 

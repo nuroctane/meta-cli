@@ -167,9 +167,7 @@ impl App {
                 }
             }
             // Cross-agent session migration (import Claude/Codex/Cursor/Grok).
-            "/chagent" | "/migrate" | "/hijack" | "/sessionresume" | "/takeover" => {
-                self.cmd_chagent(&arg)
-            }
+            "/takeover" | "/hijack" => self.cmd_chagent(&arg),
             "/config" => self.cmd_config(),
             "/init" => {
                 self.submit_text(
@@ -641,20 +639,20 @@ impl App {
             ("↑ ↓  ·  wheel", "move selection"),
             ("Enter", "open session"),
             ("Tab  ·  Space", "toggle this workspace / all"),
-            ("c  ·  i", "toggle chagent imports (Claude/Codex/Cursor/Grok)"),
+            ("c  ·  i", "switch window: sessions ⇄ takeover"),
             ("click row", "select  ·  click again to open"),
             ("click ✕  ·  Esc", "close"),
         ] {
             s.push_str(&format!("  {k:<22}  {v}\n"));
         }
 
-        s.push_str("\nchagent · cross-agent import  (/chagent · /hijack · /takeover)\n");
+        s.push_str("\ntakeover · cross-agent import  (/takeover · /hijack)\n");
         for (k, v) in [
-            ("/chagent", "import picker (foreign sessions only)"),
-            ("/chagent ls [agent]", "list migratable sessions"),
-            ("/chagent <agent> [ref]", "import <id|latest> and resume"),
+            ("/takeover", "import picker (foreign sessions only)"),
+            ("/takeover ls [agent]", "list migratable sessions"),
+            ("/takeover <agent> [ref]", "import <id|latest> and resume"),
         ] {
-            s.push_str(&format!("  {k:<24}  {v}\n"));
+            s.push_str(&format!("  {k:<25}  {v}\n"));
         }
 
         s.push_str("\ncommands\n");
@@ -1698,14 +1696,14 @@ impl App {
         }
     }
 
-    /// chagent — cross-agent session migration.
+    /// takeover — cross-agent session migration (chagent engine).
     ///
-    /// - `/chagent`                    open the dedicated import picker (parity
-    ///                                 with `/sessions`, foreign sessions only)
-    /// - `/chagent ls [agent]`         list migratable sessions
-    /// - `/chagent <agent> [id|latest]` import that session and resume it
+    /// - `/takeover`                     open the takeover window (parity with
+    ///                                   `/sessions`, foreign sessions only)
+    /// - `/takeover ls [agent]`          list migratable sessions
+    /// - `/takeover <agent> [id|latest]` import that session and resume it
     ///
-    /// Aliases: `/migrate` · `/hijack` · `/sessionresume` · `/takeover`.
+    /// Alias: `/hijack`. Press `c` in either window to switch to the other.
     pub(super) fn cmd_chagent(&mut self, arg: &str) {
         if self.busy {
             self.push_error("wait for the current turn to finish".into());
@@ -1722,11 +1720,11 @@ impl App {
             }
             "help" | "-h" | "--help" | "?" => self.push_note(
                 Tone::Session,
-                "chagent — migrate a session from another agent into nur\n  \
-                 /chagent                 import picker (Claude · Codex · Cursor · Grok)\n  \
-                 /chagent ls [agent]      list migratable sessions\n  \
-                 /chagent <agent> [ref]   import <ref|latest> and resume it\n  \
-                 aliases: /migrate /hijack /sessionresume /takeover"
+                "takeover — migrate a session from another agent into nur\n  \
+                 /takeover                 import picker (Claude · Codex · Cursor · Grok)\n  \
+                 /takeover ls [agent]      list migratable sessions\n  \
+                 /takeover <agent> [ref]   import <ref|latest> and resume it\n  \
+                 alias: /hijack  ·  press c in the picker to switch to /sessions"
                     .into(),
             ),
             tool if crate::agent::chagent::is_foreign_tool(tool) => {

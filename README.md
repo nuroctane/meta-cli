@@ -179,8 +179,8 @@ Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](
 | **Easy updates** | `nur update` |
 | **Knowledge stack** | Graph · engrams · vector memory · MCP · skills |
 | **Plugin marketplace** | `/plugins` picker · Superpowers, Fable, Matt Pocock, Addy Osmani, Google, NVIDIA, finance/marketing packs, … → `~/.nur/plugins` |
-| **Natural-language + slash skills** | *think like fable* · *TDD this* · *site cli* · *HAR file* · *polish the UI* · *resume from Claude* — **or** `/fable-method` `/adhd` `/site-cli` `/<any-skill>` |
-| **Resume other agents** | `resume-claude` · `resume-codex` · `resume-cursor` · `resume-nur` · `resume-grok` |
+| **Natural-language + slash skills** | *think like fable* · *TDD this* · *site cli* · *HAR file* · *polish the UI* — **or** `/fable-method` `/adhd` `/site-cli` `/<any-skill>` |
+| **Take over other agents** | `/takeover` (alias `/hijack`) imports **Claude Code · Codex · Cursor · Nur · Grok Build** sessions |
 | **Secrets stay local** | Keys only in `~/.nur/auth.json` (or env) · prefer `NUR_API_KEY` |
 
 ---
@@ -195,8 +195,8 @@ Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](
 - Optional `permissions.toml` / `hooks.toml`
 - `/poor` cost-saver prompt
 - Project instructions: `NUR.md` · `AGENTS.md` · `CLAUDE.md` (also loads legacy `META.md` / `MUSE.md` if present)
-- Session resume: `-c`, `-r`, `/sessions`
-- **chagent** cross-agent migration (`/chagent` · `/hijack` · `/takeover`): import a session from **Claude Code · Codex · Cursor · Grok Build** into a native nur session and resume it — dedicated import picker, or fold imports into `/sessions` with `c`
+- Session resume: `-c`, `-r`, `/sessions` (alias `/resume`)
+- **Takeover** cross-agent migration (`/takeover` · `/hijack`): import a session from **Claude Code · Codex · Cursor · Grok Build** into a native nur session and resume it. Two windows in one modal — press **`c`** to switch between `/sessions` and `/takeover`
 - `/model` opens a live model list for the active provider (or `/model <id>` to set one directly)
 - `/plugins` marketplace picker (same UX as `/login`): install Superpowers, Vercel, Firecrawl, Chrome DevTools, **Fable**, and more into `~/.nur/plugins`
 - **Natural-language + slash skill activation**: plain phrases *or* `/skill-name` / `/skill-name <prompt>` inject the skill body (Fable, TDD, site-cli, adhd, design-eng, resume-*, Excalidraw, …). Palette lists matching skills as you type. [Docs](https://www.nuroctane.xyz/cli)
@@ -334,8 +334,8 @@ Launching from a drive root (`C:\`) auto-picks a safe workspace (git / last sess
 | `/feedback` `/tips` | Issue / interaction tips |
 | `/budget` `/poor` | Spend ceiling / lean prompt |
 | `/cd` `/pwd` `/doctor` `/status` | Workspace + health |
-| `/sessions` `/resume` | Session browser (press `c` to fold in chagent imports) |
-| `/chagent` `/hijack` `/takeover` `/sessionresume` `/migrate` | **chagent** cross-agent migration: import a Claude/Codex/Cursor/Grok session into nur and resume it. Bare command opens a dedicated import picker; `/chagent ls [agent]` lists; `/chagent <agent> [id\|latest]` imports one |
+| `/sessions` `/resume` | Session browser — press **`c`** to switch to the takeover window |
+| `/takeover` `/hijack` | Cross-agent migration: import a Claude/Codex/Cursor/Grok session into nur and resume it. Press **`c`** to switch back to sessions; `/takeover ls [agent]` lists; `/takeover <agent> [id\|latest]` imports one |
 | `/akarso` `/openseo` `/dialkit` | Deep-integrated tools: **akarso** (native tool — post/schedule across 14 social platforms), **OpenSEO** (SEO research/audits via MCP), **dialkit** (live-tune interface parameters) |
 | `/failover` | Cross-provider failover + privacy tiers (provider-picker; Space adds a fallback, Alt+P sets its privacy tier) |
 | `/fusion` | Multi-model debate → one synthesized answer (`/fusion panel <ids>`, then `/fusion <question>`) |

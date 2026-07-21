@@ -931,17 +931,10 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     let spin = theme::SPINNER[phase % theme::SPINNER.len()];
 
     // Snapshot list data so we can mutate picker hit/scroll freely.
-    let (total, this_cwd_only, show_foreign, foreign_only, mut sel, mut start) = {
+    let (total, this_cwd_only, foreign_only, mut sel, mut start) = {
         let p = app.picker.as_ref().unwrap();
         let total = p.visible().len();
-        (
-            total,
-            p.this_cwd_only,
-            p.show_foreign,
-            p.foreign_only,
-            p.idx,
-            p.scroll,
-        )
+        (total, p.this_cwd_only, p.foreign_only, p.idx, p.scroll)
     };
 
     let w = 82.min(area.width.saturating_sub(4)).max(54);
@@ -959,17 +952,17 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     let scope_label = if this_cwd_only { "here" } else { "all" };
+    // Two windows, one modal: `c` switches between them, so each footer names
+    // the *other* one.
     let (title, footer) = if foreign_only {
-        // Dedicated chagent import picker — same chrome, import-focused labels.
         (
-            format!(" {spin}  chagent · import  ·  {total} "),
-            " ↑↓/wheel  ·  ↵ import & resume  ·  esc/✕ ",
+            format!(" {spin}  takeover · import  ·  {total} "),
+            " ↑↓/wheel  ·  ↵ import & resume  ·  c sessions  ·  esc/✕ ",
         )
     } else {
-        let import_tag = if show_foreign { "  ·  +imports" } else { "" };
         (
-            format!(" {spin}  sessions  ·  {total}{import_tag} "),
-            " ↑↓/wheel  ·  ↵ open  ·  tab scope  ·  c import  ·  esc/✕ ",
+            format!(" {spin}  sessions  ·  {total} "),
+            " ↑↓/wheel  ·  ↵ open  ·  tab scope  ·  c takeover  ·  esc/✕ ",
         )
     };
     let right = if foreign_only { None } else { Some(scope_label) };
@@ -1006,11 +999,18 @@ fn draw_session_picker(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     if total == 0 {
+        let (empty, hint) = if foreign_only {
+            (
+                "  no Claude/Codex/Cursor/Grok sessions here  ·  ",
+                "c sessions",
+            )
+        } else {
+            ("  nothing here  ·  ", "tab scope · c takeover")
+        };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("  nothing here  ·  ".to_string(), theme::style_faint()),
-                Span::styled("tab scope · c import".to_string(), theme::style_tool()),
-                Span::styled("  widen the search".to_string(), theme::style_faint()),
+                Span::styled(empty.to_string(), theme::style_faint()),
+                Span::styled(hint.to_string(), theme::style_tool()),
             ]))
             .style(Style::default().bg(theme::SURFACE_2)),
             inner,
