@@ -687,7 +687,7 @@ fn run_doctor() -> Result<()> {
                 "ffmpeg  not on PATH (optional — extract_frames / design-from-video)",
             );
         } else if name == "bun" {
-            theme::print_info("bun     not on PATH (optional — omp coding-agent backend)");
+            theme::print_info("bun     not on PATH (optional - omp coding-agent backend)");
         } else {
             theme::print_info(&format!("{name:<7} not on PATH"));
         }

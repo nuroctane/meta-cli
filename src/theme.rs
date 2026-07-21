@@ -10,15 +10,12 @@ use std::time::Duration;
 // ── Palette ────────────────────────────────────────────────────────────────
 /// Primary interactive gold (#E8B923).
 pub const NUR_GOLD: Color = Color::Rgb(232, 185, 35);
-/// Bright gold focus.
-pub const NUR_GOLD_BRIGHT: Color = Color::Rgb(255, 214, 90);
 /// Deep mustard / pressed gold.
 pub const NUR_GOLD_DEEP: Color = Color::Rgb(184, 134, 11);
 /// Soft champagne accent for secondary labels.
 pub const NUR_GOLD_SKY: Color = Color::Rgb(255, 224, 140);
-/// Legacy name used across the TUI — now gold (not Meta blue).
+/// Legacy name used across the TUI - now gold (not Meta blue).
 pub const META_BLUE: Color = NUR_GOLD;
-pub const META_BLUE_BRIGHT: Color = NUR_GOLD_BRIGHT;
 #[allow(dead_code)]
 pub const META_BLUE_DEEP: Color = NUR_GOLD_DEEP;
 pub const META_BLUE_SKY: Color = NUR_GOLD_SKY;
@@ -38,8 +35,6 @@ pub const FAINT: Color = Color::Rgb(96, 90, 78);
 pub const BORDER: Color = Color::Rgb(48, 44, 36);
 /// Code / block background.
 pub const CODE_BG: Color = Color::Rgb(16, 18, 14);
-/// Inline code foreground (legacy warm parchment — prefer MD_CODE in transcript).
-pub const CODE_FG: Color = Color::Rgb(232, 210, 150);
 /// Cool mint code in assistant markdown (stands out from body + gold chrome).
 pub const MD_CODE: Color = Color::Rgb(160, 220, 195);
 /// Markdown structure hues — keep these *off* the gold spine for legibility.
@@ -506,10 +501,6 @@ pub fn style_cursor_on() -> Style {
         .fg(BG)
         .bg(NUR_GOLD)
         .add_modifier(Modifier::BOLD)
-}
-
-pub fn style_cursor_off() -> Style {
-    Style::default().fg(NUR_GOLD)
 }
 
 // ── stdout helpers (headless / subcommands) ────────────────────────────────

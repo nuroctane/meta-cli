@@ -68,7 +68,7 @@ pub fn is_read_only(name: &str, args: &Value) -> bool {
         "ruflo" => crate::tools::ruflo::is_read_only_action(&args.to_string()),
         "akarso" => crate::tools::akarso::is_read_only_action(&args.to_string()),
         "executor" => crate::tools::executor_is_read_only(&args.to_string()),
-        "omp" => crate::tools::omp_is_read_only(&args.to_string()),
+        "omp" => crate::tools::omp::is_read_only_value(args),
         "browser" => crate::tools::browser_is_read_only(&args.to_string()),
         "agent" | "write_file" | "edit_file" | "multi_edit" | "apply_patch" | "bash"
         | "extract_frames" => false,

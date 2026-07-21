@@ -19,7 +19,6 @@ pub mod media;
 mod memory_tool;
 mod multi_edit;
 pub mod omp;
-pub use omp::is_read_only_action as omp_is_read_only;
 pub mod plur;
 mod read_file;
 pub mod ruflo;

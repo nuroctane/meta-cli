@@ -1043,7 +1043,7 @@ fn ensure_prereqs_best_effort() {
             if which("bun") || which("bun.exe") {
                 theme::print_ok("bun installed");
             } else {
-                theme::print_info("bun not on PATH yet — needed for omp");
+                theme::print_info("bun not on PATH yet - needed for omp");
             }
         } else {
             theme::print_ok("bun already installed");

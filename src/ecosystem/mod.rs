@@ -803,6 +803,29 @@ pub fn run_capture(
     cwd: Option<&Path>,
     timeout_ms: u64,
 ) -> std::result::Result<String, String> {
+    run_capture_inner(bin, args, cwd, timeout_ms, None)
+}
+
+/// Capture a child process while honoring the agent turn's cancellation token.
+/// Cancellation kills the full process tree so delegated agents cannot keep
+/// editing or spending after the user presses Esc.
+pub fn run_capture_cancelled(
+    bin: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout_ms: u64,
+    cancel: &tokio_util::sync::CancellationToken,
+) -> std::result::Result<String, String> {
+    run_capture_inner(bin, args, cwd, timeout_ms, Some(cancel))
+}
+
+fn run_capture_inner(
+    bin: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout_ms: u64,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> std::result::Result<String, String> {
     // Re-resolve bare names to absolute paths (Windows .cmd safety).
     let resolved = if bin.contains('\\')
         || bin.contains('/')
@@ -868,24 +891,26 @@ pub fn run_capture(
 
     let deadline =
         std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(1_000));
+    let mut stopped_early = None;
     let status = loop {
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {
+                if cancel.is_some_and(|token| token.is_cancelled()) {
+                    stopped_early = Some(format!("{resolved} cancelled (process tree killed)"));
+                    kill_process_tree(&mut child);
+                    break child
+                        .wait()
+                        .map_err(|error| format!("wait after cancel failed: {error}"))?;
+                }
                 if std::time::Instant::now() >= deadline {
-                    // Kill child and whole tree on timeout
-                    #[cfg(windows)]
-                    {
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/PID", &child.id().to_string(), "/T", "/F"])
-                            .output();
-                    }
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!(
-                        "{resolved} timed out after {}ms (killed)",
-                        timeout_ms
+                    stopped_early = Some(format!(
+                        "{resolved} timed out after {timeout_ms}ms (process tree killed)"
                     ));
+                    kill_process_tree(&mut child);
+                    break child
+                        .wait()
+                        .map_err(|error| format!("wait after timeout failed: {error}"))?;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(30));
             }
@@ -895,6 +920,9 @@ pub fn run_capture(
 
     let stdout_bytes = out_handle.join().unwrap_or_default();
     let stderr_bytes = err_handle.join().unwrap_or_default();
+    if let Some(reason) = stopped_early {
+        return Err(reason);
+    }
     let mut out = String::from_utf8_lossy(&stdout_bytes).trim().to_string();
     let err = String::from_utf8_lossy(&stderr_bytes).trim().to_string();
     if !err.is_empty() {
@@ -917,6 +945,18 @@ pub fn run_capture(
     } else {
         out
     })
+}
+
+fn kill_process_tree(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x0800_0000)
+            .output();
+    }
+    let _ = child.kill();
 }
 
 pub(crate) fn run_quiet(bin: &str, args: &[&str], cwd: Option<&Path>, timeout_ms: u64) -> bool {
@@ -971,4 +1011,29 @@ pub fn launch_snapshot() -> String {
 #[allow(dead_code)]
 fn sleep_ms(ms: u64) {
     std::thread::sleep(Duration::from_millis(ms));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cancelled_capture_kills_the_child_promptly() {
+        let cancel = tokio_util::sync::CancellationToken::new();
+        cancel.cancel();
+        let started = std::time::Instant::now();
+        #[cfg(windows)]
+        let result = run_capture_cancelled(
+            "powershell",
+            &["-NoProfile", "-Command", "Start-Sleep -Seconds 30"],
+            None,
+            60_000,
+            &cancel,
+        );
+        #[cfg(not(windows))]
+        let result = run_capture_cancelled("sh", &["-c", "sleep 30"], None, 60_000, &cancel);
+
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 }

@@ -4,8 +4,8 @@
 
 ### Extremely efficient token spend
 
-**Cut costs for every provider by up to ~85%.**  
-The harness is built to burn fewer tokens. Less waste, more work per dollar, across OpenAI, Anthropic, Grok, Gemini, Meta Model API, and the rest of the catalog.
+**Use fewer paid tokens by default.**
+The harness trims old tool context, supports prompt caching and local models, and routes focused Oh My Pi delegation through its economical `pi/smol` role. Delegated OMP tokens and cost are included in Nur's session budgets and `/usage` totals.
 
 </div>
 
@@ -188,7 +188,7 @@ Docs: **[nuroctane.xyz/cli](https://www.nuroctane.xyz/cli)** · [docs/setup.md](
 ## Feature map
 
 ### Agent harness
-- **Multi-provider** via `/login` (68); Responses or Chat Completions adapter
+- **Multi-provider** via `/login` (61); Responses or Chat Completions adapter
 - Manual / plan / auto · Shift+Tab mid-turn
 - Tool loop, approvals, Esc cancel, subagents, todos, plan mode
 - Session budgets (`/budget`), tool-result spill, smarter auto-compact

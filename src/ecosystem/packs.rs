@@ -188,7 +188,7 @@ pub fn ensure_graphjin() -> ComponentStatus {
     c
 }
 
-/// Oh My Pi (omp.sh) — the coding-agent *backend* the `omp` tool delegates to
+/// Oh My Pi (omp.sh) - the coding-agent backend the `omp` tool delegates to.
 /// (headless `omp -p` runs; we deliberately skip its IDE/ACP surface).
 /// Ships on npm as @oh-my-pi/pi-coding-agent but runs on Bun, so install via
 /// bun when present; otherwise report how to get it without failing ensure.
@@ -200,9 +200,17 @@ pub fn ensure_omp() -> ComponentStatus {
 
     if find_bin("omp").is_none() {
         if let Some(bun) = find_bin("bun") {
+            let bun_version = super::cmd_version_pub(&bun, &["--version"]);
+            if !bun_version.as_deref().is_some_and(bun_meets_omp_floor) {
+                c.detail = format!(
+                    "needs Bun >= 1.3.14; found {}",
+                    bun_version.as_deref().unwrap_or("an unreadable version")
+                );
+                return c;
+            }
             match run_capture(
                 &bun,
-                &["install", "-g", "@oh-my-pi/pi-coding-agent"],
+                &["install", "-g", "@oh-my-pi/pi-coding-agent@latest"],
                 None,
                 300_000,
             ) {
@@ -215,20 +223,57 @@ pub fn ensure_omp() -> ComponentStatus {
                 }
             }
         } else {
-            c.detail = "needs Bun (bun.sh) — or: irm https://omp.sh/install.ps1 | iex".into();
+            c.detail =
+                "needs Bun >= 1.3.14 (bun.sh), or run: irm https://omp.sh/install.ps1 | iex".into();
             return c;
         }
     }
 
     if let Some(bin) = find_bin("omp") {
-        c.available = true;
         c.path = Some(bin.clone());
         c.version = super::cmd_version_pub(&bin, &["--version"]);
-        c.detail = "coding-agent backend ready (omp.sh · `omp` tool)".into();
+        if c.version.as_deref().is_some_and(omp_meets_feature_floor) {
+            c.available = true;
+            c.detail = "coding-agent backend ready (economy routing and metered delegation)".into();
+        } else if let Some(version) = c.version.as_deref() {
+            c.detail = format!(
+                "omp {version} is too old; update to >= 16.3.6 for metered economy delegation"
+            );
+        } else {
+            c.detail = "omp executable found but `omp --version` failed".into();
+        }
     } else if c.detail.is_empty() {
-        c.detail = "not found after install — try: bun i -g @oh-my-pi/pi-coding-agent".into();
+        c.detail =
+            "not found after install - try: bun i -g @oh-my-pi/pi-coding-agent@latest".into();
     }
     c
+}
+
+fn bun_meets_omp_floor(version: &str) -> bool {
+    semver_triplet(version).is_some_and(|version| version >= (1, 3, 14))
+}
+
+fn omp_meets_feature_floor(version: &str) -> bool {
+    semver_triplet(version).is_some_and(|version| version >= (16, 3, 6))
+}
+
+fn semver_triplet(version: &str) -> Option<(u64, u64, u64)> {
+    let numeric = version
+        .trim()
+        .trim_start_matches("omp/")
+        .trim_start_matches('v');
+    let parsed = numeric
+        .split('.')
+        .take(3)
+        .map(|part| {
+            part.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse::<u64>()
+                .ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    (parsed.len() == 3).then(|| (parsed[0], parsed[1], parsed[2]))
 }
 
 /// agent-browser-cli — real-Chrome perception & control bridge for the
@@ -675,3 +720,23 @@ akm list
 akm install <package>
 ```
 "#;
+
+#[cfg(test)]
+mod tests {
+    use super::{bun_meets_omp_floor, omp_meets_feature_floor};
+
+    #[test]
+    fn omp_bun_floor_is_enforced() {
+        assert!(!bun_meets_omp_floor("1.3.13"));
+        assert!(bun_meets_omp_floor("1.3.14"));
+        assert!(bun_meets_omp_floor("2.0.0"));
+        assert!(!bun_meets_omp_floor("unknown"));
+    }
+
+    #[test]
+    fn omp_feature_floor_is_enforced() {
+        assert!(!omp_meets_feature_floor("omp/16.3.5"));
+        assert!(omp_meets_feature_floor("omp/16.3.6"));
+        assert!(omp_meets_feature_floor("omp/17.0.6"));
+    }
+}

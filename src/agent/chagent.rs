@@ -61,11 +61,7 @@ pub fn is_foreign_tool(tool: &str) -> bool {
 pub struct ForeignSession {
     #[serde(default)]
     pub tool: String,
-    #[serde(default)]
-    pub source: Option<String>,
     pub session_id: String,
-    #[serde(default)]
-    pub path: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
@@ -122,8 +118,6 @@ struct Turn {
 
 #[derive(Debug, Deserialize)]
 struct ShowOut {
-    #[serde(default)]
-    source: Option<String>,
     #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
@@ -417,9 +411,7 @@ mod tests {
     fn foreign_session_preview_and_short_id() {
         let with_title = ForeignSession {
             tool: "claude".into(),
-            source: None,
             session_id: "abcdefgh-1234-5678-9012-abcdefabcdef".into(),
-            path: None,
             title: Some("  Fix the login hang  ".into()),
             cwd: None,
             updated_at: None,

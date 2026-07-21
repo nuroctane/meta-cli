@@ -14,8 +14,8 @@ All native tools available to the NurCLI agent.
 | **git** | `git_status` `git_diff` | cyan |
 | **browser** | `browser` | teal |
 | **knowledge** | `graphify` `graphjin` `plur` `ruflo` `akarso` `executor` `skill` `memory` | indigo / orange |
-| **delegate** | `omp` | — |
-| **agent** | `todo_write` `submit_plan` `agent` | — |
+| **delegate** | `omp` | - |
+| **agent** | `todo_write` `submit_plan` `agent` | - |
 
 All of the above are **first-class** in the tool schema every turn (nothing is hidden behind a “search tools” gate). Capability flags (read-only / concurrency-safe / destructive) drive parallel batching and approvals.
 
@@ -190,11 +190,23 @@ can self-diagnose a disconnected bridge.
 ### `omp`
 
 Delegate a focused coding task to the [Oh My Pi](https://omp.sh) agent backend
-(headless one-shot `omp -p` run in the workspace — the IDE/ACP surface is not
-used). Strong at LSP-backed refactors, debugger-driven diagnosis (DAP), AST
-rewrites, and web research. `run` is write-class: it needs approval in manual
-mode and is blocked in plan mode; `status`/`version` are free. Provisioned by
-`nur ecosystem ensure` when Bun is installed.
+(headless one-shot `omp -p` run in the workspace; the IDE/ACP surface is not
+used). Strong at LSP-backed refactors, debugger-driven diagnosis (DAP), and AST
+rewrites.
+
+Focused delegation defaults to `cost_mode=economy`, which selects OMP's
+`pi/smol` role, low thinking, and a reduced coding tool surface. Use
+`cost_mode=balanced` or an explicit `model` only when the task needs more
+capability. Runs use bounded time, ephemeral sessions, and compact result
+contracts. OMP's JSON events supply the concrete provider, model, token counts,
+and cost, which Nur folds into `/usage`, session status, and `/budget` totals.
+
+`run` is write-class: it needs approval in manual mode and is blocked in plan
+mode. Once Nur approves the delegation, the headless OMP child receives an
+explicit approval policy. Esc kills the whole OMP process tree so it cannot keep
+editing or spending after cancellation. `status` and `version` remain free.
+Provisioning requires a working OMP binary; Bun installs require version 1.3.14
+or newer.
 
 ### `skill`
 
