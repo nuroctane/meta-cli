@@ -274,6 +274,15 @@ fn fetch_once(
                     .header("Copilot-Integration-Id", "vscode-chat")
                     .header("User-Agent", "GitHubCopilotChat/0.26.7");
             }
+            "poolside" => {
+                // Poolside documents `application/problem+json` for errors on the
+                // Platform and self-hosted deployments; asking for it means a
+                // failure comes back as a readable RFC 7807 body instead of a
+                // bare status line.
+                req = req
+                    .bearer_auth(api_key)
+                    .header("Accept", "application/json, application/problem+json");
+            }
             "openai" if oauth.is_some() => {
                 req = req.bearer_auth(api_key);
                 if let Some(account_id) = oauth.and_then(|context| context.account_id.as_deref()) {

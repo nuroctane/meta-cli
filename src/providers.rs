@@ -52,6 +52,8 @@ pub const OPENAI_OAUTH_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const XAI_OAUTH_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 /// Kimi Code's managed inference API for both subscription OAuth and Code API keys.
 pub const KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+/// Poolside Platform inference. Self-hosted deployments use `https://<domain>/openai/v1`.
+pub const POOLSIDE_BASE_URL: &str = "https://inference.poolside.ai/v1";
 
 /// Floor version xAI enforces on `cli-chat-proxy` (HTTP 426 if missing → "none").
 #[allow(dead_code)] // documented floor; asserted in tests
@@ -121,6 +123,10 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "writer", name: "Writer (Palmyra)", base_url: "https://api.writer.com/v1", default_model: "palmyra-x5", env_key: "WRITER_API_KEY", style: CC, note: "Palmyra · enterprise", key_optional: false, browser_auth: false },
     Provider { id: "upstage", name: "Upstage (Solar)", base_url: "https://api.upstage.ai/v1", default_model: "solar-pro2", env_key: "UPSTAGE_API_KEY", style: CC, note: "Solar", key_optional: false, browser_auth: false },
     Provider { id: "thinkingmachines", name: "Thinking Machines", base_url: "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1", default_model: "thinkingmachines/Inkling", env_key: "TINKER_API_KEY", style: CC, note: "Tinker · Inkling + open models · /model = live list for your key", key_optional: false, browser_auth: false },
+    // Poolside's own models (Laguna M.1 / XS 2.1), OpenAI-compatible. Self-hosted
+    // enterprise deployments serve the same API under `https://<domain>/openai/v1`
+    // — point `base_url` there in `/login`. Free developer keys: platform.poolside.ai.
+    Provider { id: "poolside", name: "Poolside", base_url: POOLSIDE_BASE_URL, default_model: "poolside/laguna-m.1", env_key: "POOLSIDE_API_KEY", style: CC, note: "Laguna · agentic coding · /model = live list", key_optional: false, browser_auth: false },
 
     // ── cloud / subscription SSO ─────────────────────────────────────────
     Provider { id: "huggingface", name: "Hugging Face", base_url: "https://router.huggingface.co/v1", default_model: "meta-llama/Llama-3.3-70B-Instruct", env_key: "HF_TOKEN", style: CC, note: "HF · key or browser", key_optional: false, browser_auth: true },
@@ -171,7 +177,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider { id: "featherless", name: "Featherless", base_url: "https://api.featherless.ai/v1", default_model: "meta-llama/Meta-Llama-3.1-70B-Instruct", env_key: "FEATHERLESS_API_KEY", style: CC, note: "any HF model", key_optional: false, browser_auth: false },
     Provider { id: "targon", name: "Targon", base_url: "https://api.targon.com/v1", default_model: "deepseek-ai/DeepSeek-V3", env_key: "TARGON_API_KEY", style: CC, note: "Bittensor inference", key_optional: false, browser_auth: false },
     Provider { id: "nano-gpt", name: "NanoGPT", base_url: "https://nano-gpt.com/api/v1", default_model: "gpt-5.5", env_key: "NANOGPT_API_KEY", style: CC, note: "pay-per-prompt", key_optional: false, browser_auth: false },
-    Provider { id: "opencode", name: "OpenCode Zen", base_url: "https://opencode.ai/zen/v1", default_model: "claude-sonnet-4", env_key: "OPENCODE_API_KEY", style: CC, note: "coding-model gateway", key_optional: false, browser_auth: false },
+    Provider { id: "opencode", name: "OpenCode", base_url: "https://opencode.ai/zen/v1", default_model: "claude-sonnet-4", env_key: "OPENCODE_API_KEY", style: CC, note: "coding-model gateway", key_optional: false, browser_auth: false },
     Provider { id: "github-models", name: "GitHub Models", base_url: "https://models.github.ai/inference", default_model: "openai/gpt-4o", env_key: "GITHUB_TOKEN", style: CC, note: "gh CLI or PAT · free tier", key_optional: false, browser_auth: true },
     Provider { id: "github-copilot", name: "GitHub Copilot", base_url: "https://api.githubcopilot.com", default_model: "gpt-4.1", env_key: "GITHUB_TOKEN", style: CC, note: "Copilot subscription · gh auth", key_optional: false, browser_auth: true },
     Provider { id: "helicone", name: "Helicone AI Gateway", base_url: "https://ai-gateway.helicone.ai/v1", default_model: "openai/gpt-5.5", env_key: "HELICONE_API_KEY", style: CC, note: "gateway + observability", key_optional: false, browser_auth: false },
@@ -349,6 +355,47 @@ mod tests {
         assert_eq!(effective_privacy(&ov, "openai"), Privacy::Standard);
         // No override → built-in still applies.
         assert_eq!(effective_privacy(&ov, "ollama"), Privacy::Local);
+    }
+
+    /// Poolside Platform: OpenAI-compatible Chat Completions, Bearer key.
+    #[test]
+    fn poolside_speaks_chat_completions_with_a_platform_key() {
+        let p = by_id("poolside").expect("poolside is in the catalog");
+        assert_eq!(p.name, "Poolside");
+        assert_eq!(p.base_url, POOLSIDE_BASE_URL);
+        assert_eq!(p.base_url, "https://inference.poolside.ai/v1");
+        assert_eq!(p.env_key, "POOLSIDE_API_KEY");
+        assert_eq!(p.default_model, "poolside/laguna-m.1");
+        assert_eq!(p.style, ApiStyle::ChatCompletions);
+        // A key is required, and there is no OAuth flow to drive — the Platform
+        // "browser sign-in" only issues a key for you to paste.
+        assert!(!p.key_optional);
+        assert!(!p.browser_auth);
+        assert!(
+            !oauth_browser_provider_ids().contains(&"poolside"),
+            "poolside must not claim a browser sign-in flow"
+        );
+    }
+
+    /// No public no-train / retention commitment is documented, so Poolside
+    /// takes the conservative default rather than an unearned ZDR badge.
+    #[test]
+    fn poolside_defaults_to_the_conservative_privacy_tier() {
+        assert_eq!(builtin_privacy("poolside"), Privacy::Standard);
+        // …and a user who knows their deployment can still say otherwise.
+        let mut ov = std::collections::HashMap::new();
+        ov.insert("poolside".to_string(), "zdr".to_string());
+        assert_eq!(effective_privacy(&ov, "poolside"), Privacy::Zdr);
+    }
+
+    #[test]
+    fn opencode_is_named_without_the_zen_suffix() {
+        let p = by_id("opencode").expect("opencode");
+        assert_eq!(p.name, "OpenCode");
+        // Only the display name changed — routing must be untouched.
+        assert_eq!(p.base_url, "https://opencode.ai/zen/v1");
+        assert_eq!(p.env_key, "OPENCODE_API_KEY");
+        assert_eq!(p.default_model, "claude-sonnet-4");
     }
 
     #[test]

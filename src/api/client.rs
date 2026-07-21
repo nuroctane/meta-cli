@@ -1096,7 +1096,31 @@ fn parse_error_message(body: &str) -> Option<String> {
                     .and_then(|m| m.as_str())
                     .map(|s| s.to_string())
             })
+            // `{"error": "…"}` with a bare string rather than an object —
+            // Poolside answers a rejected key this way. Without this the whole
+            // JSON blob was printed as the message.
+            .or_else(|| {
+                v.get("error")
+                    .and_then(|e| e.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+            })
         {
+            return Some(msg);
+        }
+    }
+    // RFC 7807 `application/problem+json` — `{type,title,status,detail}` with no
+    // `error` or `message` key. Poolside serves this for Platform and
+    // self-hosted deployments. Checked *after* the shapes above so no provider
+    // that already parses keeps its message: this branch only ever replaces a
+    // raw body dump.
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        let field = |k: &str| v.get(k).and_then(|x| x.as_str()).filter(|s| !s.is_empty());
+        if let Some(msg) = match (field("title"), field("detail")) {
+            (Some(title), Some(detail)) => Some(format!("{title}: {detail}")),
+            (Some(one), None) | (None, Some(one)) => Some(one.to_string()),
+            (None, None) => None,
+        } {
             return Some(msg);
         }
     }
@@ -1141,6 +1165,69 @@ fn uuid_simple() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape Poolside's inference endpoint actually returns for a rejected
+    /// key: `error` is a bare string, not the usual `{message: …}` object.
+    #[test]
+    fn string_valued_error_fields_are_unwrapped() {
+        assert_eq!(
+            parse_error_message(r#"{"error":"please check the api-key you provided"}"#).as_deref(),
+            Some("please check the api-key you provided")
+        );
+        // The object form still takes precedence where both could apply.
+        assert_eq!(
+            parse_error_message(r#"{"error":{"message":"structured"}}"#).as_deref(),
+            Some("structured")
+        );
+        // An empty string is not a message.
+        assert_eq!(parse_error_message(r#"{"error":"  "}"#), None);
+    }
+
+    /// Poolside documents RFC 7807 `problem+json` for the Platform and
+    /// self-hosted deployments — neither an `error` object nor a `message` key,
+    /// so before this it surfaced as a raw JSON blob in the error line.
+    #[test]
+    fn problem_json_errors_are_readable() {
+        assert_eq!(
+            parse_error_message(
+                r#"{"type":"about:blank","title":"Forbidden","status":403,"detail":"API key is not valid"}"#
+            )
+            .as_deref(),
+            Some("Forbidden: API key is not valid")
+        );
+        // Either field alone is enough.
+        assert_eq!(
+            parse_error_message(r#"{"title":"Too Many Requests","status":429}"#).as_deref(),
+            Some("Too Many Requests")
+        );
+        assert_eq!(
+            parse_error_message(r#"{"detail":"model not found","status":404}"#).as_deref(),
+            Some("model not found")
+        );
+        // Empty strings are not a message.
+        assert_eq!(parse_error_message(r#"{"title":"","detail":""}"#), None);
+    }
+
+    /// The problem+json branch is a fallback: every shape that already parsed
+    /// must keep parsing exactly as before, even when `title`/`detail` are also
+    /// present.
+    #[test]
+    fn existing_error_shapes_still_win_over_the_problem_json_fallback() {
+        assert_eq!(
+            parse_error_message(
+                r#"{"error":{"message":"rate limit"},"title":"Too Many Requests","detail":"slow down"}"#
+            )
+            .as_deref(),
+            Some("rate limit")
+        );
+        assert_eq!(
+            parse_error_message(r#"{"message":"bad request","title":"Bad Request"}"#).as_deref(),
+            Some("bad request")
+        );
+        // Unparseable bodies are still unparseable (caller falls back to raw).
+        assert_eq!(parse_error_message("<html>502</html>"), None);
+        assert_eq!(parse_error_message(r#"{"status":500}"#), None);
+    }
 
     #[test]
     fn sse_body_detection_and_completed_parse() {

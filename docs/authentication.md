@@ -24,7 +24,8 @@ The active provider, endpoint, and default model are stored in
 | **AWS Bedrock** | gateway / bearer | `aws sso login` |
 | **GitHub Models** | GitHub PAT (`models:read`) | `gh auth login` browser SSO |
 | Gemini, Groq, … | Vendor dashboard | - |
-| OpenCode Zen, Vercel AI Gateway, GitHub Models, Helicone, … | Gateway key | - |
+| **Poolside** | `POOLSIDE_API_KEY` | Free developer key at [platform.poolside.ai](https://platform.poolside.ai/) → API Keys |
+| OpenCode, Vercel AI Gateway, GitHub Models, Helicone, … | Gateway key | - |
 | Baseten, Friendli, Chutes, Venice, Writer, Upstage, … | Vendor dashboard | - |
 | Ollama, LM Studio, … | Often none (local) | - |
 
@@ -171,10 +172,10 @@ The catalog lives in code (`src/providers.rs`). Categories include:
 
 | Category | Examples |
 |----------|----------|
-| Frontier | OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Mistral, Cohere, Meta Model API, Inception (Mercury), Writer, Upstage, … |
+| Frontier | OpenAI, Anthropic, Google Gemini, xAI Grok, DeepSeek, Mistral, Cohere, Meta Model API, Inception (Mercury), Writer, Upstage, Poolside (Laguna), … |
 | Inference clouds | Groq, Cerebras, Together, Fireworks, DeepInfra, Perplexity, NVIDIA NIM, Baseten, Friendli, Chutes, Venice, … |
 | Chinese labs | Kimi Code (kimi.com), Moonshot Open Platform, Zhipu GLM, Qwen (DashScope), MiniMax, … |
-| Aggregators / routers | OpenRouter, OmniRoute, Requesty, Vercel / Cloudflare AI gateways, OpenCode Zen, GitHub Models, Helicone, AI/ML API, … |
+| Aggregators / routers | OpenRouter, OmniRoute, Requesty, Vercel / Cloudflare AI gateways, OpenCode, GitHub Models, Helicone, AI/ML API, … |
 | Local | Ollama, LM Studio, llama.cpp, vLLM (key often optional) |
 
 Each entry declares:
@@ -190,6 +191,30 @@ NurCLI’s agent always speaks an internal Responses-shaped protocol. Adapters
 translate for Chat Completions (`src/api/chat.rs`) and Anthropic Messages
 (`src/api/anthropic.rs`), including streamed tool calls. Anthropic console API keys
 use `x-api-key`.
+
+### Poolside
+
+Poolside serves its own **Laguna** models (M.1 and XS 2.1, both 256K context)
+over an OpenAI-compatible Chat Completions API — streaming, tool calling, and
+structured output all work through the standard adapter.
+
+| | |
+|---|---|
+| Base URL | `https://inference.poolside.ai/v1` |
+| Default model | `poolside/laguna-m.1` — `/model` lists what your key can reach |
+| Key | `POOLSIDE_API_KEY`, or `/login` → **Poolside**. Free developer keys at [platform.poolside.ai](https://platform.poolside.ai/) → API Keys |
+| Auth | `Authorization: Bearer <key>` |
+
+**Self-hosted deployments** serve the same API under
+`https://<your-domain>/openai/v1` — pick Poolside in `/login` and set that as
+the base URL. Laguna is also reachable through OpenRouter
+(`poolside/laguna-m.1`) if you would rather bill there.
+
+Privacy tier is **Standard**: Poolside publishes no ZDR or no-training
+commitment for API traffic, and nur does not award a tier that is not
+documented. If your deployment contract says otherwise, override it — see
+[Provider privacy](security.md#provider-privacy--cross-provider-failover) or
+`/failover`.
 
 ---
 
