@@ -51,7 +51,7 @@ nur                 # open the TUI
 nur doctor          # health check
 ```
 
-Or run `nur` and use **`/login`** in the TUI: pick any of **60 providers**
+Or run `nur` and use **`/login`** in the TUI: pick any of **61 providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, Requesty, local Ollama/LM Studio, Meta Model API, and so on).
 For **OpenAI, Anthropic, xAI, Kimi Code, Google Gemini, Azure OpenAI, GitHub Models, and GitHub Copilot** you can **sign in with a browser or an official CLI session** (or import an existing Codex / Claude Code / Grok / Kimi CLI session) instead of pasting an API key. OAuth sessions refresh before use, retry once after an authentication rejection, and `/model` detects the models available to the active credential. No credential on launch and login opens automatically.
 

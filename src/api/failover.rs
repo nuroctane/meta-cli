@@ -189,7 +189,8 @@ pub fn plan_targets(
 /// 1. a browser OAuth session explicitly saved via `/failover` or `/login`,
 /// 2. the provider's own catalog env var (e.g. `OPENAI_API_KEY`),
 /// 3. an API key saved via `/failover` (`auth::load_provider_key`),
-/// 4. an empty string for local servers that don't need one.
+/// 4. t3 vendor CLI session (Claude Code, Codex, agy, gcloud, etc.) when no key on disk,
+/// 5. an empty string for local servers that don't need one.
 /// `None` = no credentials, skip this provider.
 pub fn resolve_target_key(p: &Provider) -> Option<String> {
     if let Some(k) = crate::auth::load_provider_oauth_token(p.id) {
@@ -208,6 +209,13 @@ pub fn resolve_target_key(p: &Provider) -> Option<String> {
         let k = k.trim().to_string();
         if !k.is_empty() {
             return Some(k);
+        }
+    }
+    // t3 fallback: vendor CLI logged-in session
+    if let Ok(Some(tokens)) = crate::oauth::import_existing_session(p.id) {
+        let tok = tokens.access_token.trim().to_string();
+        if !tok.is_empty() {
+            return Some(tok);
         }
     }
     if p.key_optional {

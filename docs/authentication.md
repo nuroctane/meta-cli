@@ -39,7 +39,7 @@ What happens:
 1. **Nothing is cleared.** Opening the picker — and backing out of it with `Esc`
    — leaves your current credential exactly as it was. Credentials are replaced
    only at the moment a new one is committed.
-2. A **scrollable, type-to-filter** picker lists **60 providers** (frontier APIs,
+2. A **scrollable, type-to-filter** picker lists **61 providers** (frontier APIs,
    inference clouds, Chinese labs, OpenAI-compatible routers, local servers).
    Providers with browser sign-in show a 🌐 hint.
 3. If the provider supports browser auth, choose:
@@ -74,6 +74,18 @@ these providers:
 In `/login`, pick the provider → **Sign in with browser**, or **Use existing CLI
 session** when a local first-party login is detected. API keys remain available as a
 fallback for every one of them.
+
+### Signed into the vendor CLI = signed into nur
+
+When a provider has no key configured, nur falls back to importing the vendor
+CLI's own session (Claude Code, Codex, Grok, Kimi, Cursor, OpenCode, Antigravity
+/ gcloud). Nothing to run and nothing to paste — if the CLI is logged in, nur is
+logged in.
+
+Imported tokens are used transiently and never written to `auth.json`. If the
+imported session has gone stale, nur mints a fresh access token from the same
+refresh token the CLI stores, exactly as the CLI would have on its next use — a
+session merely being a few minutes old no longer sends you to `/login`.
 
 Kimi Code API keys work against `https://api.kimi.com/coding/v1`. The separate Moonshot
 AI catalog entry remains available for `https://api.moonshot.ai/v1` keys.

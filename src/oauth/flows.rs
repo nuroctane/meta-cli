@@ -55,6 +55,7 @@ pub fn login_browser(provider_id: &str, tx: ProgressTx, cancel: CancelFlag) {
         "kimi" => kimi::login(&tx, &cancel),
         "anthropic" => claude::login(&tx, &cancel),
         "google" => google::login(&tx, &cancel),
+        "antigravity" => antigravity::login(&tx, &cancel),
         "azure" => azure::login(&tx, &cancel),
         "github-models" | "github-copilot" => github::login(provider_id, &tx, &cancel),
         other => Err(MuseError::Other(format!(
@@ -70,6 +71,10 @@ pub fn login_browser(provider_id: &str, tx: ProgressTx, cancel: CancelFlag) {
 }
 
 /// Import tokens from a first-party CLI session file when present.
+///
+/// This is the **t3 fallback** path used by `auth::resolve_api_key_for` when a
+/// provider has no API key configured. If a vendor CLI (Claude, Codex, Cursor,
+/// etc.) is logged in, its session is reused transiently.
 pub fn import_existing_session(provider_id: &str) -> Result<Option<OAuthTokens>> {
     match provider_id {
         "openai" => openai::import_codex_cli(),
@@ -79,6 +84,20 @@ pub fn import_existing_session(provider_id: &str) -> Result<Option<OAuthTokens>>
         "huggingface" => Ok(huggingface::import_hf_token()),
         "cursor" => cursor::import_cursor_cli(),
         "opencode" => opencode::import_opencode_cli(),
+        // Google / Antigravity: try Antigravity CLI first (Windows credman + file),
+        // then gcloud ADC.
+        "google" | "antigravity" | "google-oauth" => {
+            // Antigravity -> more recent than gcloud for Gemini users
+            if let Ok(Some(t)) = antigravity::import_existing() {
+                return Ok(Some(t));
+            }
+            // gcloud fallback
+            match google::import_existing() {
+                Ok(Some(t)) => Ok(Some(t)),
+                Ok(None) => Ok(None),
+                Err(_) => Ok(None),
+            }
+        }
         _ => Ok(None),
     }
 }
@@ -308,6 +327,17 @@ fn gcloud_bin() -> Option<PathBuf> {
         }
     }
     resolve_cli("gcloud", &["gcloud.cmd"], &dirs)
+}
+
+#[allow(dead_code)]
+fn agy_bin() -> Option<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        dirs.push(home.join("AppData").join("Local").join("agy").join("bin"));
+        dirs.push(home.join(".gemini").join("antigravity-cli").join("bin"));
+        dirs.push(home.join("AppData").join("Roaming").join("agy").join("bin"));
+    }
+    resolve_cli("agy", &["agy.cmd", "agy.exe"], &dirs)
 }
 
 fn az_bin() -> Option<PathBuf> {
@@ -1801,7 +1831,17 @@ pub mod google {
         fetch_access_token()
     }
 
-    fn fetch_access_token() -> Result<OAuthTokens> {
+    /// Transient import: try to reuse an existing gcloud ADC token without launching
+    /// browser login. Returns `Ok(None)` when gcloud is not installed or not logged in,
+    /// so the caller can fall through to other import methods.
+    pub fn import_existing() -> Result<Option<OAuthTokens>> {
+        match fetch_access_token() {
+            Ok(t) => Ok(Some(t)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub(crate) fn fetch_access_token() -> Result<OAuthTokens> {
         let gcloud = gcloud_bin().ok_or_else(|| {
             MuseError::Other(
                 "gcloud not found. Install Google Cloud SDK (https://cloud.google.com/sdk/docs/install) and ensure it is on PATH."
@@ -1862,6 +1902,716 @@ pub mod google {
 
     pub fn refresh(_auth: &Auth, _refresh: &str) -> Result<OAuthTokens> {
         fetch_access_token()
+    }
+}
+
+/// Google Antigravity (agy CLI + Cloud Code OAuth) — browser login via
+/// Google OAuth with the Antigravity client ID, then loadCodeAssist + onboard
+/// to obtain a quota project. Also imports existing agy credentials from
+/// Windows Credential Manager (`gemini:antigravity`) and from Gemini CLI
+/// `~/.muse/oauth_creds.json` locations.
+pub mod antigravity {
+    use super::*;
+    use std::path::PathBuf;
+
+    /// Google OAuth app credentials — supplied at runtime, never compiled in.
+    ///
+    /// nur-cli is a public repository, so an embedded client secret would be
+    /// published to everyone who clones it (GitHub push protection blocks it
+    /// outright). Set `NUR_GOOGLE_CLIENT_ID` + `NUR_GOOGLE_CLIENT_SECRET` (or
+    /// the `GOOGLE_*` equivalents) to enable Google browser sign-in.
+    ///
+    /// Leaving them unset costs only the browser flow: signing in by importing
+    /// an existing Antigravity or gcloud CLI session still works, as does an
+    /// API key.
+    fn client_id() -> String {
+        std::env::var("NUR_GOOGLE_CLIENT_ID")
+            .or_else(|_| std::env::var("GOOGLE_CLIENT_ID"))
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    fn client_secret() -> String {
+        std::env::var("NUR_GOOGLE_CLIENT_SECRET")
+            .or_else(|_| std::env::var("GOOGLE_CLIENT_SECRET"))
+            .map(|v| v.trim().to_string())
+            .unwrap_or_default()
+    }
+
+    /// Whether a Google OAuth app is configured for the browser flow.
+    fn oauth_app_configured() -> bool {
+        !client_id().is_empty() && !client_secret().is_empty()
+    }
+
+    const OAUTH_APP_UNSET: &str = "Google browser sign-in needs an OAuth app: set NUR_GOOGLE_CLIENT_ID and NUR_GOOGLE_CLIENT_SECRET. Or sign in with the Antigravity/gcloud CLI (nur imports that session automatically), or paste a Gemini API key.";
+    const AUTHORIZE_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+    const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+    const LOAD_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
+    const ONBOARD_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
+    const SCOPES: &[&str] = &[
+        "https://www.googleapis.com/auth/cloud-platform",
+        "https://www.googleapis.com/auth/userinfo.email",
+        "https://www.googleapis.com/auth/userinfo.profile",
+        "https://www.googleapis.com/auth/cclog",
+        "https://www.googleapis.com/auth/experimentsandconfigs",
+    ];
+    const USER_AGENT: &str = "google-api-nodejs-client/9.15.1";
+    const API_CLIENT: &str = "google-cloud-sdk vscode_cloudshelleditor/0.1";
+    const CLIENT_METADATA: &str =
+        r#"{"ideType":"IDE_UNSPECIFIED","platform":"PLATFORM_UNSPECIFIED","pluginType":"GEMINI"}"#;
+
+    #[derive(Deserialize)]
+    struct TokenResponse {
+        access_token: String,
+        refresh_token: Option<String>,
+        expires_in: Option<u64>,
+        error: Option<String>,
+        error_description: Option<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct LoadAssistResponse {
+        #[serde(rename = "cloudaicompanionProject")]
+        cloud_project: Option<serde_json::Value>,
+        #[serde(rename = "allowedTiers")]
+        allowed_tiers: Option<Vec<Tier>>,
+    }
+
+    #[derive(Deserialize)]
+    struct Tier {
+        id: String,
+        #[serde(rename = "isDefault")]
+        is_default: Option<bool>,
+    }
+
+    #[derive(Deserialize)]
+    struct OnboardResponse {
+        done: Option<bool>,
+        response: Option<OnboardInner>,
+    }
+
+    #[derive(Deserialize)]
+    struct OnboardInner {
+        #[serde(rename = "cloudaicompanionProject")]
+        project: Option<serde_json::Value>,
+    }
+
+    /// `cloudaicompanionProject` arrives either as a bare id or as an object
+    /// carrying one, on both loadCodeAssist and onboardUser.
+    fn project_id_of(v: Option<serde_json::Value>) -> String {
+        match v {
+            Some(serde_json::Value::String(s)) => s,
+            Some(serde_json::Value::Object(mut obj)) => obj
+                .remove("id")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    // ── Import existing Antigravity / Gemini CLI credentials ────────────────
+
+    /// Try to import an existing Antigravity session.
+    ///
+    /// Order:
+    /// 1. Windows Credential Manager (`gemini:antigravity` / `LegacyGeneric:...`)
+    /// 2. File probes: `~/.gemini/oauth_creds.json`, `~/.config/gemini/...`, etc.
+    /// 3. gcloud ADC as final fallback (so google provider still works)
+    pub fn import_existing() -> Result<Option<OAuthTokens>> {
+        // 1. Windows credential manager
+        #[cfg(windows)]
+        {
+            if let Some(t) = import_from_wincred() {
+                return Ok(Some(t));
+            }
+        }
+
+        // 2. File-based Gemini CLI oauth (common locations)
+        if let Some(t) = import_from_gemini_cli_file() {
+            return Ok(Some(t));
+        }
+
+        // 3. gcloud fallback for google alias
+        if let Ok(Some(t)) = crate::oauth::flows::google::import_existing() {
+            return Ok(Some(t));
+        }
+
+        Ok(None)
+    }
+
+    #[cfg(windows)]
+    fn import_from_wincred() -> Option<OAuthTokens> {
+        // Use powershell to read credential blob (UTF-8 JSON)
+        // This mirrors the manual extraction we validated.
+        let ps_script = r#"
+Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public class CredManager2 {
+    [DllImport("advapi32.dll", SetLastError=true, CharSet=CharSet.Unicode)]
+    public static extern bool CredRead(string target, int type, int flags, out IntPtr credential);
+    [DllImport("advapi32.dll")]
+    public static extern void CredFree(IntPtr cred);
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    public struct CREDENTIAL {
+        public int Flags;
+        public int Type;
+        public string TargetName;
+        public string Comment;
+        public long LastWritten;
+        public int CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public int Persist;
+        public int AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias;
+        public string UserName;
+    }
+    public static byte[] ReadBytes(string target) {
+        IntPtr credPtr;
+        if (!CredRead(target, 1, 0, out credPtr)) return null;
+        var cred = (CREDENTIAL)System.Runtime.InteropServices.Marshal.PtrToStructure(credPtr, typeof(CREDENTIAL));
+        byte[] bytes = new byte[cred.CredentialBlobSize];
+        System.Runtime.InteropServices.Marshal.Copy(cred.CredentialBlob, bytes, 0, cred.CredentialBlobSize);
+        CredFree(credPtr);
+        return bytes;
+    }
+}
+"@ -Language CSharp
+$targets = @('LegacyGeneric:target=gemini:antigravity','gemini:antigravity','LegacyGeneric:target=gemini-cli:oauth','gemini-cli:oauth')
+foreach ($t in $targets) {
+  $b = [CredManager2]::ReadBytes($t)
+  if ($b) { [Text.Encoding]::UTF8.GetString($b); break }
+}
+"#;
+        let out = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                ps_script,
+            ])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if text.is_empty() {
+            return None;
+        }
+        // Expect JSON like {"token":{"access_token":"ya29...","refresh_token":"...","expiry":"..."}}
+        let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+        let token_obj = v.get("token")?;
+        let access = token_obj.get("access_token")?.as_str()?.trim();
+        if access.is_empty() {
+            return None;
+        }
+        let refresh = token_obj
+            .get("refresh_token")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string());
+        let expiry_str = token_obj.get("expiry").and_then(|x| x.as_str());
+        let expires_at = expiry_str.and_then(parse_expiry_to_unix);
+
+        // Best-effort: load Code Assist project id for x-goog-user-project header
+        let mut extra = serde_json::json!({
+            "via": "antigravity-cli-wincred",
+            "auth_method": v.get("auth_method").and_then(|x| x.as_str()).unwrap_or("consumer"),
+        });
+        // Try to fetch project id via Cloud Code API (may fail offline)
+        if let Ok((pid, tid)) = load_code_assist(access) {
+            if !pid.is_empty() {
+                extra["project_id"] = serde_json::Value::String(pid);
+            }
+            if !tid.is_empty() {
+                extra["tier_id"] = serde_json::Value::String(tid);
+            }
+        }
+
+        Some(OAuthTokens {
+            access_token: access.to_string(),
+            refresh_token: refresh,
+            expires_at,
+            meta: Some(OauthMeta {
+                issuer: "https://accounts.google.com".into(),
+                client_id: client_id(),
+                extra,
+            }),
+        })
+    }
+
+    fn parse_expiry_to_unix(s: &str) -> Option<u64> {
+        // Format: 2026-07-22T13:47:44.591428-05:00 (RFC3339 with fractional)
+        if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+            return Some(dt.timestamp() as u64);
+        }
+        // Try without fractional
+        // chrono handles it anyway, but fallback: try naive
+        None
+    }
+
+    fn import_from_gemini_cli_file() -> Option<OAuthTokens> {
+        let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+        let candidates = [
+            home.join(".gemini").join("oauth_creds.json"),
+            home.join(".config").join("gemini").join("oauth_creds.json"),
+            home.join(".config")
+                .join("gemini-cli")
+                .join("oauth_creds.json"),
+            home.join(".gemini")
+                .join("antigravity-cli")
+                .join("oauth_creds.json"),
+        ];
+        for path in candidates {
+            if !path.exists() {
+                continue;
+            }
+            let text = match std::fs::read_to_string(&path) {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let v: serde_json::Value = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            // Try various shapes: flat {access_token, refresh_token, expiry...} or nested {token: {...}}
+            let (access, refresh, expiry) = if let Some(token) = v.get("token") {
+                (
+                    token.get("access_token").and_then(|x| x.as_str()).unwrap_or(""),
+                    token
+                        .get("refresh_token")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string()),
+                    token.get("expiry").and_then(|x| x.as_str()).map(|s| s.to_string()),
+                )
+            } else {
+                (
+                    v.get("access_token").and_then(|x| x.as_str()).unwrap_or(""),
+                    v.get("refresh_token")
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string()),
+                    v.get("expiry")
+                        .or_else(|| v.get("expires_at"))
+                        .and_then(|x| x.as_str())
+                        .map(|s| s.to_string()),
+                )
+            };
+            if access.is_empty() {
+                continue;
+            }
+            let expires_at = expiry.as_deref().and_then(parse_expiry_to_unix).or_else(|| {
+                v.get("expires_in")
+                    .and_then(|x| x.as_u64())
+                    .map(|secs| crate::oauth::now_unix() + secs)
+            });
+            let mut extra = serde_json::json!({
+                "via": "gemini-cli-file",
+                "path": path.display().to_string(),
+            });
+            if let Ok((pid, tid)) = load_code_assist(access) {
+                if !pid.is_empty() {
+                    extra["project_id"] = serde_json::Value::String(pid);
+                }
+                if !tid.is_empty() {
+                    extra["tier_id"] = serde_json::Value::String(tid);
+                }
+            }
+            return Some(OAuthTokens {
+                access_token: access.to_string(),
+                refresh_token: refresh,
+                expires_at,
+                meta: Some(OauthMeta {
+                    issuer: "https://accounts.google.com".into(),
+                    client_id: client_id(),
+                    extra,
+                }),
+            });
+        }
+        None
+    }
+
+    // ── Browser OAuth login ──────────────────────────────────────────────────
+
+    pub fn login(tx: &ProgressTx, cancel: &CancelFlag) -> Result<OAuthTokens> {
+        // If agy already logged in, reuse
+        if let Ok(Some(existing)) = import_existing() {
+            // Check not expired
+            if let Some(exp) = existing.expires_at {
+                if exp > crate::oauth::now_unix() + 300 {
+                    send(
+                        tx,
+                        BrowserLoginProgress::Status(
+                            "using existing Antigravity CLI session".into(),
+                        ),
+                    );
+                    return Ok(existing);
+                }
+            } else {
+                send(
+                    tx,
+                    BrowserLoginProgress::Status(
+                        "using existing Antigravity CLI session".into(),
+                    ),
+                );
+                return Ok(existing);
+            }
+        }
+
+        // Importing a CLI session above needs no OAuth app; the browser flow
+        // does. Fail here with something actionable rather than after the user
+        // has already been sent through a consent screen.
+        if !oauth_app_configured() {
+            return Err(MuseError::Other(OAUTH_APP_UNSET.into()));
+        }
+
+        // Loopback server
+        let listener = TcpListener::bind(("127.0.0.1", 0))
+            .map_err(|e| MuseError::Other(format!("failed to bind loopback: {e}")))?;
+        let port = listener
+            .local_addr()
+            .map(|a| a.port())
+            .unwrap_or(8080);
+        let redirect_uri = format!("http://localhost:{port}/callback");
+        let state = random_urlsafe(32);
+
+        let auth_url = format!(
+            "{AUTHORIZE_URL}?client_id={}&response_type=code&redirect_uri={}&scope={}&state={}&access_type=offline&prompt=consent",
+            urlencoding_encode(&client_id()),
+            urlencoding_encode(&redirect_uri),
+            urlencoding_encode(&SCOPES.join(" ")),
+            urlencoding_encode(&state),
+        );
+
+        send(tx, BrowserLoginProgress::OpenUrl(auth_url.clone()));
+        send(
+            tx,
+            BrowserLoginProgress::Status("complete Antigravity / Google sign-in in the browser…".into()),
+        );
+        let _ = open_browser(&auth_url);
+
+        let code = wait_localhost_code_on(
+            listener,
+            Some(&state),
+            cancel,
+            Duration::from_secs(600),
+        )?;
+
+        send(
+            tx,
+            BrowserLoginProgress::Status("exchanging Antigravity authorization code…".into()),
+        );
+
+        let tokens = exchange_code(&code, &redirect_uri)?;
+
+        send(
+            tx,
+            BrowserLoginProgress::Status("loading Code Assist project…".into()),
+        );
+
+        let (project_id, tier_id) = match load_code_assist(&tokens.access_token) {
+            Ok(v) => v,
+            Err(e) => {
+                // If load assist fails, still return tokens – project_id may be optional for some endpoints
+                send(
+                    tx,
+                    BrowserLoginProgress::Status(format!(
+                        "loadCodeAssist warning: {e} – continuing with token only"
+                    )),
+                );
+                (String::new(), "legacy-tier".to_string())
+            }
+        };
+
+        let mut project_id = project_id;
+        if !project_id.is_empty() {
+            send(
+                tx,
+                BrowserLoginProgress::Status(format!(
+                    "onboarding project {project_id} (tier {tier_id})…"
+                )),
+            );
+            // The server may hand back a different project than we asked for;
+            // that is the one every later Code Assist call has to quote.
+            if let Ok(Some(assigned)) = complete_onboarding(&tokens.access_token, &project_id, &tier_id)
+            {
+                if assigned != project_id {
+                    send(
+                        tx,
+                        BrowserLoginProgress::Status(format!(
+                            "server assigned project {assigned}"
+                        )),
+                    );
+                    project_id = assigned;
+                }
+            }
+        }
+
+        let mut extra = serde_json::json!({
+            "via": "antigravity-oauth",
+            "auth_method": "consumer",
+        });
+        if !project_id.is_empty() {
+            extra["project_id"] = serde_json::Value::String(project_id.clone());
+        }
+        if !tier_id.is_empty() {
+            extra["tier_id"] = serde_json::Value::String(tier_id.clone());
+        }
+
+        Ok(OAuthTokens {
+            access_token: tokens.access_token,
+            refresh_token: tokens.refresh_token,
+            expires_at: tokens.expires_at,
+            meta: Some(OauthMeta {
+                issuer: "https://accounts.google.com".into(),
+                client_id: client_id(),
+                extra,
+            }),
+        })
+    }
+
+    fn exchange_code(code: &str, redirect_uri: &str) -> Result<OAuthTokens> {
+        let (cid, csecret) = (client_id(), client_secret());
+        if cid.is_empty() || csecret.is_empty() {
+            return Err(MuseError::Other(OAUTH_APP_UNSET.into()));
+        }
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("client_id", cid.as_str()),
+            ("client_secret", csecret.as_str()),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+        ];
+        let resp = http()?
+            .post(TOKEN_URL)
+            .form(&form)
+            .send()
+            .map_err(|e| MuseError::Other(format!("Antigravity token exchange failed: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .map_err(|e| MuseError::Other(format!("read token response failed: {e}")))?;
+
+        if !status.is_success() {
+            return Err(MuseError::Other(format!(
+                "Antigravity token exchange failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let parsed: TokenResponse = serde_json::from_str(&text)
+            .map_err(|e| MuseError::Other(format!("invalid token JSON: {e}: {text}")))?;
+
+        if let Some(err) = parsed.error {
+            return Err(MuseError::Other(format!(
+                "Antigravity OAuth error: {} - {}",
+                err,
+                parsed.error_description.unwrap_or_default()
+            )));
+        }
+
+        if parsed.access_token.trim().is_empty() {
+            return Err(MuseError::Other("empty access token from Antigravity".into()));
+        }
+
+        Ok(OAuthTokens {
+            access_token: parsed.access_token,
+            refresh_token: parsed.refresh_token,
+            expires_at: expires_in_to_at(parsed.expires_in),
+            meta: None,
+        })
+    }
+
+    fn load_code_assist(access_token: &str) -> Result<(String, String)> {
+        let body = serde_json::json!({
+            "metadata": {
+                "ideType": "IDE_UNSPECIFIED",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI"
+            }
+        });
+
+        let resp = http()?
+            .post(LOAD_ASSIST_URL)
+            .header("Authorization", format!("Bearer {access_token}"))
+            .header("Content-Type", "application/json")
+            .header("User-Agent", USER_AGENT)
+            .header("X-Goog-Api-Client", API_CLIENT)
+            .header("Client-Metadata", CLIENT_METADATA)
+            .json(&body)
+            .send()
+            .map_err(|e| MuseError::Other(format!("loadCodeAssist request failed: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .map_err(|e| MuseError::Other(format!("read loadCodeAssist response failed: {e}")))?;
+
+        if !status.is_success() {
+            return Err(MuseError::Other(format!(
+                "loadCodeAssist failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let parsed: LoadAssistResponse = serde_json::from_str(&text)
+            .map_err(|e| MuseError::Other(format!("invalid loadCodeAssist JSON: {e}")))?;
+
+        let project_id = project_id_of(parsed.cloud_project);
+
+        let mut tier_id = "legacy-tier".to_string();
+        if let Some(tiers) = parsed.allowed_tiers {
+            for tier in tiers {
+                if tier.is_default.unwrap_or(false) {
+                    tier_id = tier.id;
+                    break;
+                }
+            }
+        }
+
+        Ok((project_id, tier_id))
+    }
+
+    /// Returns the project the server confirms — it may differ from the one we
+    /// asked for, and that is the id later calls must use.
+    fn complete_onboarding(
+        access_token: &str,
+        project_id: &str,
+        tier_id: &str,
+    ) -> Result<Option<String>> {
+        // Best-effort with retries
+        let body = serde_json::json!({
+            "tierId": tier_id,
+            "metadata": {
+                "ideType": "IDE_UNSPECIFIED",
+                "platform": "PLATFORM_UNSPECIFIED",
+                "pluginType": "GEMINI"
+            },
+            "cloudaicompanionProject": project_id
+        });
+
+        for attempt in 0..10 {
+            let resp = http()?
+                .post(ONBOARD_URL)
+                .header("Authorization", format!("Bearer {access_token}"))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", USER_AGENT)
+                .header("X-Goog-Api-Client", API_CLIENT)
+                .header("Client-Metadata", CLIENT_METADATA)
+                .json(&body)
+                .send();
+
+            let resp = match resp {
+                Ok(r) => r,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            };
+
+            if !resp.status().is_success() {
+                std::thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+
+            let text = resp.text().unwrap_or_default();
+            let parsed: OnboardResponse = match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(_) => {
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            };
+
+            if parsed.done.unwrap_or(false) {
+                let assigned = project_id_of(parsed.response.and_then(|r| r.project));
+                return Ok((!assigned.is_empty()).then_some(assigned));
+            }
+
+            if attempt < 9 {
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+
+        // Non-fatal: onboarding may already be done server-side
+        Ok(None)
+    }
+
+    pub fn refresh(auth: &Auth, refresh_token: &str) -> Result<OAuthTokens> {
+        // If marker "gcloud", delegate to gcloud refresh
+        if refresh_token == "gcloud" {
+            return super::google::fetch_access_token();
+        }
+
+        // Standard Google refresh
+        let (cid, csecret) = (client_id(), client_secret());
+        if cid.is_empty() || csecret.is_empty() {
+            return Err(MuseError::Other(OAUTH_APP_UNSET.into()));
+        }
+        let form = [
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+            ("client_id", cid.as_str()),
+            ("client_secret", csecret.as_str()),
+        ];
+
+        let resp = http()?
+            .post(TOKEN_URL)
+            .form(&form)
+            .send()
+            .map_err(|e| MuseError::Other(format!("Antigravity refresh failed: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .map_err(|e| MuseError::Other(format!("read refresh response failed: {e}")))?;
+
+        if !status.is_success() {
+            return Err(MuseError::Other(format!(
+                "Antigravity refresh failed ({}): {}",
+                status, text
+            )));
+        }
+
+        let parsed: TokenResponse = serde_json::from_str(&text)
+            .map_err(|e| MuseError::Other(format!("invalid refresh JSON: {e}")))?;
+
+        if parsed.access_token.trim().is_empty() {
+            return Err(MuseError::Other("empty access token on refresh".into()));
+        }
+
+        // Preserve existing project_id from meta if present
+        let mut extra = auth
+            .oauth_meta
+            .as_ref()
+            .map(|m| m.extra.clone())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        // Ensure project_id still present; if not, try reload
+        if extra.get("project_id").is_none() {
+            if let Ok((pid, tid)) = load_code_assist(&parsed.access_token) {
+                if !pid.is_empty() {
+                    extra["project_id"] = serde_json::Value::String(pid);
+                }
+                if !tid.is_empty() {
+                    extra["tier_id"] = serde_json::Value::String(tid);
+                }
+            }
+        }
+
+        Ok(OAuthTokens {
+            access_token: parsed.access_token,
+            refresh_token: parsed.refresh_token.or_else(|| Some(refresh_token.to_string())),
+            expires_at: expires_in_to_at(parsed.expires_in),
+            meta: Some(OauthMeta {
+                issuer: "https://accounts.google.com".into(),
+                client_id: client_id(),
+                extra,
+            }),
+        })
     }
 }
 

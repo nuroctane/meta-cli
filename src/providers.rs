@@ -396,6 +396,17 @@ pub const PROVIDERS: &[Provider] = &[
         browser_auth: true,
     },
     Provider {
+        id: "antigravity",
+        name: "Antigravity",
+        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
+        default_model: GOOGLE_DEFAULT_MODEL,
+        env_key: "GEMINI_API_KEY",
+        style: CC,
+        note: "Gemini via agy CLI · OAuth + project ID · uses same endpoint as google",
+        key_optional: false,
+        browser_auth: true,
+    },
+    Provider {
         id: "xai",
         name: "xAI Grok",
         base_url: "https://api.x.ai/v1",
@@ -1227,7 +1238,7 @@ mod tests {
         // `PROVIDER_COUNT_DOC_SITES` below too.
         assert_eq!(
             PROVIDERS.len(),
-            60,
+            61,
             "provider count changed — update the docs that quote it: {}",
             PROVIDER_COUNT_DOC_SITES.join(", ")
         );
@@ -1591,6 +1602,7 @@ mod tests {
                 "kimi",
                 "anthropic",
                 "google",
+                "antigravity",
                 "azure",
                 "github-models",
                 "github-copilot",
@@ -1617,7 +1629,6 @@ mod tests {
         }
 
         for retired in [
-            "antigravity",
             "anyscale",
             "kluster",
             "lepton",
@@ -1663,6 +1674,7 @@ pub fn oauth_browser_provider_ids() -> &'static [&'static str] {
         "kimi",
         "anthropic",
         "google",
+        "antigravity",
         "azure",
         "github-models",
         "github-copilot",

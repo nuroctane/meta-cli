@@ -27,6 +27,8 @@ pub enum DriverId {
     Cursor,
     OpenCode,
     Grok,
+    Antigravity,
+    Gemini,
 }
 
 impl DriverId {
@@ -37,6 +39,8 @@ impl DriverId {
             DriverId::Cursor => "cursor",
             DriverId::OpenCode => "opencode",
             DriverId::Grok => "grok",
+            DriverId::Antigravity => "antigravity",
+            DriverId::Gemini => "gemini",
         }
     }
 
@@ -47,6 +51,8 @@ impl DriverId {
             DriverId::Cursor => "cursor-agent login",
             DriverId::OpenCode => "opencode auth login",
             DriverId::Grok => "grok login (or xai auth)",
+            DriverId::Antigravity => "agy login (or agy models to verify)",
+            DriverId::Gemini => "gcloud auth login",
         }
     }
 }
@@ -111,6 +117,24 @@ pub fn driver_config_dir(driver: DriverId) -> PathBuf {
             }
             home.join(".config").join("xai")
         }
+        DriverId::Antigravity => {
+            if let Ok(dir) = std::env::var("ANTIGRAVITY_HOME") {
+                let p = PathBuf::from(dir);
+                if p.is_absolute() {
+                    return p;
+                }
+            }
+            home.join(".gemini").join("antigravity-cli")
+        }
+        DriverId::Gemini => {
+            if let Ok(dir) = std::env::var("GCLOUD_CONFIG_DIR") {
+                let p = PathBuf::from(dir);
+                if p.is_absolute() {
+                    return p;
+                }
+            }
+            home.join(".config").join("gcloud")
+        }
     }
 }
 
@@ -122,6 +146,8 @@ pub fn vendor_cli_exists(driver: DriverId) -> bool {
         DriverId::Cursor => "cursor-agent",
         DriverId::OpenCode => "opencode",
         DriverId::Grok => "grok",
+        DriverId::Antigravity => "agy",
+        DriverId::Gemini => "gcloud",
     };
     which(bin).is_some()
 }
@@ -184,6 +210,9 @@ pub fn probe_driver(driver: DriverId) -> ProbeStatus {
 fn probes_have_credentials(driver: DriverId, dir: &Path) -> bool {
     // Heuristic file existence checks — we never read token values here,
     // only probe presence, matching t3code's zero-secret-storage principle.
+    // For Antigravity on Windows, credentials live in Credential Manager, so
+    // we also probe via wincred existence (binary present + credential manager entry
+    // is considered has_credentials in probe_driver if file probe fails – handled below).
     match driver {
         DriverId::Claude => {
             dir.join(".credentials.json").exists()
@@ -202,6 +231,20 @@ fn probes_have_credentials(driver: DriverId, dir: &Path) -> bool {
                 || dir.join("opencode.json").exists()
         }
         DriverId::Grok => dir.join("auth.json").exists() || dir.join("config.json").exists(),
+        DriverId::Antigravity => {
+            // File-based check
+            dir.join("settings.json").exists()
+                || dir.join("cache").join("onboarding.json").exists()
+                // On Windows, credential manager is primary – treat existence of dir as enough,
+                // the real check is done via import_existing_session.
+                || dir.exists()
+        }
+        DriverId::Gemini => {
+            dir.join("credentials.db").exists()
+                || dir.join("legacy_credentials").exists()
+                || dir.join("configurations").exists()
+                || dir.join("access_tokens.db").exists()
+        }
     }
 }
 
@@ -213,6 +256,8 @@ pub fn probe_all() -> Vec<ProbeStatus> {
         DriverId::Cursor,
         DriverId::OpenCode,
         DriverId::Grok,
+        DriverId::Antigravity,
+        DriverId::Gemini,
     ]
     .iter()
     .map(|d| probe_driver(*d))
@@ -390,6 +435,8 @@ pub fn env_for_driver(driver: DriverId) -> HashMap<String, String> {
         "CURSOR_AGENT_HOME",
         "OPENCODE_HOME",
         "XAI_CONFIG_DIR",
+        "ANTIGRAVITY_HOME",
+        "GCLOUD_CONFIG_DIR",
     ] {
         if let Ok(v) = std::env::var(var) {
             env.insert(var.to_string(), v);
@@ -416,6 +463,14 @@ pub fn env_for_driver(driver: DriverId) -> HashMap<String, String> {
         }
         DriverId::Grok => {
             env.entry("XAI_CONFIG_DIR".to_string())
+                .or_insert_with(|| driver_config_dir(driver).display().to_string());
+        }
+        DriverId::Antigravity => {
+            env.entry("ANTIGRAVITY_HOME".to_string())
+                .or_insert_with(|| driver_config_dir(driver).display().to_string());
+        }
+        DriverId::Gemini => {
+            env.entry("GCLOUD_CONFIG_DIR".to_string())
                 .or_insert_with(|| driver_config_dir(driver).display().to_string());
         }
     }
@@ -457,8 +512,8 @@ mod tests {
     }
 
     #[test]
-    fn probe_all_returns_five() {
+    fn probe_all_returns_seven() {
         let all = probe_all();
-        assert_eq!(all.len(), 5);
+        assert_eq!(all.len(), 7);
     }
 }
