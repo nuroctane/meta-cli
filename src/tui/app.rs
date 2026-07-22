@@ -4241,7 +4241,14 @@ impl App {
         self.model_picker = Some(ModelPicker {
             provider_name: provider.name.to_string(),
             models: Vec::new(),
-            current: self.cfg.model.clone(),
+            current: if provider.id == "opencode"
+                && self.cfg.base_url.trim_end_matches('/')
+                    == crate::providers::OPENCODE_GO_BASE_URL
+            {
+                format!("opencode-go/{}", self.cfg.model)
+            } else {
+                self.cfg.model.clone()
+            },
             filter: String::new(),
             sel: 0,
             scroll: 0,
@@ -4263,6 +4270,23 @@ impl App {
         if id.is_empty() {
             return;
         }
+        // OpenCode's Go catalog is shown in the same picker as Zen. Its
+        // `opencode-go/` prefix selects Go's required endpoint; the API itself
+        // receives the bare model id.
+        let id = if self.cfg.provider == "opencode" {
+            if let Some(model) = id.strip_prefix("opencode-go/") {
+                self.cfg.base_url = crate::providers::OPENCODE_GO_BASE_URL.to_string();
+                model
+            } else {
+                self.cfg.base_url = crate::providers::by_id("opencode")
+                    .map(|provider| provider.base_url)
+                    .unwrap_or("https://opencode.ai/zen/v1")
+                    .to_string();
+                id
+            }
+        } else {
+            id
+        };
         // Anthropic: rewrite retired/short ids so a saved `claude-sonnet-4-…`
         // does not 404 on the first-party Claude API (key or OAuth).
         let id = if self.cfg.provider == "anthropic"

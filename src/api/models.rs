@@ -81,6 +81,7 @@ pub fn fetch_model_ids(
     let urls = model_list_urls(base_url, pid, oauth.is_some());
     let mut last_err = String::from("no /models endpoint tried");
     let mut oauth_refreshed = false;
+    let mut opencode_ids = Vec::new();
 
     for url in urls {
         loop {
@@ -100,6 +101,18 @@ pub fn fetch_model_ids(
                         ids.dedup();
                     }
                     // Live list only — do not merge static catalogs.
+                    if pid == "opencode" {
+                        // Go shares the OpenCode credential with Zen, but its
+                        // requests require a different endpoint. Preserve that
+                        // route in the picker id so selection can switch bases.
+                        if url.starts_with(crate::providers::OPENCODE_GO_BASE_URL) {
+                            opencode_ids
+                                .extend(ids.into_iter().map(|id| format!("opencode-go/{id}")));
+                        } else {
+                            opencode_ids.extend(ids);
+                        }
+                        break;
+                    }
                     return Ok(ids);
                 }
                 Err(error) if error.status == Some(401) && oauth.is_some() && !oauth_refreshed => {
@@ -120,6 +133,12 @@ pub fn fetch_model_ids(
                 }
             }
         }
+    }
+
+    if !opencode_ids.is_empty() {
+        opencode_ids.sort_unstable();
+        opencode_ids.dedup();
+        return Ok(opencode_ids);
     }
 
     // Kimi OAuth often returns HTTP 402 on GET /models even when inference works
@@ -180,6 +199,11 @@ fn model_list_urls(base_url: &str, provider_id: &str, is_oauth: bool) -> Vec<Str
             urls.push("https://models.github.ai/catalog/models".into());
             urls.push(format!("{base}/models"));
             urls.push("https://models.github.ai/inference/models".into());
+        }
+        "opencode" => {
+            // Zen and Go are separate live catalogs under one OpenCode key.
+            urls.push(format!("{base}/models"));
+            urls.push(format!("{}/models", crate::providers::OPENCODE_GO_BASE_URL));
         }
         "anthropic" => {
             urls.push(format!("{base}/models"));
@@ -539,6 +563,18 @@ mod tests {
         assert_eq!(
             urls,
             vec![format!("{}/models", crate::providers::KIMI_CODE_BASE_URL)]
+        );
+    }
+
+    #[test]
+    fn opencode_merges_zen_and_go_catalog_endpoints() {
+        let urls = model_list_urls("https://opencode.ai/zen/v1", "opencode", false);
+        assert_eq!(
+            urls,
+            vec![
+                "https://opencode.ai/zen/v1/models".into(),
+                format!("{}/models", crate::providers::OPENCODE_GO_BASE_URL),
+            ]
         );
     }
 

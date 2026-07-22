@@ -24,7 +24,7 @@ The active provider, endpoint, and default model are stored in
 | **GitHub Models** | GitHub PAT (`models:read`) | `gh auth login` browser SSO |
 | Gemini, Groq, … | Vendor dashboard | - |
 | **Poolside** | `POOLSIDE_API_KEY` | Free developer key at [platform.poolside.ai](https://platform.poolside.ai/) → API Keys |
-| OpenCode, Vercel AI Gateway, GitHub Models, Helicone, … | Gateway key | - |
+| OpenCode (Zen and Go), Vercel AI Gateway, GitHub Models, Helicone, … | Gateway key | - |
 | Baseten, Friendli, Chutes, Venice, Writer, Upstage, … | Vendor dashboard | - |
 | Ollama, LM Studio, … | Often none (local) | - |
 

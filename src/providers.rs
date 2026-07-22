@@ -52,6 +52,8 @@ pub const OPENAI_OAUTH_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const XAI_OAUTH_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 /// Kimi Code's managed inference API for both subscription OAuth and Code API keys.
 pub const KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+/// OpenCode Go shares OpenCode credentials but has its own inference endpoint.
+pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 /// Poolside Platform inference. Self-hosted deployments use `https://<domain>/openai/v1`.
 pub const POOLSIDE_BASE_URL: &str = "https://inference.poolside.ai/v1";
 
