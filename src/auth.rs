@@ -279,6 +279,23 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
             if !tok.is_empty() && !oauth_expired(tokens.expires_at) {
                 return Ok(tok);
             }
+            // Stale but refreshable. The vendor CLI would renew this silently on
+            // its next use, so refusing here meant "signed into the CLI" did not
+            // actually mean "signed into nur" — the token merely had to be more
+            // than five minutes old. Mint a fresh one from the same refresh
+            // token the CLI stores, and keep using it transiently.
+            if let Some(refresh) = tokens.refresh_token.as_deref().filter(|r| !r.is_empty()) {
+                let probe = Auth {
+                    provider: exp.to_string(),
+                    ..Default::default()
+                };
+                if let Ok(fresh) = crate::oauth::refresh_tokens(exp, &probe, refresh) {
+                    let tok = fresh.access_token.trim().to_string();
+                    if !tok.is_empty() && !oauth_expired(fresh.expires_at) {
+                        return Ok(tok);
+                    }
+                }
+            }
         }
         return Err(MuseError::NotAuthenticated);
     }

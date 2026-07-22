@@ -4710,18 +4710,18 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
     }
     let area = f.area();
     // Responsive sizing: use available room when fullscreen, shrink when small.
-    // Width: 66% of terminal, clamped 42..96 — old 60 was too narrow to read
-    // slash-command tips even on a 200-column fullscreen session.
+    // Width: span from the palette's left anchor all the way to the terminal's
+    // right edge. A 96-column cap meant widening the window past that added
+    // empty margin instead of revealing more of each command's tip — the whole
+    // reason to resize wider. `fit_modal_rect` still clamps to the frame.
     // Height: up to half the terminal (clamped 6..26) — old fixed 10 hid tips.
-    let desired_w = ((area.width * 2) / 3).clamp(42, 96);
+    let left = input_area.x.saturating_add(1);
+    let desired_w = area.right().saturating_sub(left).max(42);
     let max_rows = (area.height / 2).clamp(6, 26);
     let visible_rows = (matches.len() as u16).min(max_rows);
     let desired_h = visible_rows + 4; // 2 border + 2 inner padding
     let mut rect = fit_modal_rect(area, desired_w, desired_h, 36, 6);
-    rect.x = input_area
-        .x
-        .saturating_add(1)
-        .min(area.right().saturating_sub(rect.width));
+    rect.x = left.min(area.right().saturating_sub(rect.width));
     rect.y = input_area.y.saturating_sub(rect.height).max(area.y);
     f.render_widget(Clear, rect);
     f.render_widget(
@@ -4754,17 +4754,26 @@ fn draw_palette(f: &mut Frame, app: &App, input_area: Rect) {
         .take(vis)
         .map(|(i, (name, desc))| {
             if i == sel {
+                // Pad the highlight to the full row: now that the palette spans
+                // to the window edge, a highlight sized to the text alone would
+                // stop mid-row and read as ragged.
+                let head = format!(" {name:<12}");
+                let body = format!(" {desc} ");
+                let used = UnicodeWidthStr::width(head.as_str())
+                    + UnicodeWidthStr::width(body.as_str());
+                let pad = (inner.width as usize).saturating_sub(used);
                 Line::from(vec![
                     Span::styled(
-                        format!(" {name:<12}"),
+                        head,
                         Style::default()
                             .fg(theme::BG)
                             .bg(theme::META_BLUE)
                             .add_modifier(Modifier::BOLD),
                     ),
+                    Span::styled(body, Style::default().fg(theme::BG).bg(theme::META_BLUE)),
                     Span::styled(
-                        format!(" {desc} "),
-                        Style::default().fg(theme::BG).bg(theme::META_BLUE),
+                        " ".repeat(pad),
+                        Style::default().bg(theme::META_BLUE),
                     ),
                 ])
             } else {

@@ -38,11 +38,10 @@ pub async fn run_subagent(
     };
 
     let mut cfg = config;
-    // Soft cap subagent depth only when the parent has an explicit positive
-    // turn limit. Parent unlimited (0) must stay unlimited for nested work.
-    if cfg.max_turns > 0 {
-        cfg.max_turns = cfg.max_turns.min(20);
-    }
+    // Subagents inherit the parent's turn budget verbatim — no extra ceiling.
+    // A hidden `min(20)` here meant anyone who set an explicit limit silently
+    // got 20 for every swarm child, and the child's death surfaced only as the
+    // tool-result string "error: max turns reached (20)".
     if explore {
         cfg.reasoning_effort = "medium".into();
     }

@@ -92,7 +92,9 @@ Keys held with `Ctrl` or `Alt` are ignored here for the same reason: `Ctrl+A` is
 
 ## Slash commands
 
-Type `/` in the input to see available commands.
+Type `/` in the input to see available commands. The palette spans from the
+input's left edge to the right edge of the window, so widening the terminal
+reveals more of each command's tip rather than adding empty margin.
 
 ### Permission and mode
 

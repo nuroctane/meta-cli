@@ -407,8 +407,16 @@ impl AgentRunner {
         }
         let mut turns = 0u32;
         let mut tool_seq: u64 = 0;
-        // Prevent compact→still-hot→compact infinite loop within one user turn.
-        let mut did_auto_compact = false;
+        // Compaction pressure relief. This was a single bool: one compaction per
+        // user turn, latched even when the attempt *failed*. A long run therefore
+        // got exactly one release valve, and one transient failure removed it for
+        // the rest of the run — after which context grew until the provider
+        // rejected the request outright. Track counts instead, and require the
+        // context to have actually grown before compacting again so a compaction
+        // that frees nothing cannot spin.
+        let mut compactions: u8 = 0;
+        let mut compact_failures: u8 = 0;
+        let mut last_compact_input: u64 = 0;
         // Codex/ChatGPT free (and some hosts) sometimes emit only a reasoning
         // summary and zero tool calls / zero answer text. Retry once with a
         // hard nudge + tool_choice=required before giving up.
@@ -429,17 +437,35 @@ impl AgentRunner {
                 return Err(MuseError::Budget(msg));
             }
 
-            // Auto-compact at most once per user turn (Claude-style pressure relief).
-            if !did_auto_compact && should_auto_compact(usage, &self.config) {
+            // Auto-compact whenever the window is under pressure — as often as a
+            // long run needs, not once. `last_compact_input` is the guard against
+            // spinning: a second attempt only happens once the context has grown
+            // past where the previous one ran.
+            let input_now = {
+                let last = usage.last_usage();
+                if last.input_tokens > 0 {
+                    last.input_tokens
+                } else {
+                    last.total_tokens
+                }
+            };
+            if compactions < MAX_AUTO_COMPACTIONS
+                && compact_failures < MAX_AUTO_COMPACT_FAILURES
+                && input_now > last_compact_input
+                && should_auto_compact(usage, &self.config)
+            {
+                last_compact_input = input_now;
                 let _ = tx.send(AgentEvent::Status("auto-compacting context…".into()));
                 match compact_session(self, session, usage).await {
                     Ok(_) => {
-                        did_auto_compact = true;
+                        compactions += 1;
                         let _ =
                             tx.send(AgentEvent::Status("context compacted — continuing".into()));
                     }
                     Err(e) => {
-                        did_auto_compact = true; // don't spin on repeated failures
+                        // Count the failure but stay eligible: a later attempt,
+                        // after more growth, may well succeed.
+                        compact_failures += 1;
                         let _ = tx.send(AgentEvent::Status(format!("auto-compact skipped: {e}")));
                     }
                 }
@@ -584,7 +610,7 @@ impl AgentRunner {
                 // answered or called tools. Common on ChatGPT free + Codex OAuth
                 // with some gpt-5.* models. Retry once before surfacing a note.
                 let emptyish = text.trim().is_empty();
-                if emptyish && empty_tool_stalls < 1 {
+                if emptyish && empty_tool_stalls < MAX_EMPTY_TOOL_STALLS {
                     empty_tool_stalls += 1;
                     force_tool_choice = true;
                     let note = if unknown_items > 0 {
@@ -626,6 +652,13 @@ impl AgentRunner {
                 self.persist_session(session);
                 return Ok(text);
             }
+
+            // Reaching here means the model produced real tool calls, so any
+            // earlier empty round was a hiccup, not a pattern. Without this
+            // reset the allowance was spent once per turn and never returned:
+            // a stall at round 3 left the next one — twenty rounds later —
+            // terminating the run and reporting it as a normal completion.
+            empty_tool_stalls = 0;
 
             // Every `function_call` just appended must leave this turn with a
             // matching `function_call_output`, whatever happens inside — cancel,
@@ -2187,6 +2220,16 @@ fn empty_turn_hint(provider: &str, model: &str) -> String {
     )
 }
 
+/// Empty (reasoning-only, no tools, no text) rounds retried before giving up.
+/// Reset after any round that produces real tool calls.
+const MAX_EMPTY_TOOL_STALLS: u8 = 3;
+
+/// Ceiling on automatic compactions inside one user turn. High enough that a
+/// long agent run never runs out of relief, low enough to bound the cost.
+const MAX_AUTO_COMPACTIONS: u8 = 8;
+/// Consecutive-ish compaction failures tolerated before giving up on the turn.
+const MAX_AUTO_COMPACT_FAILURES: u8 = 3;
+
 fn should_auto_compact(usage: &UsageTracker, cfg: &Config) -> bool {
     let last = usage.last_usage();
     // Prefer input tokens (what pressures the next request window).
@@ -2321,7 +2364,16 @@ pub async fn compact_session(
         return Err(MuseError::Other("compaction produced no summary".into()));
     }
 
-    // New context: summary + last N user/assistant display messages (not full tool stream).
+    // New context: summary + last N user/assistant display messages + the tail of
+    // the live working items.
+    //
+    // That last part is not optional. `session.messages` only gains an assistant
+    // entry when the turn *returns*, so mid-run it holds the user prompt and
+    // nothing else. Rebuilding from it alone handed the model a summary and the
+    // original request with no trace of the work in flight — so it answered as
+    // if starting fresh, produced no tool calls, and the loop treated that as a
+    // completed turn. A silent stop, right at the token volume where compaction
+    // first fires.
     let keep_n = runner.config.compact_keep_user_turns.max(1) as usize;
     let mut new_items = vec![user_text_item(&format!(
         "[Context compacted. Summary of the conversation so far:]\n\n{summary}"
@@ -2329,12 +2381,54 @@ pub async fn compact_session(
     let recent = recent_dialogue_items(&session.messages, keep_n);
     let kept = recent.len();
     new_items.extend(recent);
+    let tail = safe_tail_after_compact(&session.input_items, COMPACT_KEEP_WORKING_ITEMS);
+    let tail_kept = tail.len();
+    new_items.extend(tail);
     session.input_items = new_items;
     runner.persist_session(session);
     Ok(format!(
         "{summary}\n\n[compact: thinned {thinned} tool bodies · kept {kept} recent dialogue items · \
-         precompact bak written]"
+         {tail_kept} working items · precompact bak written]"
     ))
+}
+
+/// Working items carried across a compaction so the model can see the task it
+/// was mid-way through.
+const COMPACT_KEEP_WORKING_ITEMS: usize = 12;
+
+/// Take the tail of the working items, keeping only *complete* tool pairs.
+///
+/// A `function_call_output` whose `function_call` was summarised away is a hard
+/// 400 on both wire formats — OpenAI rejects a `tool` message with no preceding
+/// declaration, Anthropic rejects a `tool_result` with no matching `tool_use`.
+/// Dropping either half of a split pair keeps the slice valid for both.
+fn safe_tail_after_compact(items: &[Value], want: usize) -> Vec<Value> {
+    let start = items.len().saturating_sub(want);
+    let tail = &items[start..];
+    fn kind(v: &Value) -> &str {
+        v.get("type").and_then(|t| t.as_str()).unwrap_or("")
+    }
+    fn call_id(v: &Value) -> &str {
+        v.get("call_id").and_then(|c| c.as_str()).unwrap_or("")
+    }
+    let calls: std::collections::HashSet<&str> = tail
+        .iter()
+        .filter(|v| kind(v) == "function_call")
+        .map(call_id)
+        .collect();
+    let outputs: std::collections::HashSet<&str> = tail
+        .iter()
+        .filter(|v| kind(v) == "function_call_output")
+        .map(call_id)
+        .collect();
+    tail.iter()
+        .filter(|v| match kind(v) {
+            "function_call" => outputs.contains(call_id(v)),
+            "function_call_output" => calls.contains(call_id(v)),
+            _ => true,
+        })
+        .cloned()
+        .collect()
 }
 
 /// Truncate oversized `function_call_output` bodies outside the last `keep_user_turns`
@@ -2419,4 +2513,92 @@ fn recent_dialogue_items(
         }
     }
     out
+}
+
+#[cfg(test)]
+mod compact_tail_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(id: &str) -> Value {
+        json!({"type":"function_call","call_id":id,"name":"read","arguments":"{}"})
+    }
+    fn output(id: &str) -> Value {
+        json!({"type":"function_call_output","call_id":id,"output":"ok"})
+    }
+    fn text() -> Value {
+        json!({"role":"user","content":[{"type":"input_text","text":"hi"}]})
+    }
+
+    /// A result whose call was summarised away is a hard 400 on both wire
+    /// formats. Whatever the cut point, the kept slice must be self-consistent.
+    #[test]
+    fn tail_never_keeps_a_result_without_its_call() {
+        let items: Vec<Value> = vec![
+            text(),
+            call("a"),
+            output("a"),
+            call("b"),
+            output("b"),
+            call("c"),
+            output("c"),
+        ];
+        for want in 0..=items.len() + 2 {
+            let tail = safe_tail_after_compact(&items, want);
+            let calls: std::collections::HashSet<&str> = tail
+                .iter()
+                .filter(|v| v["type"] == "function_call")
+                .map(|v| v["call_id"].as_str().unwrap())
+                .collect();
+            for v in &tail {
+                if v["type"] == "function_call_output" {
+                    assert!(
+                        calls.contains(v["call_id"].as_str().unwrap()),
+                        "want={want} kept an orphaned result: {tail:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A call whose result was cut is equally invalid (Anthropic requires every
+    /// tool_use to be answered).
+    #[test]
+    fn tail_never_keeps_a_call_without_its_result() {
+        let items = vec![text(), call("a"), output("a"), call("b"), output("b")];
+        for want in 0..=items.len() {
+            let tail = safe_tail_after_compact(&items, want);
+            let outs: std::collections::HashSet<&str> = tail
+                .iter()
+                .filter(|v| v["type"] == "function_call_output")
+                .map(|v| v["call_id"].as_str().unwrap())
+                .collect();
+            for v in &tail {
+                if v["type"] == "function_call" {
+                    assert!(
+                        outs.contains(v["call_id"].as_str().unwrap()),
+                        "want={want} kept a dangling call: {tail:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The point of carrying a tail at all: after compaction the model must
+    /// still see it was mid-task, or it answers as if starting fresh and the
+    /// loop reads that as a finished turn.
+    #[test]
+    fn tail_carries_recent_work_forward() {
+        let items = vec![text(), call("a"), output("a")];
+        let tail = safe_tail_after_compact(&items, COMPACT_KEEP_WORKING_ITEMS);
+        assert!(
+            tail.iter().any(|v| v["type"] == "function_call"),
+            "compaction must not erase the in-flight work: {tail:?}"
+        );
+    }
+
+    #[test]
+    fn empty_items_are_safe() {
+        assert!(safe_tail_after_compact(&[], 12).is_empty());
+    }
 }

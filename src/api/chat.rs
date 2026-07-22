@@ -139,7 +139,17 @@ pub fn build_body_opts(
             .collect();
         if !mapped.is_empty() {
             body["tools"] = json!(mapped);
-            body["tool_choice"] = json!("auto");
+            // Honour an explicit choice instead of always sending "auto".
+            // The turn loop's only recovery from an empty, tool-less reply is
+            // to retry with `tool_choice: "required"` — hardcoding "auto" made
+            // that retry a byte-identical request, so the model returned the
+            // same nothing and the run ended reporting success. Defaults to
+            // "auto" when the caller expressed no preference, so every provider
+            // that never sets it behaves exactly as before.
+            body["tool_choice"] = match req.tool_choice.as_deref() {
+                Some(choice) if !choice.is_empty() => json!(choice),
+                _ => json!("auto"),
+            };
             if req.parallel_tool_calls == Some(false) {
                 body["parallel_tool_calls"] = json!(false);
             }
@@ -397,10 +407,20 @@ pub fn build_response_value(
     }
     let usage_obj = usage
         .map(|u| {
+            // `prompt_tokens_details.cached_tokens` was dropped here, so every
+            // provider that reports a cache hit — OpenAI-compatible and
+            // Anthropic alike — surfaced `cached_tokens: 0` and was priced at
+            // the full input rate.
+            let cached = u
+                .get("prompt_tokens_details")
+                .and_then(|d| d.get("cached_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             json!({
                 "input_tokens": u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
                 "output_tokens": u.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
                 "total_tokens": u.get("total_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+                "input_tokens_details": { "cached_tokens": cached },
             })
         })
         .unwrap_or(json!({}));
@@ -824,31 +844,18 @@ mod tests {
                 "text and tool_calls must be merged for {pid}"
             );
             tool_call_ids_are_declared_before_use(&body);
-            // Ensure we didn't emit two back-to-back assistant messages (strict check)
+            // One model turn must stay one assistant message: text and its
+            // tool_calls merged, never split into a back-to-back pair. A tool
+            // result legitimately ends the run and starts a new turn.
             let mut last_was_assistant = false;
             for m in messages {
                 let is_assistant = m["role"] == "assistant";
-                if is_assistant && last_was_assistant {
-                    // The only case where back-to-back assistants exist in our
-                    // test fixtures is the default req() tail; for this specific
-                    // input it would be a bug (text + tool from same turn split).
-                    // Our merged logic should eliminate the duplicate.
-                    let has_tools = m.get("tool_calls").is_some() && !m["tool_calls"].is_null();
-                    let prev_has_tools = false; // we already merged, so previous would not need second
-                    if has_tools {
-                        // If we see two assistants in a row where second has tool_calls
-                        // and first had text from same turn, that's the bug we're fixing.
-                        assert!(
-                            !last_was_assistant || !has_tools,
-                            "back-to-back assistant messages with tool_calls for {pid}: {body:#}"
-                        );
-                    }
-                }
+                let has_tools = !m["tool_calls"].is_null();
+                assert!(
+                    !(is_assistant && last_was_assistant && has_tools),
+                    "back-to-back assistant messages with tool_calls for {pid}: {body:#}"
+                );
                 last_was_assistant = is_assistant;
-                // Tool should break the assistant run
-                if m["role"] == "tool" {
-                    last_was_assistant = false;
-                }
             }
         }
     }
@@ -1134,5 +1141,64 @@ mod tests {
             split_think("just an answer"),
             (String::new(), "just an answer".into())
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_choice_tests {
+    use super::*;
+    use crate::api::types::ToolDef;
+
+    fn req_with_choice(choice: Option<&str>) -> ResponseRequest {
+        ResponseRequest {
+            model: "m".into(),
+            input: json!([{"role":"user","content":[{"type":"input_text","text":"hi"}]}]),
+            instructions: None,
+            tools: Some(vec![ToolDef {
+                type_: "function".into(),
+                name: "grep".into(),
+                description: Some("search".into()),
+                parameters: None,
+            }]),
+            tool_choice: choice.map(|s| s.to_string()),
+            store: None,
+            include: None,
+            reasoning: None,
+            stream: None,
+            parallel_tool_calls: None,
+            prompt_cache_key: None,
+        }
+    }
+
+    /// The turn loop's only recovery from an empty, tool-less reply is to retry
+    /// with `tool_choice: "required"`. Hardcoding "auto" made that retry a
+    /// byte-identical request, so the model returned the same nothing and the
+    /// run ended reporting success.
+    #[test]
+    fn required_tool_choice_reaches_the_wire() {
+        let body = build_body(&req_with_choice(Some("required")), false);
+        assert_eq!(body["tool_choice"], "required");
+    }
+
+    /// Providers that never set it must be byte-identical to before.
+    #[test]
+    fn absent_tool_choice_still_defaults_to_auto() {
+        assert_eq!(build_body(&req_with_choice(None), false)["tool_choice"], "auto");
+        assert_eq!(build_body(&req_with_choice(Some("")), false)["tool_choice"], "auto");
+    }
+
+    /// Cached-token reporting was dropped in the shared usage remap, so every
+    /// provider reporting a cache hit showed 0 and was priced at full rate.
+    #[test]
+    fn cached_tokens_survive_the_usage_remap() {
+        let usage = json!({
+            "prompt_tokens": 1000,
+            "completion_tokens": 50,
+            "total_tokens": 1050,
+            "prompt_tokens_details": { "cached_tokens": 900 },
+        });
+        let v = build_response_value(Some("id"), Some("m"), "hi", &[], Some(&usage));
+        assert_eq!(v["usage"]["input_tokens"], 1000);
+        assert_eq!(v["usage"]["input_tokens_details"]["cached_tokens"], 900);
     }
 }

@@ -50,7 +50,7 @@ auto_update = true
 | `max_session_cost_usd` | float? | unset (∞) | Optional session $ hard-stop. `/budget cost <usd>` · `/budget clear` |
 | `max_session_tokens` | integer? | unset (∞) | Optional session token hard-stop. `/budget tokens <n>` · `/budget clear` |
 | `stream` | bool | `true` | Stream API responses |
-| `context_window` | integer | `1000000` | Model context window in tokens (range: 1000–2000000) |
+| `context_window` | integer | `1000000` | Fallback context window in tokens (range: 1000–2000000). The models.dev catalog is authoritative when it knows the active provider/model; this value is used only when it does not. Auto-compaction triggers at 55% of the effective window. |
 | `tool_result_max_chars` | integer | `12000` | Max inline tool output chars; larger results spill to disk (`0` = unlimited) |
 | `compact_keep_user_turns` | integer | `4` | Recent user turns kept after compaction |
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |

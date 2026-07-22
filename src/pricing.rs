@@ -448,12 +448,22 @@ pub fn context_window_for(provider: &str, model: &str) -> Option<u64> {
     rates_for(provider, model).context_window
 }
 
-/// Soft-apply catalog context window when the user still has the built-in default.
+/// Apply the catalog's context window for the active provider/model.
+///
+/// The contract `/usage` advertises is "window comes from models.dev when
+/// known, else config.toml context_window" — the catalog is authoritative
+/// because the window is a property of the model, not a user preference.
+///
+/// This used to bail unless the stored value was still exactly the built-in
+/// default, so anyone who had ever set `context_window` (or carried a migrated
+/// one) kept that number for every model forever. A stored 500k against a real
+/// 200k model put the auto-compaction threshold above anything the model could
+/// accept, so nothing ever compacted and the run grew until the provider
+/// rejected it outright — a hard stop with no retry, mid-run.
+///
+/// Applying in both directions matters: clamping down only would ratchet the
+/// window permanently and never recover when switching back to a wide model.
 pub fn maybe_apply_context_window(cfg: &mut crate::config::Config) {
-    const DEFAULT_WINDOW: u64 = 1_000_000;
-    if cfg.context_window != DEFAULT_WINDOW {
-        return;
-    }
     if let Some(w) = context_window_for(&cfg.provider, &cfg.model) {
         if (1000..=2_000_000).contains(&w) {
             cfg.context_window = w;
@@ -551,5 +561,47 @@ mod tests {
         assert_eq!(r.output_per_mtok_usd, 8.0);
         assert_eq!(r.cache_read_per_mtok_usd, 0.2);
         assert_eq!(r.context_window, Some(128000));
+    }
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::*;
+
+    /// The catalog is authoritative for the active model. This used to bail
+    /// unless the stored value was exactly the 1M default, so a user-set window
+    /// masked the real one forever and auto-compaction could never fire.
+    #[test]
+    fn catalog_window_applies_over_a_user_set_value() {
+        let mut cfg = crate::config::Config {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-5".into(),
+            context_window: 500_000,
+            ..Default::default()
+        };
+        maybe_apply_context_window(&mut cfg);
+        if let Some(known) = context_window_for("anthropic", "claude-sonnet-5") {
+            assert_eq!(
+                cfg.context_window, known,
+                "a stored window must not mask the model's real one"
+            );
+            assert_ne!(cfg.context_window, 500_000);
+        }
+    }
+
+    /// Unknown models keep whatever the user configured.
+    #[test]
+    fn unknown_model_keeps_the_configured_window() {
+        let mut cfg = crate::config::Config {
+            provider: "definitely-not-a-provider".into(),
+            model: "definitely-not-a-model".into(),
+            context_window: 321_000,
+            ..Default::default()
+        };
+        let before = cfg.context_window;
+        maybe_apply_context_window(&mut cfg);
+        if context_window_for(&cfg.provider.clone(), &cfg.model.clone()).is_none() {
+            assert_eq!(cfg.context_window, before);
+        }
     }
 }

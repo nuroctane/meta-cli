@@ -101,6 +101,25 @@ pub fn build_body_with_oauth(req: &ResponseRequest, stream: bool, oauth: bool) -
     // …and then that every tool_use is answered in the very next message.
     let messages = normalize_tool_pairs(messages);
 
+    // Lift volatile sections out of the system prompt before it is cached.
+    let (system, volatile) = match system {
+        Some(s) => {
+            let (stable, vol) = split_volatile_instructions(&s);
+            (Some(stable), vol)
+        }
+        None => (None, None),
+    };
+    // The todo list still has to reach the model — as a trailing user block,
+    // where it costs a few tokens instead of invalidating the whole prefix.
+    let mut messages = messages;
+    if let Some(vol) = volatile {
+        messages.push(json!({
+            "role": "user",
+            "content": [{ "type": "text", "text": vol }],
+        }));
+        messages = coalesce_roles(messages);
+    }
+
     let model = normalize_model_id(&req.model);
     let mut body = json!({
         "model": model,
@@ -142,7 +161,13 @@ pub fn build_body_with_oauth(req: &ResponseRequest, stream: bool, oauth: bool) -
             .collect();
         if !mapped.is_empty() {
             body["tools"] = json!(mapped);
-            body["tool_choice"] = json!({ "type": "auto" });
+            // Same fix as the chat path: the loop's empty-turn recovery sends
+            // `tool_choice: "required"`, which was being discarded here.
+            body["tool_choice"] = match req.tool_choice.as_deref() {
+                Some("required") => json!({ "type": "any" }),
+                Some("none") => json!({ "type": "none" }),
+                _ => json!({ "type": "auto" }),
+            };
         }
     }
     if stream {
@@ -166,6 +191,41 @@ pub fn build_body_with_oauth(req: &ResponseRequest, stream: bool, oauth: bool) -
 /// token cost. This restores parity with Claude Code, which sets the same
 /// breakpoints. Max 4 breakpoints per request: system (1) + tools (1) + a rolling
 /// breakpoint on the last 2 messages (≤2).
+/// Split the rendered instructions into a byte-stable prefix and the volatile
+/// `# Current todos` section.
+///
+/// Anthropic prompt caching is prefix-based: any byte change in `system`
+/// invalidates system + tools + the entire message history. The rendered
+/// instructions embed a todo list that changes on every `todo_write`, so the
+/// cache was discarded several times a minute — sessions logged
+/// `cached_tokens: 0` on every single turn while the same harness on other
+/// providers cached millions. Re-reading ~100k input tokens per turn tripped
+/// Anthropic's per-minute input-token limit within 10-30 turns, and (before the
+/// retry fix) the resulting 429 ended the run.
+///
+/// Only the todo section moves; project instructions and activation text stay
+/// in the cached prefix.
+fn split_volatile_instructions(instructions: &str) -> (String, Option<String>) {
+    const MARKER: &str = "\n# Current todos\n";
+    let Some(start) = instructions.find(MARKER) else {
+        return (instructions.to_string(), None);
+    };
+    let after = start + MARKER.len();
+    let end = instructions[after..]
+        .find("\n# ")
+        .map(|i| after + i)
+        .unwrap_or(instructions.len());
+    let volatile = instructions[start..end].trim().to_string();
+    let mut stable = String::with_capacity(instructions.len());
+    stable.push_str(&instructions[..start]);
+    stable.push_str(&instructions[end..]);
+    if volatile.is_empty() {
+        (stable, None)
+    } else {
+        (stable, Some(volatile))
+    }
+}
+
 fn apply_prompt_caching(body: &mut Value) {
     fn mark(block: &mut Value) {
         if let Some(obj) = block.as_object_mut() {
@@ -604,14 +664,7 @@ pub fn parse_message(v: &Value) -> Value {
             }
         }
     }
-    let usage = v.get("usage").map(|u| {
-        json!({
-            "prompt_tokens": u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            "completion_tokens": u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-            "total_tokens": u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0)
-                + u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0),
-        })
-    });
+    let usage = v.get("usage").map(chat_usage_from_anthropic);
     build_response_value(id, model, &text, &tool_calls, usage.as_ref())
 }
 
@@ -745,13 +798,22 @@ impl StreamAccumulator {
     }
 }
 
+/// Anthropic reports `input_tokens` *excluding* anything served from or written
+/// to the prompt cache. Reading only that field made a 150k-token conversation
+/// report `input_tokens: 2` on a cache hit, so `should_auto_compact` saw no
+/// pressure at all and the context grew until the API rejected it outright.
+/// Context pressure is the sum of all three; `cached_tokens` carries the
+/// cache-read slice separately so pricing can bill it at the cheaper rate.
 fn chat_usage_from_anthropic(u: &Value) -> Value {
-    let p = u.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-    let c = u.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+    let field = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    let cache_read = field("cache_read_input_tokens");
+    let prompt = field("input_tokens") + cache_read + field("cache_creation_input_tokens");
+    let completion = field("output_tokens");
     json!({
-        "prompt_tokens": p,
-        "completion_tokens": c,
-        "total_tokens": p + c,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": prompt + completion,
+        "prompt_tokens_details": { "cached_tokens": cache_read },
     })
 }
 
@@ -1136,5 +1198,72 @@ mod tests {
             .unwrap()
             .iter()
             .any(|o| o["type"] == "function_call" && o["arguments"] == "{\"p\":1}"));
+    }
+}
+
+#[cfg(test)]
+mod stop_and_cache_tests {
+    use super::*;
+
+    /// Anthropic reports `input_tokens` excluding cached reads. Counting only
+    /// that field made a large conversation look like ~2 tokens of pressure, so
+    /// auto-compaction never fired and context grew until the API rejected it.
+    #[test]
+    fn usage_counts_cache_tokens_as_context_pressure() {
+        let u = json!({
+            "input_tokens": 2,
+            "output_tokens": 100,
+            "cache_read_input_tokens": 150_000,
+            "cache_creation_input_tokens": 1_000,
+        });
+        let got = chat_usage_from_anthropic(&u);
+        assert_eq!(got["prompt_tokens"], 151_002);
+        assert_eq!(got["total_tokens"], 151_102);
+        assert_eq!(got["prompt_tokens_details"]["cached_tokens"], 150_000);
+    }
+
+    #[test]
+    fn usage_without_cache_fields_is_unchanged() {
+        let u = json!({ "input_tokens": 500, "output_tokens": 20 });
+        let got = chat_usage_from_anthropic(&u);
+        assert_eq!(got["prompt_tokens"], 500);
+        assert_eq!(got["total_tokens"], 520);
+        assert_eq!(got["prompt_tokens_details"]["cached_tokens"], 0);
+    }
+
+    /// The todo list changes every `todo_write`; leaving it in `system` broke
+    /// Anthropic's prefix cache on every turn.
+    #[test]
+    fn volatile_todos_are_lifted_out_of_the_cached_prefix() {
+        let instructions = "You are nur.\n\n# Current todos\n- [ ] one\n- [x] two\n\n# Project instructions (repo)\nBe careful.\n";
+        let (stable, volatile) = split_volatile_instructions(instructions);
+        assert!(!stable.contains("Current todos"), "todos must leave system");
+        assert!(!stable.contains("[ ] one"));
+        assert!(
+            stable.contains("# Project instructions (repo)") && stable.contains("You are nur."),
+            "stable sections must stay in the cached prefix: {stable:?}"
+        );
+        let volatile = volatile.expect("todo section should be extracted");
+        assert!(volatile.contains("[ ] one") && volatile.contains("[x] two"));
+    }
+
+    /// Two turns whose only difference is the todo list must produce a
+    /// byte-identical cached prefix — that is the whole point.
+    #[test]
+    fn differing_todos_yield_an_identical_stable_prefix() {
+        let a = "Base.\n\n# Current todos\n- [ ] alpha\n\n# Style\nTerse.\n";
+        let b = "Base.\n\n# Current todos\n- [x] alpha\n- [ ] beta\n\n# Style\nTerse.\n";
+        assert_eq!(
+            split_volatile_instructions(a).0,
+            split_volatile_instructions(b).0
+        );
+    }
+
+    #[test]
+    fn instructions_without_todos_are_untouched() {
+        let s = "Just a system prompt.\n";
+        let (stable, volatile) = split_volatile_instructions(s);
+        assert_eq!(stable, s);
+        assert!(volatile.is_none());
     }
 }

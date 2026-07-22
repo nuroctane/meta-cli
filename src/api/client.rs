@@ -1032,32 +1032,67 @@ impl ApiClient {
         let url = format!("{}/messages", self.base_url);
         let oauth = self.oauth.is_some() || super::anthropic::is_oauth_token(&self.api_key);
         let body = super::anthropic::build_body_with_oauth(req, true, oauth);
-        let res = self
-            .send_with_oauth_retry(|| {
-                self.http
-                    .post(&url)
-                    .header("Content-Type", "application/json")
-                    .header("Accept", "text/event-stream")
-                    .json(&body)
-            })
-            .await
-            .map_err(|e| MuseError::Other(format!("stream connect failed: {e}")))?;
 
-        let status = res.status();
-        let content_type = res
-            .headers()
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
+        // This path had no retry whatsoever while every sibling path has 3-4
+        // attempts with backoff. It matters more here than anywhere else: the
+        // parent orchestrator streams and subagents do not, so a single 429 or
+        // 529 killed the parent turn outright while its children sailed on.
+        // 529 (`overloaded_error`) is Anthropic's own code and is handled here
+        // rather than in the shared `is_retryable_status`, so no other provider
+        // changes behaviour.
+        let mut attempt: u32 = 0;
+        let (res, status, content_type) = loop {
+            attempt += 1;
+            let res = self
+                .send_with_oauth_retry(|| {
+                    self.http
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "text/event-stream")
+                        .json(&body)
+                })
+                .await;
 
-        if !status.is_success() {
-            let text = res.text().await.unwrap_or_default();
-            return Err(MuseError::Api {
-                status: status.as_u16(),
-                message: parse_error_message(&text).unwrap_or(text),
-            });
-        }
+            let res = match res {
+                Ok(r) => r,
+                Err(e) if attempt < 4 && !cancel.is_cancelled() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        400 * 2u64.pow(attempt - 1),
+                    ))
+                    .await;
+                    let _ = e;
+                    continue;
+                }
+                Err(e) => return Err(MuseError::Other(format!("stream connect failed: {e}"))),
+            };
+
+            let status = res.status();
+            let code = status.as_u16();
+            if !status.is_success() {
+                let retryable = Self::is_retryable_status(code) || code == 529;
+                if retryable && attempt < 4 && !cancel.is_cancelled() {
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        400 * 2u64.pow(attempt - 1),
+                    ))
+                    .await;
+                    continue;
+                }
+                let text = res.text().await.unwrap_or_default();
+                return Err(MuseError::Api {
+                    status: code,
+                    message: parse_error_message(&text).unwrap_or(text),
+                });
+            }
+
+            let content_type = res
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            break (res, status, content_type);
+        };
+        let _ = status;
 
         // Server ignored stream=true → plain JSON message.
         if !content_type.contains("text/event-stream") {
