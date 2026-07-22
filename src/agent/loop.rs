@@ -421,6 +421,7 @@ impl AgentRunner {
         // summary and zero tool calls / zero answer text. Retry once with a
         // hard nudge + tool_choice=required before giving up.
         let mut empty_tool_stalls: u8 = 0;
+        let mut truncation_continuations: u8 = 0;
         let mut force_tool_choice = false;
 
         loop {
@@ -606,33 +607,45 @@ impl AgentRunner {
             // quietly with a partial answer. Detect it via the mapped status
             // field (chat completions sets status="length") and ask the model
             // to continue, rather than reporting success on a clipped output.
+            // Guarded by MAX_TRUNCATION_CONTINUATIONS to avoid infinite loop.
+            let mut truncated_this_round = false;
             if let Some(st) = resp.status.as_deref() {
                 if st == "length" {
-                    let _ = tx.send(AgentEvent::Status(
-                        "model response truncated at max_tokens (finish_reason: length) — asking to continue…".into(),
-                    ));
-                    // Keep the partial text in history so continuation has context,
-                    // then nudge the model to carry on.
-                    if !text.trim().is_empty() {
-                        // The partial answer is already in `replayed`? For text-only
-                        // completions `replayed` contains the message; we still push a
-                        // continuation hint so the next turn continues the same thought.
-                        session.input_items.push(
-                            crate::api::types::user_text_item(
-                                "[harness] Your previous response was cut off by the provider's max_tokens limit                                  (finish_reason: length). The user saw a truncated, incomplete answer.                                  Continue exactly where you left off, without repeating the preamble.                                  If you were in the middle of a tool call, retry that call.                                  If you were writing an answer, finish it.",
+                    truncated_this_round = true;
+                    if truncation_continuations >= MAX_TRUNCATION_CONTINUATIONS {
+                        let _ = tx.send(AgentEvent::Status(
+                            format!(
+                                "model response truncated {truncation_continuations}× at max_tokens — giving up and surfacing partial output (limit {MAX_TRUNCATION_CONTINUATIONS})"
                             ),
-                        );
-                        self.persist_session(session);
-                        continue;
+                        ));
+                        // fall through to normal completion handling with partial text
+                        truncation_continuations = 0;
                     } else {
-                        // No text at all but truncated (e.g. tool-call args cut)
-                        session.input_items.push(
-                            crate::api::types::user_text_item(
-                                "[harness] Your previous response was truncated at max_tokens (finish_reason: length)                                  with no usable output. Retry the last step, possibly with smaller chunks,                                  or summarize and continue.",
+                        truncation_continuations += 1;
+                        let _ = tx.send(AgentEvent::Status(
+                            format!(
+                                "model response truncated at max_tokens (finish_reason: length) — asking to continue… ({truncation_continuations}/{MAX_TRUNCATION_CONTINUATIONS})"
                             ),
-                        );
-                        self.persist_session(session);
-                        continue;
+                        ));
+                        // Keep the partial text in history so continuation has context,
+                        // then nudge the model to carry on.
+                        if !text.trim().is_empty() {
+                            session.input_items.push(
+                                crate::api::types::user_text_item(
+                                    "[harness] Your previous response was cut off by the provider's max_tokens limit (finish_reason: length). The user saw a truncated, incomplete answer. Continue exactly where you left off, without repeating the preamble. If you were in the middle of a tool call, retry that call. If you were writing an answer, finish it.",
+                                ),
+                            );
+                            self.persist_session(session);
+                            continue;
+                        } else {
+                            session.input_items.push(
+                                crate::api::types::user_text_item(
+                                    "[harness] Your previous response was truncated at max_tokens (finish_reason: length) with no usable output. Retry the last step, possibly with smaller chunks, or summarize and continue.",
+                                ),
+                            );
+                            self.persist_session(session);
+                            continue;
+                        }
                     }
                 }
                 if st == "content_filter" {
@@ -640,6 +653,9 @@ impl AgentRunner {
                         "model stopped for content_filter — surfacing partial output and ending turn".into(),
                     ));
                 }
+            }
+            if !truncated_this_round {
+                truncation_continuations = 0;
             }
 
             if text_deltas == 0 && !text.is_empty() {
@@ -2264,6 +2280,10 @@ fn empty_turn_hint(provider: &str, model: &str) -> String {
 /// Empty (reasoning-only, no tools, no text) rounds retried before giving up.
 /// Reset after any round that produces real tool calls.
 const MAX_EMPTY_TOOL_STALLS: u8 = 3;
+
+/// Consecutive truncation continuations before we surface partial output and stop.
+/// Guards against an infinite loop if the provider keeps returning finish_reason=length.
+const MAX_TRUNCATION_CONTINUATIONS: u8 = 5;
 
 /// Ceiling on automatic compactions inside one user turn. High enough that a
 /// long agent run never runs out of relief, low enough to bound the cost.

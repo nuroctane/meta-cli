@@ -354,6 +354,7 @@ pub enum SgNode {
         live: bool,
         started: Instant,
         duration: Option<Duration>,
+        cell_idx: usize,
     },
     /// A tool call. `agent` marks the `agent` tool — the renderer fans its
     /// live subagent runs out underneath as parallel children.
@@ -365,22 +366,24 @@ pub enum SgNode {
         started: Instant,
         duration: Option<Duration>,
         agent: bool,
+        cell_idx: usize,
     },
     /// The assistant is streaming an answer right now.
     Answering {
         text_excerpt: String,
     },
     /// A mid-turn user steer (`/steer` or an injected follow-up).
-    Steer { text: String },
+    Steer { text: String, cell_idx: usize },
     /// A user prompt that starts a new turn (persistent view). Rendered like
     /// root prompt (double border) but titled "prompt", not "root prompt".
-    Prompt { text: String },
+    Prompt { text: String, cell_idx: usize },
     /// A follow-up queued while the turn runs.
     Queued { text: String },
     /// The turn settled — completed or interrupted.
     Done {
         duration: Duration,
         interrupted: bool,
+        cell_idx: usize,
     },
 }
 
@@ -465,6 +468,16 @@ fn format_tool_result_lines(result: &str) -> Vec<String> {
         lines.push(format!("✓ return: \"{clipped}\""));
     }
     lines
+}
+
+/// Hit-box for a sidegraph node that maps to a transcript cell (for click-to-peek).
+#[derive(Debug, Clone, Default)]
+pub struct SideGraphHit {
+    pub cell_idx: usize,
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
 }
 
 /// The whole current (or most recent) query as a flow graph: root prompt +
@@ -1686,6 +1699,17 @@ pub struct App {
     pub sidegraph_drag_origin: Option<(u16, u16)>,
     pub sidegraph_drag_start_scroll: u16,
     pub sidegraph_drag_start_pan_x: u16,
+    /// True once the user has manually panned / scrolled the sidegraph. When
+    /// set, new nodes appearing must NOT move the canvas out from under them
+    /// — we keep the viewport anchored instead of auto-scrolling to bottom.
+    pub sidegraph_user_panned: bool,
+    /// Previous max scroll values, used to keep viewport stable when user has panned.
+    pub sidegraph_prev_max_scroll: u16,
+    pub sidegraph_prev_max_scroll_x: u16,
+    /// Hit-boxes for sidegraph nodes that map to transcript cells (for click-to-peek).
+    pub sidegraph_hits: Vec<SideGraphHit>,
+    /// Last click in sidegraph for double-click detection (time + canvas coords).
+    pub sidegraph_last_click: Option<(Instant, u16, u16)>,
     /// Full panel rect (border included) for wheel / click hit-testing.
     pub sidegraph_body: ratatui::layout::Rect,
     /// One-shot flag: noted once that the open panel is hidden because the
@@ -2017,6 +2041,11 @@ pub async fn run_tui(
         sidegraph_drag_origin: None,
         sidegraph_drag_start_scroll: 0,
         sidegraph_drag_start_pan_x: 0,
+        sidegraph_user_panned: false,
+        sidegraph_prev_max_scroll: 0,
+        sidegraph_prev_max_scroll_x: 0,
+        sidegraph_hits: Vec::new(),
+        sidegraph_last_click: None,
         sidegraph_body: ratatui::layout::Rect::default(),
         sidegraph_narrow: false,
         needs_full_redraw: false,
@@ -3489,6 +3518,7 @@ impl App {
                         .sidegraph_scroll
                         .saturating_add(3)
                         .min(self.sidegraph_max_scroll);
+                    self.sidegraph_user_panned = true;
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
@@ -3517,6 +3547,7 @@ impl App {
                         .min(self.peek_rows.saturating_sub(1));
                 } else if self.wheel_over_sidegraph(m.column, m.row) {
                     self.sidegraph_scroll = self.sidegraph_scroll.saturating_sub(3);
+                    self.sidegraph_user_panned = true;
                 } else {
                     self.scroll_down(3);
                     if self.mouse_left_down && self.select_anchor.is_some() {
@@ -3567,6 +3598,34 @@ impl App {
                     return;
                 }
                 if self.wheel_over_sidegraph(m.column, m.row) {
+                    // Check for double-click detection first (box peek or empty reset)
+                    let now = Instant::now();
+                    let is_dbl = self
+                        .sidegraph_last_click
+                        .map(|(t, c, r)| {
+                            now.duration_since(t) < Duration::from_millis(450)
+                                && (c as i32 - m.column as i32).abs() < 3
+                                && (r as i32 - m.row as i32).abs() < 2
+                        })
+                        .unwrap_or(false);
+                    let hit = self.sidegraph_hit_at(m.column, m.row);
+                    if is_dbl {
+                        self.sidegraph_last_click = None;
+                        if let Some(h) = hit {
+                            // Double-click box -> open click-to-peek modal for that cell if peekable
+                            if self.cells.get(h.cell_idx).map(|c| c.is_peekable()).unwrap_or(false) {
+                                self.open_stable_peek(h.cell_idx);
+                            }
+                            return;
+                        } else {
+                            // Double-click empty -> return to root/prompt/steer position
+                            self.sidegraph_reset_view();
+                            return;
+                        }
+                    }
+                    // Store this click for double-click detection
+                    self.sidegraph_last_click = Some((now, m.column, m.row));
+                    // Single click on box does NOT open peek (requires double/right), but we still allow drag
                     self.sidegraph_drag_canvas = true;
                     self.sidegraph_drag_origin = Some((m.column, m.row));
                     self.sidegraph_drag_start_scroll = self.sidegraph_scroll;
@@ -3657,6 +3716,16 @@ impl App {
             MouseEventKind::Down(MouseButton::Right) => {
                 if approval_open {
                     return;
+                }
+                // Right-click on sidegraph box -> open click-to-peek modal (same as transcript)
+                if self.wheel_over_sidegraph(m.column, m.row) {
+                    if let Some(hit) = self.sidegraph_hit_at(m.column, m.row) {
+                        if self.cells.get(hit.cell_idx).map(|c| c.is_peekable()).unwrap_or(false) {
+                            self.open_stable_peek(hit.cell_idx);
+                        }
+                        return;
+                    }
+                    // Right-click empty in sidegraph — no action (could reset view, but keep panning)
                 }
                 self.scrollbar_drag = false;
                 self.selecting = false;
@@ -3761,6 +3830,10 @@ impl App {
                 let new_pan_x = (self.sidegraph_drag_start_pan_x as i32 - delta_x)
                     .clamp(0, self.sidegraph_max_scroll_x as i32) as u16;
                 self.sidegraph_scroll_x = new_pan_x;
+                // User has taken control — keep canvas sticky
+                if delta_y.abs() > 1 || delta_x.abs() > 1 {
+                    self.sidegraph_user_panned = true;
+                }
             }
             return;
         }
@@ -4083,6 +4156,56 @@ impl App {
         self.sidegraph_open
             && self.sidegraph_body.width > 0
             && rect_contains(self.sidegraph_body, col, row)
+    }
+
+    /// Inner rect of sidegraph panel (border excluded) — where canvas is drawn.
+    fn sidegraph_inner_rect(&self) -> ratatui::layout::Rect {
+        let b = self.sidegraph_body;
+        if b.width <= 2 || b.height <= 2 {
+            ratatui::layout::Rect::default()
+        } else {
+            ratatui::layout::Rect {
+                x: b.x + 1,
+                y: b.y + 1,
+                width: b.width - 2,
+                height: b.height - 2,
+            }
+        }
+    }
+
+    /// Convert mouse (col,row) over sidegraph to canvas (x,y) using current scroll.
+    fn sidegraph_canvas_coords(&self, col: u16, row: u16) -> Option<(usize, usize)> {
+        let inner = self.sidegraph_inner_rect();
+        if inner.width == 0 || inner.height == 0 {
+            return None;
+        }
+        if !rect_contains(inner, col, row) {
+            return None;
+        }
+        let max_scroll = self.sidegraph_max_scroll;
+        let top = max_scroll.saturating_sub(self.sidegraph_scroll);
+        let cx = (col.saturating_sub(inner.x) as usize) + self.sidegraph_scroll_x as usize;
+        let cy = (row.saturating_sub(inner.y) as usize) + top as usize;
+        Some((cx, cy))
+    }
+
+    /// Hit-test sidegraph boxes at mouse position, returning the cell_idx if any.
+    pub(crate) fn sidegraph_hit_at(&self, col: u16, row: u16) -> Option<SideGraphHit> {
+        let (cx, cy) = self.sidegraph_canvas_coords(col, row)?;
+        for hit in &self.sidegraph_hits {
+            if cx >= hit.x && cx < hit.x + hit.w && cy >= hit.y && cy < hit.y + hit.h {
+                return Some(hit.clone());
+            }
+        }
+        None
+    }
+
+    /// Double-click empty space should return to root / steer / prompt position.
+    pub(crate) fn sidegraph_reset_view(&mut self) {
+        self.sidegraph_scroll = 0;
+        self.sidegraph_scroll_x = 0;
+        self.sidegraph_user_panned = false;
+        self.sidegraph_last_click = None;
     }
 
     /// Check if mouse position is on or adjacent to the left border of the sidegraph panel.
@@ -6655,9 +6778,7 @@ impl App {
         let mut first_user_seen = false;
         let mut in_turn = false;
 
-        let end = self.cells.len();
-
-        for c in &self.cells[0..end] {
+        for (idx, c) in self.cells.iter().enumerate() {
             match c {
                 Cell::Thinking {
                     text,
@@ -6672,6 +6793,7 @@ impl App {
                         live: *active,
                         started: *started,
                         duration: *duration,
+                        cell_idx: idx,
                     })
                 },
                 Cell::Tool {
@@ -6696,6 +6818,7 @@ impl App {
                         started: *started,
                         duration: *duration,
                         agent: name == "agent",
+                        cell_idx: idx,
                     })
                 },
                 Cell::Assistant { streaming, text } => {
@@ -6715,11 +6838,13 @@ impl App {
                         // Mid-turn user message -> steer
                         nodes.push(SgNode::Steer {
                             text: first_line(text, 120),
+                            cell_idx: idx,
                         });
                     } else {
                         // New turn prompt after previous Done
                         nodes.push(SgNode::Prompt {
                             text: first_line(text, 120),
+                            cell_idx: idx,
                         });
                         in_turn = true;
                     }
@@ -6736,6 +6861,7 @@ impl App {
                     nodes.push(SgNode::Done {
                         duration: *duration,
                         interrupted: *interrupted,
+                        cell_idx: idx,
                     })
                 },
                 _ => {}
@@ -6768,11 +6894,12 @@ impl App {
         self.sidegraph_live = on;
         if on {
             // Persistent view: graph never clears, new prompts flow in after
-            // previous Done. Keep horizontal pan sticky (user may be inspecting
-            // a far-right tree), but pin vertical to bottom (newest) like the
-            // transcript. Previously this re-rooted and reset both axes.
-            self.sidegraph_scroll = 0;
-            // self.sidegraph_scroll_x is intentionally kept sticky for persistence
+            // previous Done. Keep horizontal pan sticky and respect user panning:
+            // if user has panned, don't yank them back to bottom.
+            if !self.sidegraph_user_panned {
+                self.sidegraph_scroll = 0;
+            }
+            // scroll_x stays sticky for persistence regardless
             self.refresh_sidegraph();
         }
     }
@@ -6825,6 +6952,8 @@ impl App {
         self.sidegraph_live = true;
         self.sidegraph_scroll = 0;
         self.sidegraph_scroll_x = 0;
+        self.sidegraph_user_panned = false;
+        self.sidegraph_last_click = None;
         self.push_note(
             Tone::Neutral,
             if has_query {

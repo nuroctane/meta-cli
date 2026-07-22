@@ -2846,6 +2846,7 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // horizontal panning reveal real content instead of a rendering overrun.
     let iw = inner.width as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut built_forest: Option<SgForest> = None;
     if iw >= 8 && inner.height > 0 {
         let empty_model = crate::tui::app::SideGraphModel {
             query: String::new(),
@@ -2865,14 +2866,26 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
         let mut forest = sg_build_forest(model, &this_turn, tick, running);
         let canvas = sg_paint_forest(&mut forest, iw);
         lines = canvas.to_lines();
+        built_forest = Some(forest);
     }
 
-    // Vertical scroll (measured from the bottom, so a live graph pins to the
-    // newest node) and horizontal pan, both re-clamped against real content.
+    // Vertical scroll: measured from bottom when not panned, but sticky when user has panned.
     let total = lines.len() as u16;
     let view = inner.height;
     let max_scroll = total.saturating_sub(view);
+    // Keep viewport stable if user has panned — new nodes appearing should not shove the canvas.
+    if app.sidegraph_user_panned && app.sidegraph_prev_max_scroll > 0 {
+        let delta = max_scroll.saturating_sub(app.sidegraph_prev_max_scroll);
+        if delta > 0 && app.sidegraph_scroll > 0 {
+            // Keep the same top by growing scroll with the content
+            app.sidegraph_scroll = app
+                .sidegraph_scroll
+                .saturating_add(delta)
+                .min(max_scroll);
+        }
+    }
     app.sidegraph_max_scroll = max_scroll;
+    app.sidegraph_prev_max_scroll = max_scroll;
     if app.sidegraph_scroll > max_scroll {
         app.sidegraph_scroll = max_scroll;
     }
@@ -2884,7 +2897,9 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
         .max()
         .unwrap_or(0);
     let max_pan_x = max_line_w.saturating_sub(inner.width);
+    // Horizontal is absolute from left, so it is naturally stable when user panned.
     app.sidegraph_max_scroll_x = max_pan_x;
+    app.sidegraph_prev_max_scroll_x = max_pan_x;
     if app.sidegraph_scroll_x > max_pan_x {
         app.sidegraph_scroll_x = max_pan_x;
     }
@@ -2894,6 +2909,30 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
         inner,
     );
     app.sidegraph_body = area;
+
+    // Build hit-boxes for click-to-peek: map canvas coords -> cell_idx
+    app.sidegraph_hits.clear();
+    if let Some(forest) = built_forest {
+        let mut push_hits = |nodes: &[SgLay]| {
+            for n in nodes {
+                if let Some(ci) = n.cell_idx {
+                    app.sidegraph_hits.push(crate::tui::app::SideGraphHit {
+                        cell_idx: ci,
+                        x: n.x,
+                        y: n.y,
+                        w: SG_NODE_W,
+                        h: n.h,
+                    });
+                }
+                // subagent kids don't have cell_idx (they are swarm runs), skip peek
+            }
+        };
+        push_hits(&forest.main);
+        push_hits(&forest.live);
+        for tt in &forest.tool_tracks {
+            push_hits(&tt.nodes);
+        }
+    }
 }
 
 // ── sidegraph canvas primitives ──────────────────────────────────────────
@@ -3085,6 +3124,7 @@ struct SgLay {
     x: usize,
     y: usize,
     h: usize,
+    cell_idx: Option<usize>,
 }
 
 impl SgLay {
@@ -3095,6 +3135,18 @@ impl SgLay {
         dur: &str,
         hue: Color,
         raw: Vec<(String, Color)>,
+    ) -> Self {
+        Self::new_with_cell(glyph, glyph_hue, title, dur, hue, raw, None)
+    }
+
+    fn new_with_cell(
+        glyph: &str,
+        glyph_hue: Color,
+        title: &str,
+        dur: &str,
+        hue: Color,
+        raw: Vec<(String, Color)>,
+        cell_idx: Option<usize>,
     ) -> Self {
         let mut details: Vec<(String, Color)> = Vec::new();
         for (text, c) in raw {
@@ -3119,6 +3171,7 @@ impl SgLay {
             x: 0,
             y: 0,
             h,
+            cell_idx,
         }
     }
 
@@ -3366,6 +3419,7 @@ fn sg_build_spine(
                 live: l,
                 started,
                 duration,
+                ..
             } => {
                 let (glyph, ghue, dur) = if *l {
                     (
@@ -3398,6 +3452,7 @@ fn sg_build_spine(
                 started,
                 duration,
                 agent,
+                ..
             } => {
                 let (glyph, hue, dur) = match state {
                     SgState::Running => (
@@ -3479,7 +3534,7 @@ fn sg_build_spine(
                 theme::CYAN,
                 vec![(text_excerpt.clone(), theme::MUTED)],
             )),
-            SgNode::Steer { text } => {
+            SgNode::Steer { text, .. } => {
                 if let Some(t) = last_thinking {
                     back_edge = Some((spine.len(), t));
                 }
@@ -3503,6 +3558,7 @@ fn sg_build_spine(
             SgNode::Done {
                 duration,
                 interrupted,
+                ..
             } => {
                 let (glyph, hue, status_str) = if *interrupted {
                     ("◼", theme::WARN, "interrupted")
@@ -3518,7 +3574,7 @@ fn sg_build_spine(
                     vec![(status_str.to_string(), hue)],
                 ));
             }
-            SgNode::Prompt { text } => {
+            SgNode::Prompt { text, .. } => {
                 let mut lay = SgLay::new(
                     "■",
                     theme::CYAN,
@@ -3679,6 +3735,7 @@ fn sg_build_forest(
                 live: l,
                 started,
                 duration,
+                cell_idx,
             } => {
                 let (glyph, ghue, dur) = if *l {
                     (
@@ -3694,13 +3751,14 @@ fn sg_build_forest(
                     )
                 };
                 last_thinking = Some(main.len());
-                main.push(SgLay::new(
+                main.push(SgLay::new_with_cell(
                     &glyph,
                     ghue,
                     "reasoning",
                     &dur,
                     theme::VIOLET,
                     vec![(excerpt.clone(), theme::MUTED)],
+                    Some(*cell_idx),
                 ));
             }
             SgNode::Tool {
@@ -3711,6 +3769,7 @@ fn sg_build_forest(
                 started,
                 duration,
                 agent,
+                cell_idx,
             } => {
                 let (glyph, hue, dur) = match state {
                     SgState::Running => (
@@ -3744,7 +3803,8 @@ fn sg_build_forest(
                 let show_children = *agent
                     && !this_turn.is_empty()
                     && (is_last || matches!(state, SgState::Running));
-                let mut lay = SgLay::new(&glyph, hue, name, &dur, hue, raw);
+                let mut lay =
+                    SgLay::new_with_cell(&glyph, hue, name, &dur, hue, raw, Some(*cell_idx));
                 if show_children {
                     let mut children = this_turn.to_vec();
                     children.sort_by_key(|r| {
@@ -3792,17 +3852,18 @@ fn sg_build_forest(
                 theme::CYAN,
                 vec![(text_excerpt.clone(), theme::MUTED)],
             )),
-            SgNode::Steer { text } => {
+            SgNode::Steer { text, cell_idx } => {
                 if let Some(t) = last_thinking {
                     back_edge = Some((main.len(), t));
                 }
-                main.push(SgLay::new(
+                main.push(SgLay::new_with_cell(
                     "↻",
                     theme::WARN,
                     "steer",
                     "",
                     theme::WARN,
                     vec![(text.clone(), theme::MUTED)],
+                    Some(*cell_idx),
                 ));
             }
             SgNode::Queued { text } => main.push(SgLay::new(
@@ -3816,30 +3877,33 @@ fn sg_build_forest(
             SgNode::Done {
                 duration,
                 interrupted,
+                cell_idx,
             } => {
                 let (glyph, hue, status_str) = if *interrupted {
                     ("◼", theme::WARN, "interrupted")
                 } else {
                     ("✓", theme::SUCCESS, "completed")
                 };
-                main.push(SgLay::new(
+                main.push(SgLay::new_with_cell(
                     glyph,
                     hue,
                     "turn",
                     &theme::fmt_duration(*duration),
                     hue,
                     vec![(status_str.to_string(), hue)],
+                    Some(*cell_idx),
                 ));
             }
-            SgNode::Prompt { text } => {
+            SgNode::Prompt { text, cell_idx } => {
                 // Prompt nodes are double-bordered like root, titled "prompt"
-                let mut lay = SgLay::new(
+                let mut lay = SgLay::new_with_cell(
                     "■",
                     theme::CYAN,
                     "prompt",
                     "",
                     theme::CYAN,
                     vec![(text.clone(), theme::MUTED)],
+                    Some(*cell_idx),
                 );
                 lay.double = true;
                 main.push(lay);
@@ -3876,69 +3940,68 @@ fn sg_build_forest(
 }
 
 fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
-    // collect widths in display order: main, live, then per-tool tracks
-    let mut widths: Vec<usize> = Vec::new();
-    let mut track_kinds: Vec<SgCat> = Vec::new(); // for debugging / future
-    let mut has_main = false;
-    let mut has_live = false;
+    // v0.25.1 anchored layout:
+    // - root + main (prompt/steer/thinking/answering/done) + live (active tool) share
+    //   the same X anchor on the left. This keeps the active column's arrow
+    //   fixed under root (or subsequent prompt/steer) and active box registered
+    //   under that arrow, regardless of how many side tracks appear.
+    // - tool tracks (grouped completed tools) extend to the right of the anchor.
+    // - canvas grows to the right, never shifting the anchor.
 
-    if !forest.main.is_empty() {
-        widths.push(track_content_width(&forest.main));
-        track_kinds.push(SgCat::Main);
-        has_main = true;
-    }
-    if !forest.live.is_empty() {
-        widths.push(track_content_width(&forest.live));
-        track_kinds.push(SgCat::Live);
-        has_live = true;
-    }
-    for tt in &forest.tool_tracks {
-        widths.push(track_content_width(&tt.nodes));
-        track_kinds.push(tt.cat);
-    }
-
-    let n_tracks = widths.len();
-    let gutter = if forest.back_edge.is_some() { 16 } else { 1 };
-
-    if n_tracks == 0 {
-        // only root + maybe empty — still draw root
-        let canvas_w = (SG_NODE_W + 2).max(panel_w) + gutter;
-        let canvas_h = forest.root.h + 1;
-        let mut c = SgCanvas::new(canvas_w, canvas_h);
-        forest.root.x = (canvas_w - gutter - SG_NODE_W) / 2;
-        forest.root.y = 0;
-        sg_draw_box(&mut c, &forest.root);
-        return c;
-    }
-
-    let gap = SG_GAP + 1; // track gap
-    let total_tracks_w = widths.iter().sum::<usize>() + gap * n_tracks.saturating_sub(1);
-    let canvas_w = (total_tracks_w + 2).max(panel_w) + gutter;
-    let base_left = (canvas_w - gutter - total_tracks_w) / 2;
-
-    // root
-    forest.root.x = base_left + (total_tracks_w - SG_NODE_W) / 2;
-    forest.root.y = 0;
-
-    // track x positions
-    let mut track_xs: Vec<usize> = Vec::with_capacity(n_tracks);
-    let mut cur_x = base_left;
-    for w in &widths {
-        track_xs.push(cur_x);
-        cur_x += *w + gap;
-    }
-    let centers: Vec<usize> = track_xs
+    let main_w = if !forest.main.is_empty() {
+        track_content_width(&forest.main)
+    } else {
+        0
+    };
+    let live_w = if !forest.live.is_empty() {
+        track_content_width(&forest.live)
+    } else {
+        0
+    };
+    let central_w = main_w.max(live_w).max(SG_NODE_W);
+    let tool_widths: Vec<usize> = forest
+        .tool_tracks
         .iter()
-        .zip(widths.iter())
-        .map(|(x, w)| x + w / 2)
+        .map(|tt| track_content_width(&tt.nodes))
         .collect();
+
+    let gap = SG_GAP + 1;
+    let gutter = if forest.back_edge.is_some() { 16 } else { 1 };
+    let anchor_x: usize = 2; // fixed left anchor for root/main/live
+
+    // total width = anchor + central + gaps + side tracks
+    let side_total: usize = tool_widths.iter().sum::<usize>()
+        + gap * tool_widths.len().saturating_sub(0);
+    let total_needed = anchor_x + central_w + if !tool_widths.is_empty() { gap * 2 } else { 0 } + side_total + gutter + 2;
+    let canvas_w = total_needed.max(panel_w);
+
+    let canvas_h_estimate = {
+        let mut h = 0usize;
+        h += forest.root.h + 3;
+        for n in &forest.main {
+            h += sg_subtree_h(n) + 2;
+        }
+        for n in &forest.live {
+            h += sg_subtree_h(n) + 2;
+        }
+        for tt in &forest.tool_tracks {
+            let mut th = 0usize;
+            for n in &tt.nodes {
+                th += sg_subtree_h(n) + 2;
+            }
+            h = h.max(th);
+        }
+        h + 10
+    };
+
+    // place root at anchor
+    forest.root.x = anchor_x;
+    forest.root.y = 0;
 
     let rail_y = forest.root.y + forest.root.h;
     let first_y = rail_y + 2;
 
-    // layout nodes per track
-    let mut max_y = first_y;
-    // helper to layout a slice
+    // helper to layout a slice at fixed tx
     let layout_track = |nodes: &mut Vec<SgLay>, tx: usize, tw: usize, start_y: usize| -> usize {
         let tc = tx + tw / 2;
         let mut y = start_y;
@@ -3962,36 +4025,52 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
         y
     };
 
-    let mut idx = 0usize;
-    if has_main {
-        let tx = track_xs[idx];
-        let tw = widths[idx];
-        let y_end = layout_track(&mut forest.main, tx, tw, first_y);
-        if y_end > max_y {
-            max_y = y_end;
-        }
-        idx += 1;
+    // layout central spine: main then live stacked, same X
+    let central_tx = anchor_x;
+    let central_tw = central_w;
+    let mut max_y = first_y;
+    let mut main_end = first_y;
+    if !forest.main.is_empty() {
+        main_end = layout_track(&mut forest.main, central_tx, central_tw, first_y);
+        max_y = max_y.max(main_end);
     }
-    if has_live {
-        let tx = track_xs[idx];
-        let tw = widths[idx];
-        let y_end = layout_track(&mut forest.live, tx, tw, first_y);
-        if y_end > max_y {
-            max_y = y_end;
-        }
-        idx += 1;
-    }
-    for tt in forest.tool_tracks.iter_mut() {
-        let tx = track_xs[idx];
-        let tw = widths[idx];
-        let y_end = layout_track(&mut tt.nodes, tx, tw, first_y);
-        if y_end > max_y {
-            max_y = y_end;
-        }
-        idx += 1;
+    if !forest.live.is_empty() {
+        let live_start = if forest.main.is_empty() {
+            first_y
+        } else {
+            main_end
+        };
+        let live_end = layout_track(&mut forest.live, central_tx, central_tw, live_start);
+        max_y = max_y.max(live_end);
     }
 
-    let canvas_h = max_y.saturating_sub(1).max(forest.root.h + 2);
+    // layout side tracks to the right of central
+    let mut side_xs: Vec<usize> = Vec::new();
+    let mut cur_x = central_tx + central_w + gap * 2;
+    for w in &tool_widths {
+        side_xs.push(cur_x);
+        cur_x += *w + gap;
+    }
+    for (tt, &tx) in forest.tool_tracks.iter_mut().zip(side_xs.iter()) {
+        let tw = track_content_width(&tt.nodes);
+        let y_end = layout_track(&mut tt.nodes, tx, tw, first_y);
+        max_y = max_y.max(y_end);
+    }
+
+    // build centers for rail
+    let mut centers: Vec<usize> = Vec::new();
+    let mut center_kinds: Vec<SgCat> = Vec::new();
+    if !forest.main.is_empty() || !forest.live.is_empty() {
+        centers.push(central_tx + central_tw / 2);
+        center_kinds.push(SgCat::Main);
+    }
+    for (i, &sx) in side_xs.iter().enumerate() {
+        let tw = tool_widths[i];
+        centers.push(sx + tw / 2);
+        center_kinds.push(forest.tool_tracks[i].cat);
+    }
+
+    let canvas_h = max_y.saturating_sub(1).max(forest.root.h + 2).max(canvas_h_estimate);
     let mut c = SgCanvas::new(canvas_w, canvas_h.max(1));
     let edge = theme::style_faint();
 
@@ -4005,21 +4084,25 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
         Style::default().fg(forest.root.hue),
     );
 
-    // fan-out rail from root to all tracks
+    // fan-out rail from root to all centers — but active column is anchored
+    // directly under root, so its ▼ stays fixed.
     if !centers.is_empty() {
         let lc = *centers.first().unwrap();
         let rc = *centers.last().unwrap();
         for x in lc..=rc {
-            let ch = sg_junction(x == cx_root, centers.contains(&x), x > lc, x < rc);
+            let is_root = x == cx_root;
+            let is_center = centers.contains(&x);
+            let left = x > lc;
+            let right = x < rc;
+            let ch = sg_junction(is_root, is_center, left, right);
             c.put(x, rail_y, ch, edge);
         }
         for &tc in &centers {
             c.put(tc, rail_y + 1, '▼', edge);
         }
 
-        // draw each track's nodes
-        let mut t_idx = 0usize;
-        let mut draw_track_nodes = |nodes: &[SgLay], tc: usize| {
+        // draw central main then live (stacked same X)
+        let mut draw_nodes = |nodes: &[SgLay], tc: usize| {
             for (i, n) in nodes.iter().enumerate() {
                 sg_draw_box(&mut c, n);
                 if !n.kids.is_empty() {
@@ -4065,12 +4148,7 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
                     }
                 } else if i + 1 < nodes.len() {
                     let next_y = nodes[i + 1].y;
-                    c.put(
-                        tc,
-                        n.y + n.h - 1,
-                        '┬',
-                        Style::default().fg(n.hue),
-                    );
+                    c.put(tc, n.y + n.h - 1, '┬', Style::default().fg(n.hue));
                     if next_y >= 2 {
                         c.vline(tc, n.y + n.h, next_y - 2, edge);
                     }
@@ -4079,34 +4157,38 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
             }
         };
 
-        if has_main {
-            let tc = centers[t_idx];
-            draw_track_nodes(&forest.main, tc);
-            t_idx += 1;
+        if !forest.main.is_empty() {
+            let tc = centers[0];
+            draw_nodes(&forest.main, tc);
         }
-        if has_live {
-            let tc = centers[t_idx];
-            draw_track_nodes(&forest.live, tc);
-            t_idx += 1;
+        if !forest.live.is_empty() {
+            let tc = centers[0];
+            draw_nodes(&forest.live, tc);
         }
-        for tt in &forest.tool_tracks {
-            let tc = centers[t_idx];
-            draw_track_nodes(&tt.nodes, tc);
-            t_idx += 1;
+        for (idx, tt) in forest.tool_tracks.iter().enumerate() {
+            let center_idx = if forest.main.is_empty() && forest.live.is_empty() {
+                idx
+            } else {
+                idx + 1
+            };
+            if center_idx < centers.len() {
+                let tc = centers[center_idx];
+                draw_nodes(&tt.nodes, tc);
+            }
         }
 
-        // back-edge (steer re-entry) within main track gutter
+        // back-edge (steer re-entry) drawn on far right gutter
         if let Some((from_i, to_i)) = forest.back_edge {
-            if has_main && from_i < forest.main.len() && to_i < forest.main.len() {
+            if from_i < forest.main.len() && to_i < forest.main.len() {
                 let from_node = &forest.main[from_i];
                 let to_node = &forest.main[to_i];
                 let st = Style::default().fg(theme::WARN);
                 let (fx, fy, fh) = (from_node.x, from_node.y, from_node.h);
-                let (tx_, ty, th) = (to_node.x, to_node.y, to_node.h);
+                let (tx_, ty, _th) = (to_node.x, to_node.y, to_node.h);
                 let fy_mid = fy + fh / 2;
-                let ty_mid = ty + th / 2;
-                let gx = base_left + total_tracks_w + 3;
-                if gx < canvas_w && ty_mid < fy_mid {
+                let ty_mid = ty + to_node.h / 2;
+                let gx = canvas_w - gutter - 1;
+                if gx > fx + SG_NODE_W && ty_mid < fy_mid {
                     for x in (fx + SG_NODE_W)..gx {
                         c.put(x, fy_mid, '─', st);
                     }
@@ -6514,6 +6596,7 @@ mod sidegraph_canvas_tests {
                     live: false,
                     started: now,
                     duration: Some(Duration::from_secs(12)),
+                    cell_idx: 0,
                 },
                 SgNode::Tool {
                     name: "read".into(),
@@ -6523,13 +6606,16 @@ mod sidegraph_canvas_tests {
                     started: now,
                     duration: Some(Duration::from_millis(300)),
                     agent: false,
+                    cell_idx: 1,
                 },
                 SgNode::Steer {
                     text: "also centre the boxes".into(),
+                    cell_idx: 2,
                 },
                 SgNode::Done {
                     duration: Duration::from_secs(41),
                     interrupted: false,
+                    cell_idx: 3,
                 },
             ],
         }
@@ -6650,6 +6736,7 @@ mod sidegraph_canvas_tests {
             started: now,
             duration: Some(Duration::from_millis(120)),
             agent: false,
+            cell_idx: 10,
         });
         m.nodes.push(SgNode::Tool {
             name: "edit_file".into(),
@@ -6659,6 +6746,7 @@ mod sidegraph_canvas_tests {
             started: now,
             duration: Some(Duration::from_millis(80)),
             agent: false,
+            cell_idx: 11,
         });
         m.nodes.push(SgNode::Tool {
             name: "grep".into(),
@@ -6668,6 +6756,7 @@ mod sidegraph_canvas_tests {
             started: now,
             duration: Some(Duration::from_millis(50)),
             agent: false,
+            cell_idx: 12,
         });
         m.nodes.push(SgNode::Tool {
             name: "agent".into(),
@@ -6677,6 +6766,7 @@ mod sidegraph_canvas_tests {
             started: now,
             duration: None,
             agent: true,
+            cell_idx: 13,
         });
         let mut forest = sg_build_forest(&m, &[], Duration::from_millis(0), true);
         assert!(forest.tool_tracks.len() >= 3, "should have many tool tracks, got {}", forest.tool_tracks.len());
