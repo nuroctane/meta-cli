@@ -65,7 +65,30 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         ])
         .split(area);
 
-    draw_transcript(f, app, chunks[0]);
+    // `/sidegraph` open: split the transcript row into [main, right sidebar].
+    // Below ~66 cols the panel would crush the transcript — keep it stateful
+    // but undrawn (noted once) until the window is wide enough again.
+    let sg_w = (chunks[0].width / 3).clamp(28, 44);
+    if app.sidegraph_open && chunks[0].width >= sg_w + 38 {
+        app.sidegraph_narrow = false;
+        let row = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(30), Constraint::Length(sg_w)])
+            .split(chunks[0]);
+        draw_transcript(f, app, row[0]);
+        draw_sidegraph_panel(f, app, row[1]);
+    } else {
+        if app.sidegraph_open && !app.sidegraph_narrow {
+            app.sidegraph_narrow = true;
+            app.push_note(
+                theme::Tone::Neutral,
+                "sidegraph · hidden — window too narrow · reappears on resize".into(),
+            );
+        }
+        app.sidegraph_body = Rect::default();
+        app.sidegraph_max_scroll = 0;
+        draw_transcript(f, app, chunks[0]);
+    }
     if app.busy {
         draw_busy_line(f, app, chunks[1]);
     }
@@ -2524,7 +2547,6 @@ fn cell_lines(app: &App, cell: &Cell, cell_idx: usize, width: usize, out: &mut V
                 out.push(Line::from(Span::styled(l.clone(), theme::style_status())));
             }
         }
-        Cell::SideGraph { model, live } => sidegraph_card(width, *live, model, tick, out),
         Cell::Swarm { live, detail } => swarm_card(width, *live, *detail, tick, out),
         Cell::Error(text) => {
             out.push(Line::default());
@@ -2743,263 +2765,393 @@ fn swarm_card(
     )));
 }
 
-// ── sidegraph card ───────────────────────────────────────────────────────
-// Inline query-flow graph: root prompt + thinking / tool / subagent fan-out.
-// The model is cheap (derived from transcript cells); the renderer re-reads
-// the swarm registry each frame so agent children animate live.
-fn sidegraph_card(
-    width: usize,
-    live: bool,
-    model: &crate::tui::app::SideGraphModel,
-    tick: Duration,
-    out: &mut Vec<Line<'static>>,
-) {
+// ── sidegraph panel (right sidebar) ──────────────────────────────────────
+// The current query as a live flow graph: root prompt box, then boxed steps
+// (thinking / tool / answering / steer / queued / done) on a connector line,
+// with live subagent fan-out under agent boxes. The model is cheap (derived
+// from transcript cells); the renderer re-reads the swarm registry each
+// frame so agent children animate live.
+fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     use crate::tui::app::{SgNode, SgState};
 
-    let w = width.max(4);
-    out.push(Line::default());
+    let live = app.sidegraph_live;
+    let tick = app.spinner_epoch.elapsed();
+    let border_hue = if live { theme::NUR_GOLD } else { theme::FAINT };
 
-    // Header: always gold, with live chip when armed.
-    let title = if live {
-        "◈ sidegraph · live"
-    } else {
-        "◈ sidegraph"
-    };
-    let mut head = vec![Span::styled(
-        clip_to(title, w),
+    // Title: gold name + live/frozen chip (+ spinner while the turn runs).
+    let running = app
+        .sidegraph_model
+        .as_ref()
+        .map(|m| m.running)
+        .unwrap_or(false);
+    let mut title = vec![Span::styled(
+        " ◈ sidegraph ".to_string(),
         Style::default()
             .fg(theme::NUR_GOLD)
             .add_modifier(Modifier::BOLD),
     )];
-    if model.running {
-        head.push(Span::styled(
-            format!("  {} running", theme::spinner_frame(tick)),
+    if live {
+        title.push(Span::styled(
+            "● live".to_string(),
             Style::default().fg(theme::NUR_GOLD_SKY),
         ));
-    }
-    if !model.nodes.is_empty() {
-        head.push(Span::styled(
-            format!("  ·  {} step(s)", model.nodes.len()),
-            theme::style_faint(),
-        ));
-    }
-    out.push(clip_line(Line::from(head), w));
-
-    // Root query
-    if model.query.is_empty() {
-        out.push(Line::from(Span::styled(
-            clip_to("  ● (no query yet — send a prompt first)", w),
-            theme::style_faint(),
-        )));
+        if running {
+            title.push(Span::styled(
+                format!(" {}", theme::spinner_frame(tick)),
+                Style::default().fg(theme::NUR_GOLD_SKY),
+            ));
+        }
     } else {
-        let q = clip_to(&model.query, w.saturating_sub(6));
-        out.push(Line::from(vec![
-            Span::styled("  ".to_string(), theme::style_faint()),
-            Span::styled(
-                "● ".to_string(),
-                Style::default().fg(theme::META_BLUE).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(q, theme::style_status()),
-        ]));
+        title.push(Span::styled("◼ frozen".to_string(), theme::style_faint()));
+    }
+    title.push(Span::styled(" ".to_string(), theme::style_faint()));
+
+    // Footer hint (bottom border): state-aware, never says "refresh" — bare
+    // /sidegraph now *closes* the panel.
+    let hint = if app.sidegraph_scroll > 0 {
+        " scrolled ↑ · wheel down to follow ".to_string()
+    } else if live {
+        " wheel scrolls · off freezes · /sidegraph closes ".to_string()
+    } else {
+        " frozen · /sidegraph on ".to_string()
+    };
+    let footer = clip_to(&hint, area.width as usize);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(border_hue))
+        .style(theme::style_canvas())
+        .title(Line::from(title))
+        .title_bottom(Line::from(Span::styled(footer, theme::style_faint())));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    // ── content lines ────────────────────────────────────────────────────
+    let iw = inner.width as usize;
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if iw >= 8 && inner.height > 0 {
+        let empty_model = crate::tui::app::SideGraphModel {
+            query: String::new(),
+            running: false,
+            turn_started: std::time::Instant::now(),
+            nodes: Vec::new(),
+        };
+        let model = app.sidegraph_model.as_ref().unwrap_or(&empty_model);
+
+        // Root query box (full inner width): muted border, gold glyph.
+        let rq = if model.query.is_empty() {
+            "(no query yet — send a prompt)".to_string()
+        } else {
+            clip_to(&model.query, iw.saturating_sub(6))
+        };
+        let rq_hue = if model.query.is_empty() {
+            theme::FAINT
+        } else {
+            theme::MUTED
+        };
+        sg_box(
+            &mut lines,
+            "",
+            iw,
+            rq_hue,
+            "●",
+            theme::NUR_GOLD,
+            &rq,
+            "",
+            model.query.is_empty(),
+        );
+
+        if model.nodes.is_empty() {
+            if running {
+                lines.push(sg_connector());
+                lines.push(Line::from(Span::styled(
+                    clip_to("   (thinking…)", iw),
+                    theme::style_faint(),
+                )));
+            }
+        } else {
+            // Live subagent fan-out for agent boxes.
+            let runs = crate::agent::swarm::snapshot();
+            let this_turn: Vec<_> = runs
+                .iter()
+                .filter(|r| r.started.checked_duration_since(model.turn_started).is_some())
+                .cloned()
+                .collect();
+
+            let n = model.nodes.len();
+            for (i, node) in model.nodes.iter().enumerate() {
+                let is_last = i + 1 == n;
+                let (first, rest) = if is_last { ("└─", "  ") } else { ("├─", "│ ") };
+
+                // Two-channel color: border = state, glyph = semantics.
+                let (glyph, glyph_hue, box_hue, label, dur): (String, Color, Color, String, String) =
+                    match node {
+                        SgNode::Thinking {
+                            live: l,
+                            started,
+                            duration,
+                        } => {
+                            if *l {
+                                (
+                                    theme::spinner_frame(tick).to_string(),
+                                    theme::NUR_GOLD,
+                                    theme::NUR_GOLD,
+                                    "thinking".to_string(),
+                                    theme::fmt_elapsed_live(started.elapsed()),
+                                )
+                            } else {
+                                (
+                                    "○".to_string(),
+                                    theme::VIOLET,
+                                    theme::FAINT,
+                                    "thinking".to_string(),
+                                    duration.map(theme::fmt_duration).unwrap_or_default(),
+                                )
+                            }
+                        }
+                        SgNode::Tool {
+                            label,
+                            state,
+                            started,
+                            duration,
+                            ..
+                        } => match state {
+                            SgState::Running => (
+                                theme::spinner_frame(tick).to_string(),
+                                theme::NUR_GOLD,
+                                theme::NUR_GOLD,
+                                label.clone(),
+                                theme::fmt_elapsed_live(started.elapsed()),
+                            ),
+                            SgState::Ok => (
+                                "✓".to_string(),
+                                theme::SUCCESS,
+                                theme::FAINT,
+                                label.clone(),
+                                duration.map(theme::fmt_duration).unwrap_or_default(),
+                            ),
+                            SgState::Failed => (
+                                "✗".to_string(),
+                                theme::ERROR,
+                                theme::ERROR,
+                                label.clone(),
+                                duration.map(theme::fmt_duration).unwrap_or_default(),
+                            ),
+                        },
+                        SgNode::Answering => (
+                            "✎".to_string(),
+                            theme::CYAN,
+                            theme::NUR_GOLD,
+                            "answering…".to_string(),
+                            String::new(),
+                        ),
+                        SgNode::Steer { text } => (
+                            "↻".to_string(),
+                            theme::WARN,
+                            theme::FAINT,
+                            format!("steer: {text}"),
+                            String::new(),
+                        ),
+                        SgNode::Queued { text } => (
+                            "↗".to_string(),
+                            theme::WARN,
+                            theme::FAINT,
+                            format!("queued: {text}"),
+                            String::new(),
+                        ),
+                        SgNode::Done {
+                            duration,
+                            interrupted,
+                        } => {
+                            if *interrupted {
+                                (
+                                    "◼".to_string(),
+                                    theme::WARN,
+                                    theme::FAINT,
+                                    "interrupted".to_string(),
+                                    theme::fmt_duration(*duration),
+                                )
+                            } else {
+                                (
+                                    "✓".to_string(),
+                                    theme::SUCCESS,
+                                    theme::FAINT,
+                                    "done".to_string(),
+                                    theme::fmt_duration(*duration),
+                                )
+                            }
+                        }
+                    };
+
+                lines.push(sg_connector());
+                sg_box(
+                    &mut lines,
+                    first,
+                    iw,
+                    box_hue,
+                    &glyph,
+                    glyph_hue,
+                    &label,
+                    &dur,
+                    false,
+                );
+
+                // Subagent fan-out under an agent box, with a `parallel` edge
+                // label on the connector row.
+                let is_agent = matches!(node, SgNode::Tool { agent: true, .. });
+                if is_agent && !this_turn.is_empty() {
+                    let show_children = if is_last {
+                        true
+                    } else {
+                        matches!(node, SgNode::Tool { state: SgState::Running, .. })
+                    };
+                    if show_children {
+                        let mut children = this_turn.clone();
+                        children.sort_by_key(|r| {
+                            (
+                                r.state != crate::agent::swarm::RunState::Running,
+                                std::cmp::Reverse(r.id),
+                            )
+                        });
+                        lines.push(Line::from(Span::styled(
+                            clip_to(&format!("{rest}  ⤷ parallel"), iw),
+                            theme::style_faint(),
+                        )));
+                        let display = 6usize.min(children.len());
+                        for (ci, run) in children.iter().take(display).enumerate() {
+                            let last_child = ci + 1 == display && children.len() <= display;
+                            let child_branch = if last_child { "└─" } else { "├─" };
+                            let (chue, cglyph) = run_look(run.state, tick);
+                            let elapsed = if run.state == crate::agent::swarm::RunState::Running {
+                                theme::fmt_elapsed_live(run.elapsed())
+                            } else {
+                                theme::fmt_duration(run.elapsed())
+                            };
+                            let head = format!("{rest}  {child_branch} {cglyph} #{}·{} ", run.id, run.kind);
+                            let head_w = UnicodeWidthStr::width(head.as_str());
+                            let task = clip_to(
+                                &run.task,
+                                iw.saturating_sub(head_w + elapsed.len() + 2).max(6),
+                            );
+                            lines.push(clip_line(
+                                Line::from(vec![
+                                    Span::styled(head, Style::default().fg(chue)),
+                                    Span::styled(task, theme::style_status()),
+                                    Span::styled(format!("  {elapsed}"), theme::style_faint()),
+                                ]),
+                                iw,
+                            ));
+                        }
+                        if children.len() > display {
+                            lines.push(Line::from(Span::styled(
+                                clip_to(
+                                    &format!("{rest}  … +{} more", children.len() - display),
+                                    iw,
+                                ),
+                                theme::style_faint(),
+                            )));
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    if model.nodes.is_empty() {
-        out.push(Line::from(Span::styled(
-            clip_to("    └─ (waiting for first step…)", w),
-            theme::style_faint(),
-        )));
+    // Follow-bottom scroll: offset = lines back from the newest line, clamped
+    // by the content so the wheel can't run away (published for on_mouse).
+    let total = lines.len() as u16;
+    let view = inner.height;
+    let max_scroll = total.saturating_sub(view);
+    app.sidegraph_max_scroll = max_scroll;
+    if app.sidegraph_scroll > max_scroll {
+        app.sidegraph_scroll = max_scroll;
+    }
+    let top = max_scroll.saturating_sub(app.sidegraph_scroll);
+    f.render_widget(Paragraph::new(lines).scroll((top, 0)), inner);
+    // Full panel rect (border included) hit-tests wheel + click swallow.
+    app.sidegraph_body = area;
+}
+
+/// One faint vertical connector line between sidegraph boxes.
+fn sg_connector() -> Line<'static> {
+    Line::from(Span::styled("│".to_string(), theme::style_faint()))
+}
+
+/// Draw one boxed node: `╭─╮` top, glyph + label + right-aligned duration
+/// middle, `╰─╯` bottom. `first`/`rest` are the 2-col tree prefixes ("" for
+/// the root box). Border hue carries state; glyph hue carries semantics.
+fn sg_box(
+    out: &mut Vec<Line<'static>>,
+    first: &str,
+    w: usize,
+    border_hue: Color,
+    glyph: &str,
+    glyph_hue: Color,
+    label: &str,
+    dur: &str,
+    faint_text: bool,
+) {
+    let rest = match first {
+        "├─" => "│ ",
+        "└─" => "  ",
+        _ => first,
+    };
+    let bw = w.saturating_sub(UnicodeWidthStr::width(first));
+    if bw < 6 {
         return;
     }
+    let rule = "─".repeat(bw.saturating_sub(2));
+    let bstyle = Style::default().fg(border_hue);
+    out.push(Line::from(vec![
+        Span::styled(first.to_string(), theme::style_faint()),
+        Span::styled(format!("╭{rule}╮"), bstyle),
+    ]));
 
-    let runs = crate::agent::swarm::snapshot();
-    let this_turn: Vec<_> = runs
-        .iter()
-        .filter(|r| r.started.checked_duration_since(model.turn_started).is_some())
-        .cloned()
-        .collect();
-
-    let n = model.nodes.len();
-    for (i, node) in model.nodes.iter().enumerate() {
-        let is_last = i + 1 == n;
-        let branch = if is_last { "└─" } else { "├─" };
-
-        let (glyph, hue, label, dur): (String, Color, String, String) = match node {
-            SgNode::Thinking {
-                live: l,
-                started,
-                duration,
-            } => {
-                if *l {
-                    (
-                        theme::spinner_frame(tick).to_string(),
-                        theme::NUR_GOLD,
-                        "thinking".to_string(),
-                        theme::fmt_elapsed_live(started.elapsed()),
-                    )
-                } else {
-                    (
-                        "○".to_string(),
-                        theme::VIOLET,
-                        "thinking".to_string(),
-                        duration.map(theme::fmt_duration).unwrap_or_default(),
-                    )
-                }
-            }
-            SgNode::Tool {
-                label,
-                state,
-                started,
-                duration,
-                ..
-            } => match state {
-                SgState::Running => (
-                    theme::spinner_frame(tick).to_string(),
-                    theme::NUR_GOLD,
-                    label.clone(),
-                    theme::fmt_elapsed_live(started.elapsed()),
-                ),
-                SgState::Ok => (
-                    "✓".to_string(),
-                    theme::SUCCESS,
-                    label.clone(),
-                    duration.map(theme::fmt_duration).unwrap_or_default(),
-                ),
-                SgState::Failed => (
-                    "✗".to_string(),
-                    theme::ERROR,
-                    label.clone(),
-                    duration.map(theme::fmt_duration).unwrap_or_default(),
-                ),
-            },
-            SgNode::Answering => (
-                "✎".to_string(),
-                theme::CYAN,
-                "answering…".to_string(),
-                String::new(),
-            ),
-            SgNode::Steer { text } => (
-                "↻".to_string(),
-                theme::WARN,
-                format!("steer: {text}"),
-                String::new(),
-            ),
-            SgNode::Queued { text } => (
-                "↗".to_string(),
-                theme::WARN,
-                format!("queued: {text}"),
-                String::new(),
-            ),
-            SgNode::Done {
-                duration,
-                interrupted,
-            } => {
-                if *interrupted {
-                    (
-                        "◼".to_string(),
-                        theme::WARN,
-                        "interrupted".to_string(),
-                        theme::fmt_duration(*duration),
-                    )
-                } else {
-                    (
-                        "✓".to_string(),
-                        theme::SUCCESS,
-                        "done".to_string(),
-                        theme::fmt_duration(*duration),
-                    )
-                }
-            }
-        };
-
-        let remaining = w.saturating_sub(8 + UnicodeWidthStr::width(glyph.as_str()));
-        let clipped_label = clip_to(&label, remaining.max(10));
-        let mut spans = vec![
-            Span::styled("    ".to_string(), theme::style_faint()),
-            Span::styled(format!("{branch} "), theme::style_faint()),
-            Span::styled(
-                format!("{glyph} "),
-                Style::default().fg(hue).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(clipped_label, Style::default().fg(hue)),
-        ];
-        if !dur.is_empty() {
-            spans.push(Span::styled(format!("  {dur}"), theme::style_faint()));
-        }
-        out.push(clip_line(Line::from(spans), w));
-
-        let is_agent = matches!(node, SgNode::Tool { agent: true, .. });
-        if is_agent && !this_turn.is_empty() {
-            let show_children = if is_last {
-                true
-            } else {
-                matches!(node, SgNode::Tool { state: SgState::Running, .. })
-            };
-            if show_children {
-                let mut children = this_turn.clone();
-                children.sort_by_key(|r| {
-                    (
-                        r.state != crate::agent::swarm::RunState::Running,
-                        std::cmp::Reverse(r.id),
-                    )
-                });
-                let display = 6usize.min(children.len());
-                for (ci, run) in children.iter().take(display).enumerate() {
-                    let last_child = ci + 1 == display && children.len() <= display;
-                    let child_branch = if last_child { "└─" } else { "├─" };
-                    let (chue, cglyph) = run_look(run.state, tick);
-                    let indent = if is_last { "        " } else { "    │   " };
-                    let elapsed = if run.state == crate::agent::swarm::RunState::Running {
-                        theme::fmt_elapsed_live(run.elapsed())
-                    } else {
-                        theme::fmt_duration(run.elapsed())
-                    };
-                    let task = clip_to(
-                        &run.task,
-                        w.saturating_sub(indent.len() + 12).max(8),
-                    );
-                    out.push(clip_line(
-                        Line::from(vec![
-                            Span::styled(indent.to_string(), theme::style_faint()),
-                            Span::styled(
-                                format!("{child_branch} "),
-                                theme::style_faint(),
-                            ),
-                            Span::styled(
-                                format!("{cglyph} "),
-                                Style::default().fg(chue).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                format!("{}·{} ", run.id, run.kind),
-                                Style::default().fg(chue),
-                            ),
-                            Span::styled(task, theme::style_status()),
-                            Span::styled(format!("  {elapsed}"), theme::style_faint()),
-                        ]),
-                        w,
-                    ));
-                }
-                if children.len() > display {
-                    out.push(Line::from(Span::styled(
-                        clip_to(
-                            &format!("        … +{} more subagent(s)", children.len() - display),
-                            w,
-                        ),
-                        theme::style_faint(),
-                    )));
-                }
-            }
-        }
-    }
-
-    let footer = if live {
-        "  updates live · /sidegraph off to freeze · /sidegraph hide to remove"
+    // Middle row: `│ glyph label … dur │` — duration right-aligned in ~7
+    // cols; the label clips first when space runs out.
+    let content = bw.saturating_sub(2); // between the vertical bars
+    let dur_w = if dur.is_empty() {
+        0
     } else {
-        "  frozen · /sidegraph to refresh"
+        UnicodeWidthStr::width(dur).min(7)
     };
-    out.push(Line::from(Span::styled(
-        clip_to(footer, w),
-        theme::style_faint(),
-    )));
+    let glyph_w = UnicodeWidthStr::width(glyph);
+    let label_max = content.saturating_sub(2 + glyph_w + dur_w + usize::from(dur_w > 0));
+    let label_c = clip_to(label, label_max.max(4));
+    let label_w = UnicodeWidthStr::width(label_c.as_str());
+    let pad = content.saturating_sub(1 + glyph_w + 1 + label_w + usize::from(dur_w > 0) + dur_w);
+    let text_style = if faint_text {
+        theme::style_faint()
+    } else {
+        theme::style_status()
+    };
+    let mut mid = vec![
+        Span::styled(rest.to_string(), theme::style_faint()),
+        Span::styled("│".to_string(), bstyle),
+        Span::styled(" ".to_string(), text_style),
+        Span::styled(
+            glyph.to_string(),
+            Style::default().fg(glyph_hue).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ".to_string(), text_style),
+        Span::styled(label_c, text_style),
+        Span::styled(" ".repeat(pad), text_style),
+    ];
+    if dur_w > 0 {
+        mid.push(Span::styled(
+            format!("{dur:>dur_w$}"),
+            theme::style_faint(),
+        ));
+        mid.push(Span::styled(" ".to_string(), theme::style_faint()));
+    }
+    mid.push(Span::styled("│".to_string(), bstyle));
+    out.push(clip_line(Line::from(mid), w));
+
+    out.push(Line::from(vec![
+        Span::styled(rest.to_string(), theme::style_faint()),
+        Span::styled(format!("╰{rule}╯"), bstyle),
+    ]));
 }
 
 
@@ -4698,43 +4850,6 @@ fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
                     format!("{:?}", run.state).hash(&mut h);
                     run.tools_done.hash(&mut h);
                     run.tokens.hash(&mut h);
-                }
-            }
-        }
-        Cell::SideGraph { model, live } => {
-            12u8.hash(&mut h);
-            model.query.hash(&mut h);
-            model.running.hash(&mut h);
-            live.hash(&mut h);
-            model.nodes.len().hash(&mut h);
-            for n in &model.nodes {
-                match n {
-                    crate::tui::app::SgNode::Thinking { live, duration, .. } => {
-                        live.hash(&mut h);
-                        duration.map(|d| d.as_millis()).hash(&mut h);
-                    }
-                    crate::tui::app::SgNode::Tool { label, state, duration, .. } => {
-                        label.hash(&mut h);
-                        format!("{:?}", state).hash(&mut h);
-                        duration.map(|d| d.as_millis()).hash(&mut h);
-                    }
-                    crate::tui::app::SgNode::Steer { text } | crate::tui::app::SgNode::Queued { text } => {
-                        text.hash(&mut h);
-                    }
-                    crate::tui::app::SgNode::Done { duration, interrupted } => {
-                        duration.as_millis().hash(&mut h);
-                        interrupted.hash(&mut h);
-                    }
-                    crate::tui::app::SgNode::Answering => {
-                        13u8.hash(&mut h);
-                    }
-                }
-            }
-            if *live {
-                spin_i.hash(&mut h);
-                for run in crate::agent::swarm::snapshot() {
-                    run.id.hash(&mut h);
-                    format!("{:?}", run.state).hash(&mut h);
                 }
             }
         }

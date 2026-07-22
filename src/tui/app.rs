@@ -115,20 +115,14 @@ pub fn annotate_model_unavailable(err: &str, provider: &str, model: &str) -> Str
 }
 
 /// Return the API model id and endpoint for an OpenCode picker/custom entry.
-/// Kimi K3 is OpenCode Go-only, so accept its natural bare id as well as the
-/// explicit picker/config form (`opencode-go/kimi-k3`).
-fn opencode_model_selection(id: &str) -> (&str, &'static str) {
-    let prefixed = id.strip_prefix("opencode-go/");
-    let model = prefixed.unwrap_or(id);
-    let go_only = prefixed.is_some() || model.eq_ignore_ascii_case("kimi-k3");
-    let base_url = if go_only {
-        crate::providers::OPENCODE_GO_BASE_URL
-    } else {
-        crate::providers::by_id("opencode")
-            .map(|provider| provider.base_url)
-            .unwrap_or("https://opencode.ai/zen/v1")
-    };
-    (model, base_url)
+///
+/// Go hosts the low-cost catalog (`kimi-k3`, `kimi-k2.7-code`, `glm-5.2`,
+/// `qwen3.7-max`, …). Its ids may arrive as `opencode-go/<id>` from the picker
+/// or as a bare id typed via `/model <id>`. Bare Go-exclusive ids are auto-routed
+/// to the Go endpoint so they do not 404 on Zen; Zen-only ids stay on Zen; the
+/// `grok-4.5` overlap stays on Zen unless explicitly prefixed.
+fn opencode_model_selection(id: &str) -> (String, &'static str) {
+    crate::providers::normalize_opencode_selection(id)
 }
 
 /// The `/scan` instruction template — bundled skill body that tells the agent
@@ -188,7 +182,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ),
     (
         "/sidegraph",
-        "live node-graph of the current query: tools · subagents · steers · interrupts",
+        "right-panel live node-graph of the current query · again to close · off | on | hide",
     ),
     (
         "/swarm",
@@ -339,16 +333,6 @@ pub enum Cell {
     Swarm {
         live: bool,
         detail: bool,
-    },
-    /// Inline query-flow node graph (`/sidegraph`): the current query as a
-    /// root node, then thinking / tool / subagent fan-out / steer / interrupt
-    /// nodes in chronological order — the whole turn as a flow diagram with
-    /// the swarm card's liveness language. Refreshed on turn events; the
-    /// renderer re-reads the swarm registry each frame for live subagents.
-    /// Ephemeral — not persisted to the session log.
-    SideGraph {
-        model: Box<SideGraphModel>,
-        live: bool,
     },
     Error(String),
 }
@@ -1585,6 +1569,23 @@ pub struct App {
     /// User dismissed the swarm card with `/swarm hide`; do not auto-surface it
     /// again until the next turn.
     swarm_autoshow_suppressed: bool,
+    /// `/sidegraph` right-sidebar panel: the current query as a live flow graph
+    /// (root prompt + thinking / tool / subagent fan-out / steer / done nodes),
+    /// rendered as boxed nodes with connectors. Rebuilt on turn events while
+    /// `sidegraph_live`; the renderer re-reads the swarm registry each frame.
+    pub sidegraph_open: bool,
+    pub sidegraph_live: bool,
+    pub sidegraph_model: Option<SideGraphModel>,
+    /// Lines scrolled back from the newest line (0 = following the bottom).
+    pub sidegraph_scroll: u16,
+    /// Max scroll the current content allows, published by the renderer each
+    /// frame so wheel-up clamps instead of running away past the content.
+    pub sidegraph_max_scroll: u16,
+    /// Full panel rect (border included) for wheel / click hit-testing.
+    pub sidegraph_body: ratatui::layout::Rect,
+    /// One-shot flag: noted once that the open panel is hidden because the
+    /// window is too narrow to draw it.
+    pub(crate) sidegraph_narrow: bool,
     /// A foreground child program repainted the screen; ratatui must discard its
     /// previous buffer before the next draw or the diff renders nothing.
     pub needs_full_redraw: bool,
@@ -1898,6 +1899,13 @@ pub async fn run_tui(
         preserve_queue_on_interrupt: false,
         swarm_autoshow_done: false,
         swarm_autoshow_suppressed: false,
+        sidegraph_open: false,
+        sidegraph_live: false,
+        sidegraph_model: None,
+        sidegraph_scroll: 0,
+        sidegraph_max_scroll: 0,
+        sidegraph_body: ratatui::layout::Rect::default(),
+        sidegraph_narrow: false,
         needs_full_redraw: false,
         busy: false,
         cancelling: false,
@@ -3361,6 +3369,13 @@ impl App {
                 } else if self.wheel_over_open_peek(m.column, m.row) {
                     // Wheel inside a pinned peek scrolls its body, not the page.
                     self.peek_scroll = self.peek_scroll.saturating_sub(3);
+                } else if self.wheel_over_sidegraph(m.column, m.row) {
+                    // Wheel inside the sidebar scrolls its flow graph (clamped
+                    // to the content so the offset can't run away).
+                    self.sidegraph_scroll = self
+                        .sidegraph_scroll
+                        .saturating_add(3)
+                        .min(self.sidegraph_max_scroll);
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
@@ -3387,6 +3402,8 @@ impl App {
                         .peek_scroll
                         .saturating_add(3)
                         .min(self.peek_rows.saturating_sub(1));
+                } else if self.wheel_over_sidegraph(m.column, m.row) {
+                    self.sidegraph_scroll = self.sidegraph_scroll.saturating_sub(3);
                 } else {
                     self.scroll_down(3);
                     if self.mouse_left_down && self.select_anchor.is_some() {
@@ -3425,6 +3442,14 @@ impl App {
                     if peek_click_dismisses(self.peek_close, self.peek_box, m.column, m.row) {
                         self.close_peek();
                     }
+                    return;
+                }
+                // The sidegraph panel is a separate surface: clicks inside it
+                // must not arm a transcript drag-select clamped to its edge.
+                if self.wheel_over_sidegraph(m.column, m.row) {
+                    self.mouse_left_down = false;
+                    self.selecting = false;
+                    self.select_anchor = None;
                     return;
                 }
                 // "↓ N · End" chip — one click jumps to latest.
@@ -3890,6 +3915,14 @@ impl App {
     /// Wheel events over an open pinned peek scroll the peek body.
     fn wheel_over_open_peek(&self, col: u16, row: u16) -> bool {
         self.peek_open.is_some() && rect_contains(self.peek_box, col, row)
+    }
+
+    /// Wheel events over the `/sidegraph` sidebar scroll its body instead of
+    /// the transcript.
+    fn wheel_over_sidegraph(&self, col: u16, row: u16) -> bool {
+        self.sidegraph_open
+            && self.sidegraph_body.width > 0
+            && rect_contains(self.sidegraph_body, col, row)
     }
 
     fn hit_jump_chip(&self, col: u16, row: u16) -> bool {
@@ -4667,21 +4700,21 @@ impl App {
             self.cfg.base_url = base_url.to_string();
             model
         } else {
-            id
+            id.to_string()
         };
         // Anthropic: rewrite retired/short ids so a saved `claude-sonnet-4-…`
         // does not 404 on the first-party Claude API (key or OAuth).
         let id = if self.cfg.provider == "anthropic"
             || self.cfg.base_url.contains("api.anthropic.com")
         {
-            crate::api::anthropic::normalize_model_id(id)
+            crate::api::anthropic::normalize_model_id(&id)
         } else if !self.cfg.provider.is_empty() {
             // Same story elsewhere: xAI dropped the Grok 4 line, Google dropped
             // `gemini-3-pro`, DeepSeek drops `deepseek-chat`. Providers without
             // a confirmed retirement pass through untouched.
-            crate::providers::normalize_model_for(&self.cfg.provider, id)
+            crate::providers::normalize_model_for(&self.cfg.provider, &id)
         } else {
-            id.to_string()
+            id
         };
         self.cfg.model = id.clone();
         crate::pricing::maybe_apply_context_window(&mut self.cfg);
@@ -5859,6 +5892,9 @@ impl App {
             // Transcript row with clickable send now / dismiss (not just a note).
             self.cells.push(Cell::Queued { text: text.clone() });
             self.scroll_to_bottom();
+            // The queued node belongs in the sidegraph promptly, not at the
+            // next tool event.
+            self.refresh_sidegraph();
             self.push_note(
                 Tone::Mode,
                 format!(
@@ -5885,6 +5921,7 @@ impl App {
         }
         // Drop the Queued card from the transcript.
         self.remove_cell(cell_idx);
+        self.refresh_sidegraph();
         if self.busy {
             // Interrupt current turn; keep this follow-up at the front so Done
             // starts it next (full session context already on disk).
@@ -6548,99 +6585,84 @@ impl App {
         }
     }
 
-    /// Refresh any live `/sidegraph` card in place (called on turn events).
+    /// Refresh the `/sidegraph` panel model (called on turn events). No-op
+    /// unless the panel is open and live.
     fn refresh_sidegraph(&mut self) {
-        if !self
-            .cells
-            .iter()
-            .any(|c| matches!(c, Cell::SideGraph { live: true, .. }))
-        {
+        if !(self.sidegraph_open && self.sidegraph_live) {
             return;
         }
-        let fresh = self.build_sidegraph_model();
-        for c in self.cells.iter_mut() {
-            if let Cell::SideGraph { model, live: true } = c {
-                *model = Box::new(fresh.clone());
-            }
-        }
+        self.sidegraph_model = Some(self.build_sidegraph_model());
     }
 
-    /// Arm or freeze every inline sidegraph card (same contract as the swarm
-    /// card: re-armed on turn start, frozen at turn end).
+    /// Arm or freeze the sidegraph panel (same contract as the swarm card:
+    /// re-armed on turn start, frozen at turn end).
     fn set_sidegraph_live(&mut self, on: bool) {
-        if on {
-            // Bring live card to bottom when a new turn starts so flow graph is visible.
-            let mut existing: Option<Box<SideGraphModel>> = None;
-            for c in &self.cells {
-                if let Cell::SideGraph { model, .. } = c {
-                    existing = Some(model.clone());
-                }
-            }
-            if let Some(model) = existing {
-                self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
-                self.cells.push(Cell::SideGraph { model, live: true });
-            }
+        if !self.sidegraph_open {
             return;
         }
-        for c in self.cells.iter_mut() {
-            if let Cell::SideGraph { live, .. } = c {
-                *live = false;
-            }
+        self.sidegraph_live = on;
+        if on {
+            // A new turn re-roots the graph: land the user on the new content
+            // (scroll stays sticky across same-turn refreshes, not new roots).
+            self.sidegraph_scroll = 0;
+            self.refresh_sidegraph();
         }
     }
 
-    /// `/sidegraph` — the current query as a live flow graph: root prompt,
-    /// thinking, tools, subagent fan-out, steers, interruptions, outcome.
+    /// `/sidegraph` — the current query as a live flow graph in a right-hand
+    /// sidebar panel: root prompt, thinking, tools, subagent fan-out, steers,
+    /// interruptions, outcome. Bare `/sidegraph` toggles the panel.
     pub(crate) fn cmd_sidegraph(&mut self, arg: &str) {
         let arg = arg.trim().to_ascii_lowercase();
         match arg.as_str() {
             "off" | "freeze" | "stop" => {
-                self.set_sidegraph_live(false);
-                self.push_note(Tone::Neutral, "sidegraph · frozen".into());
+                if !self.sidegraph_open {
+                    self.push_note(
+                        Tone::Neutral,
+                        "sidegraph · panel is closed — /sidegraph to open".into(),
+                    );
+                    return;
+                }
+                self.sidegraph_live = false;
+                self.push_note(
+                    Tone::Neutral,
+                    "sidegraph · frozen · /sidegraph on to resume".into(),
+                );
                 return;
             }
             "hide" | "close" => {
-                self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
-                self.push_note(Tone::Neutral, "sidegraph · card removed".into());
+                self.sidegraph_open = false;
+                self.sidegraph_live = false;
+                self.push_note(Tone::Neutral, "sidegraph · panel closed".into());
                 return;
             }
+            "on" | "live" | "" => {}
             _ => {}
         }
 
-        // Resurface at bottom (UX fix): previously refreshed in place forcing scroll-up.
-        // Build fresh model *before* taking a mutable borrow of `cells`
-        // to satisfy the borrow checker (build reads `self.cells` immutably).
-        let model = self.build_sidegraph_model();
-        let has_query = !model.query.is_empty();
-        if self
-            .cells
-            .iter()
-            .any(|c| matches!(c, Cell::SideGraph { .. }))
-        {
-            self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
-            self.cells.push(Cell::SideGraph {
-                model: Box::new(model),
-                live: true,
-            });
-            self.push_note(
-                Tone::Neutral,
-                "sidegraph · refreshed · moved to bottom".into(),
-            );
-            self.scroll_to_bottom();
+        // Bare `/sidegraph` while open closes the panel (toggle contract).
+        if self.sidegraph_open && arg.is_empty() {
+            self.sidegraph_open = false;
+            self.sidegraph_live = false;
+            self.push_note(Tone::Neutral, "sidegraph · panel closed".into());
             return;
         }
-        self.cells.push(Cell::SideGraph {
-            model: Box::new(model),
-            live: true,
-        });
-        self.scroll_to_bottom();
+
+        // Open (or re-arm): rebuild the model from the transcript so the panel
+        // can never drift from what actually ran.
+        let model = self.build_sidegraph_model();
+        let has_query = !model.query.is_empty();
+        self.sidegraph_model = Some(model);
+        self.sidegraph_open = true;
+        self.sidegraph_live = true;
+        self.sidegraph_scroll = 0;
         self.push_note(
             Tone::Neutral,
             if has_query {
-                "sidegraph · maps the current query as it runs · /sidegraph off to freeze"
+                "sidegraph · right panel maps the current query live · /sidegraph again to close"
                     .to_string()
             } else {
-                "sidegraph · send a prompt first — the graph maps the whole query live".to_string()
+                "sidegraph · send a prompt first — the panel maps the whole query live".to_string()
             },
         );
     }
@@ -6655,6 +6677,7 @@ impl App {
             self.queue.remove(i);
         }
         self.remove_cell(cell_idx);
+        self.refresh_sidegraph();
         self.push_note(
             Tone::Neutral,
             format!("dismissed follow-up · {} still queued", self.queue.len()),
@@ -6708,9 +6731,9 @@ impl App {
         // Re-arm any swarm card the user left in the transcript so this turn's
         // subagents animate in it without re-running `/swarm`.
         self.set_swarm_live(true);
-        // Same for `/sidegraph`: re-root the flow graph on the new query.
+        // Same for `/sidegraph`: re-root the flow graph on the new query
+        // (set_sidegraph_live(true) refreshes the model itself).
         self.set_sidegraph_live(true);
-        self.refresh_sidegraph();
         self.thought_accum = Duration::ZERO;
         self.status = format!("thinking · {}", self.permission_mode.get().label());
         let cancel = CancellationToken::new();
@@ -6888,6 +6911,9 @@ impl App {
                         // Always start collapsed — user clicks ▸ to open body.
                         expanded: false,
                     });
+                    // A new thinking node appears in the sidegraph (not per-delta
+                    // — that would rebuild the model hundreds of times a second).
+                    self.refresh_sidegraph();
                 }
             }
             AgentEvent::TextDelta(d) => {
@@ -6907,6 +6933,8 @@ impl App {
                         text: d,
                         streaming: true,
                     });
+                    // "answering…" node appears live, not retroactively at Done.
+                    self.refresh_sidegraph();
                 }
             }
             AgentEvent::AssistantMessage(m) => {
@@ -7310,7 +7338,7 @@ impl App {
     }
 
     /// Notice with a semantic colour/glyph (mode, plan, todos, usage, …).
-    fn push_note(&mut self, tone: Tone, s: String) {
+    pub(crate) fn push_note(&mut self, tone: Tone, s: String) {
         self.cells.push(Cell::Info { text: s, tone });
     }
 
@@ -7772,7 +7800,6 @@ fn cells_to_ui_log(cells: &[Cell]) -> Vec<crate::agent::session::UiLogItem> {
             Cell::Queued { .. } => {}
             Cell::Graph { .. } => {}
             Cell::Swarm { .. } => {}
-            Cell::SideGraph { .. } => {}
             Cell::Error(text) => out.push(UiLogItem {
                 kind: "error".into(),
                 text: text.clone(),
@@ -8035,11 +8062,47 @@ mod tests {
     fn bare_kimi_k3_routes_to_opencode_go() {
         assert_eq!(
             opencode_model_selection("kimi-k3"),
-            ("kimi-k3", crate::providers::OPENCODE_GO_BASE_URL)
+            ("kimi-k3".to_string(), crate::providers::OPENCODE_GO_BASE_URL)
         );
         assert_eq!(
             opencode_model_selection("opencode-go/kimi-k3"),
-            ("kimi-k3", crate::providers::OPENCODE_GO_BASE_URL)
+            ("kimi-k3".to_string(), crate::providers::OPENCODE_GO_BASE_URL)
+        );
+        // Go-exclusive families must also auto-route to Go even when bare.
+        for id in &[
+            "glm-5.2",
+            "glm-5.1",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-plus",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "minimax-m3",
+            "minimax-m2.7",
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+        ] {
+            assert_eq!(
+                opencode_model_selection(id).1,
+                crate::providers::OPENCODE_GO_BASE_URL,
+                "{id} should route to Go"
+            );
+        }
+        // Zen-only and overlapping ids stay on Zen unless prefixed.
+        assert_eq!(
+            opencode_model_selection("claude-sonnet-5").1,
+            crate::providers::OPENCODE_ZEN_BASE_URL
+        );
+        assert_eq!(
+            opencode_model_selection("grok-4.5").1,
+            crate::providers::OPENCODE_ZEN_BASE_URL
+        );
+        // Explicit prefix forces Go even for overlapping ids.
+        assert_eq!(
+            opencode_model_selection("opencode-go/grok-4.5").1,
+            crate::providers::OPENCODE_GO_BASE_URL
         );
     }
 

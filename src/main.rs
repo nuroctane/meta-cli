@@ -224,6 +224,46 @@ async fn real_main() -> Result<()> {
             cfg.model = m;
         }
     }
+    // CLI `--model opencode-go/<id>` or bare Go id like `kimi-k3` must also
+    // correct the endpoint; same logic as the TUI picker and config migration.
+    if cfg.provider == "opencode" {
+        let (bare, base) = crate::providers::normalize_opencode_selection(&cfg.model);
+        // Only mutate when the selection actually wants Go or the stored model
+        // had the explicit prefix — otherwise preserve a user-custom base_url.
+        let wants_go = base == crate::providers::OPENCODE_GO_BASE_URL;
+        let has_go_prefix = cfg
+            .model
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("opencode-go/");
+        let is_go_model = crate::providers::is_opencode_go_model(&cfg.model);
+        if has_go_prefix || (is_go_model && wants_go) {
+            cfg.model = bare;
+            cfg.base_url = base.to_string();
+        } else if has_go_prefix {
+            cfg.model = bare;
+        } else if cfg
+            .base_url
+            .trim_end_matches('/')
+            .to_ascii_lowercase()
+            .contains("/zen/go/")
+            && !crate::providers::is_opencode_go_model(&cfg.model)
+        {
+            // User switched from a Go model to a Zen id via --model but the
+            // persisted base_url is still Go — that would 404. Snap back to
+            // Zen for obvious Zen families; leave custom bases alone.
+            let ml = cfg.model.to_ascii_lowercase();
+            let zen_hint = ml.contains("claude")
+                || ml.contains("sonnet")
+                || ml.contains("opus")
+                || ml.contains("gpt")
+                || ml.contains("gemini")
+                || ml == "claude-sonnet-5";
+            if zen_hint {
+                cfg.base_url = crate::providers::OPENCODE_ZEN_BASE_URL.to_string();
+            }
+        }
+    }
     if let Some(e) = &cli.effort {
         cfg.reasoning_effort = e.clone();
     }

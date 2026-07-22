@@ -65,6 +65,10 @@ pub fn build_body_opts(
                 // providers expect them in one assistant turn, followed by the
                 // corresponding tool results. Zen tolerated split turns, but
                 // OpenCode Go forwards the stricter upstream protocol.
+                // Additionally, a single assistant turn can contain both text
+                // and tool_calls — emitting them as two back-to-back assistant
+                // messages trips the same strict check. Merge into the preceding
+                // assistant text message when it is the immediate predecessor.
                 let mut tool_calls = Vec::new();
                 while index < items.len() {
                     match item_type(&items[index]) {
@@ -74,6 +78,25 @@ pub fn build_body_opts(
                         }
                         Some("reasoning") if merge_across_reasoning => index += 1,
                         _ => break,
+                    }
+                }
+                // If the last emitted message is an assistant turn that currently
+                // has no tool_calls (i.e., a text-only assistant message from the
+                // same response), fold the tool_calls into it instead of emitting
+                // two consecutive assistant messages — the strict upstream that Go
+                // proxies rejects the split form.
+                if let Some(last) = messages.last_mut() {
+                    let is_assistant = last
+                        .get("role")
+                        .and_then(|r| r.as_str())
+                        == Some("assistant");
+                    let has_no_calls = last.get("tool_calls").is_none();
+                    if is_assistant && has_no_calls {
+                        last["tool_calls"] = json!(tool_calls);
+                        if last.get("content").is_none() {
+                            last["content"] = Value::Null;
+                        }
+                        continue;
                     }
                 }
                 messages.push(json!({
@@ -198,6 +221,7 @@ fn push_item_messages_opts(item: &Value, out: &mut Vec<Value>, drop_media: bool)
         let call_id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
         out.push(json!({
             "role": "assistant",
+            "content": Value::Null,
             "tool_calls": [{
                 "id": call_id,
                 "type": "function",
@@ -765,6 +789,68 @@ mod tests {
         let messages = other["messages"].as_array().unwrap();
         assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 1);
         assert_eq!(messages[3]["tool_calls"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn text_and_tool_calls_share_one_assistant_message_for_opencode_go() {
+        // A single assistant turn that produced both text and tool_calls must not
+        // become two consecutive assistant messages — Go's stricter upstream
+        // rejects that. They should be folded into one message with both fields.
+        let mut request = req();
+        request.input = json!([
+            {"role":"user","content":[{"type":"input_text","text":"go"}]},
+            {"role":"assistant","content":[{"type":"output_text","text":"I'll check."}]},
+            {"type":"function_call","call_id":"a","name":"list_dir","arguments":"{}"},
+            {"type":"function_call_output","call_id":"a","output":"src"}
+        ]);
+        for pid in ["opencode", ""] {
+            let body = build_body_for_provider(&request, false, pid);
+            let messages = body["messages"].as_array().unwrap();
+            // System is first if instructions present, so find assistant nodes.
+            let assistants: Vec<_> = messages
+                .iter()
+                .filter(|m| m["role"] == "assistant")
+                .collect();
+            assert!(
+                !assistants.is_empty(),
+                "must have assistant message for {pid}"
+            );
+            // The first assistant after user should have both text and tool_calls merged.
+            let merged = &assistants[0];
+            assert_eq!(merged["content"], "I'll check.", "content must survive for {pid}");
+            assert_eq!(
+                merged["tool_calls"].as_array().unwrap().len(),
+                1,
+                "text and tool_calls must be merged for {pid}"
+            );
+            tool_call_ids_are_declared_before_use(&body);
+            // Ensure we didn't emit two back-to-back assistant messages (strict check)
+            let mut last_was_assistant = false;
+            for m in messages {
+                let is_assistant = m["role"] == "assistant";
+                if is_assistant && last_was_assistant {
+                    // The only case where back-to-back assistants exist in our
+                    // test fixtures is the default req() tail; for this specific
+                    // input it would be a bug (text + tool from same turn split).
+                    // Our merged logic should eliminate the duplicate.
+                    let has_tools = m.get("tool_calls").is_some() && !m["tool_calls"].is_null();
+                    let prev_has_tools = false; // we already merged, so previous would not need second
+                    if has_tools {
+                        // If we see two assistants in a row where second has tool_calls
+                        // and first had text from same turn, that's the bug we're fixing.
+                        assert!(
+                            !last_was_assistant || !has_tools,
+                            "back-to-back assistant messages with tool_calls for {pid}: {body:#}"
+                        );
+                    }
+                }
+                last_was_assistant = is_assistant;
+                // Tool should break the assistant run
+                if m["role"] == "tool" {
+                    last_was_assistant = false;
+                }
+            }
+        }
     }
 
     #[test]

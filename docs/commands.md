@@ -424,7 +424,7 @@ Type these inside the `nur` TUI. Aliases are shown in the same row.
 | `/receipt` | Session receipt — hash-chained verification |
 | `/cua` | Computer-use desktop driver: `on` \| `off` \| `status` |
 | `/graph` | Inline live execution-graph card for the current turn |
-| `/sidegraph` | Live node-graph of current query: tools, subagents, steers, interrupts (`off` freezes, `hide` removes, no-arg refreshes) |
+| `/sidegraph` | Right-sidebar live node-graph of the current query: root prompt, thinking, tools, subagent fan-out, steers, interrupts — as boxed flow nodes. Bare `/sidegraph` toggles the panel, `off` freezes refresh, `on` resumes, `hide` closes. Mouse wheel over the panel scrolls it; it follows the bottom otherwise. Hidden automatically when the window is too narrow. |
 | `/swarm` | Inline subagent activity grid — a live tiled pane per subagent (aliases `/subagents`, `/agents`). **Auto-surfaces the moment a subagent spawns**, so you no longer have to run it first to watch a fan-out. `detail` adds the status row, `off` freezes, `clear` drops finished runs, `hide` removes the card and suppresses auto-surfacing for the rest of the turn (it re-arms on the next turn). |
 | `/subagents` · `/agents` | Alias of `/swarm` — inline subagent grid, live panes per subagent |
 | `/fractal` | Recursive agent tree — hierarchical loops in git worktrees: `init` · `node list` · `node status <name>` · `node start <name>` · `attach <name>` · `open`. **`open`** launches fractal's own full-screen dashboard: nur hands the terminal over and restores it when you quit. ⚠️ **Unix only** — see below. |

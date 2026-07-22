@@ -240,7 +240,7 @@ fn model_list_urls(base_url: &str, provider_id: &str, is_oauth: bool) -> Vec<Str
             // back to Zen on selection and 404'd.
             let zen = crate::providers::by_id("opencode")
                 .map(|p| p.base_url)
-                .unwrap_or("https://opencode.ai/zen/v1");
+                .unwrap_or(crate::providers::OPENCODE_ZEN_BASE_URL);
             urls.push(format!("{}/models", zen.trim_end_matches('/')));
             urls.push(format!("{}/models", crate::providers::OPENCODE_GO_BASE_URL));
         }

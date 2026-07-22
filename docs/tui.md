@@ -141,6 +141,31 @@ The card re-arms itself on each new turn and freezes when the turn ends.
 `/swarm detail` adds a status row, `/swarm off` freezes it, `/swarm clear`
 forgets finished runs, `/swarm hide` removes the card.
 
+### The sidegraph panel
+
+`/sidegraph` opens a right-sidebar live node-graph of the current query: root
+prompt as the top box, then boxed steps in chronological order - thinking,
+tool calls (label · hint), answering, steers, queued follow-ups, done. Agent
+tool boxes fan out their live subagent runs underneath as parallel children
+(with `+N more` overflow).
+
+| Width | Behaviour |
+|---|---|
+| ≥ ~66 cols | Transcript split into [main | 28–44 col sidebar] |
+| < ~66 cols | Panel hidden automatically, state kept; note once: "sidegraph · hidden — window too narrow · reappears on resize" |
+
+- Bare `/sidegraph` toggles the panel (open -> close). `off` / `freeze` freezes
+  refresh, `on` / `live` resumes, `hide` / `close` closes.
+- Title shows `◈ sidegraph ● live` + spinner while running, `◼ frozen` when frozen.
+- Footer: `wheel scrolls · off freezes · /sidegraph closes` (or scrolled state).
+- Mouse wheel over the panel scrolls its flow graph; it follows the bottom
+  unless you scrolled up.
+- New turn re-roots the graph and resets scroll to bottom; same-turn refreshes
+  keep scroll sticky.
+- Model is derived from transcript cells on each turn event, so it can never
+  drift from what actually ran; renderer re-reads swarm registry each frame for
+  live subagent fan-out.
+
 ### Knowledge stack
 
 | Command | Purpose |

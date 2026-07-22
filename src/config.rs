@@ -55,7 +55,11 @@ pub const PRICE_OUTPUT_PER_MTOK: f64 = 4.25;
 /// xAI flagship — the Grok 4 line left `api.x.ai`, so those configs 404.
 /// Schema ≥7: same treatment for retired Google / DeepSeek / Inception ids.
 /// Schema ≥8: Yi vendor exited LLM work (Mar 2025) — provider removed.
-pub const CONFIG_SCHEMA: u32 = 8;
+/// Schema ≥9: OpenCode Go routing — bare Go-exclusive ids like `kimi-k3`,
+/// `glm-5.2`, `qwen3.7-max` that were previously pinned with the Zen base now
+/// auto-migrate to the Go endpoint, and any stored `opencode-go/` prefix is
+/// stripped to the canonical bare id.
+pub const CONFIG_SCHEMA: u32 = 9;
 
 const RETIRED_PROVIDER_IDS: &[&str] = &[
     "anyscale",
@@ -305,6 +309,50 @@ pub fn migrate_config(cfg: &mut Config) -> bool {
         cfg.fusion_panel.retain(|id| !is_retired_provider(id));
         cfg.provider_privacy.retain(|id, _| !is_retired_provider(id));
     }
+    if cfg.config_schema < 9 {
+        // OpenCode Go routing: bare Go-exclusive models (kimi-*, glm-*, qwen*,
+        // mimo-*, minimax-*, deepseek-*) that were pinned with the Zen base now
+        // auto-migrate to the Go endpoint. Also strip any accidentally persisted
+        // `opencode-go/` prefix so the config stores the canonical bare id.
+        if cfg.provider == "opencode" {
+            let trimmed = cfg.model.trim().to_string();
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("opencode-go/") {
+                let (bare, base) = crate::providers::normalize_opencode_selection(&trimmed);
+                cfg.model = bare;
+                cfg.base_url = base.to_string();
+            } else if crate::providers::is_opencode_go_model(&trimmed) {
+                // Bare Go model but base still points at Zen — fix the route.
+                let zen = crate::providers::OPENCODE_ZEN_BASE_URL;
+                let cur = cfg.base_url.trim_end_matches('/').to_ascii_lowercase();
+                if cur == zen || cur.contains("/zen/v1") && !cur.contains("/zen/go/") {
+                    cfg.base_url = crate::providers::OPENCODE_GO_BASE_URL.to_string();
+                }
+            } else {
+                // Bare Zen model but base is Go without an explicit prefix — if the
+                // model is definitely NOT a Go model, snap back to Zen so it doesn't
+                // 404 on the Go endpoint. Guarded to avoid flip-flopping on
+                // overlapping ids like grok-4.5 which intentionally stay on Zen.
+                let cur = cfg.base_url.trim_end_matches('/').to_ascii_lowercase();
+                if cur.contains("/zen/go/") {
+                    // Only snap back if model is known Zen-ish (contains claude,
+                    // gpt, gemini, sonnet, etc) OR is the default claude-sonnet-5.
+                    // Otherwise leave it — user may have intentionally pointed a
+                    // custom model at Go.
+                    let ml = cfg.model.to_ascii_lowercase();
+                    let is_zen_hint = ml.contains("claude")
+                        || ml.contains("sonnet")
+                        || ml.contains("gpt")
+                        || ml.contains("gemini")
+                        || ml.contains("opus")
+                        || ml == "claude-sonnet-5";
+                    if is_zen_hint {
+                        cfg.base_url = crate::providers::OPENCODE_ZEN_BASE_URL.to_string();
+                    }
+                }
+            }
+        }
+    }
     cfg.config_schema = CONFIG_SCHEMA;
     true
 }
@@ -500,6 +548,20 @@ pub fn load_config() -> Result<Config> {
     // One-time: older configs → unlimited agent rounds (user sets caps later).
     if migrate_config(&mut cfg) {
         let _ = save_config(&cfg);
+    }
+    // Always normalize a stray `opencode-go/` prefix that might have been
+    // persisted by an older picker or manual edit — the canonical stored id is
+    // bare, with the base URL carrying the route.
+    if cfg.provider == "opencode" {
+        let trimmed = cfg.model.trim().to_string();
+        if !trimmed.is_empty() {
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("opencode-go/") {
+                let (bare, base) = crate::providers::normalize_opencode_selection(&trimmed);
+                cfg.model = bare;
+                cfg.base_url = base.to_string();
+            }
+        }
     }
     // Self-hosted OpenAI-compat (Ollama, vLLM, LiteLLM, custom gateways).
     apply_base_url_env(&mut cfg);

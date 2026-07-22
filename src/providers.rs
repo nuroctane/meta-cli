@@ -52,6 +52,8 @@ pub const OPENAI_OAUTH_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 pub const XAI_OAUTH_BASE_URL: &str = "https://cli-chat-proxy.grok.com/v1";
 /// Kimi Code's managed inference API for both subscription OAuth and Code API keys.
 pub const KIMI_CODE_BASE_URL: &str = "https://api.kimi.com/coding/v1";
+/// OpenCode Zen base (coding-model gateway).
+pub const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
 /// OpenCode Go shares OpenCode credentials but has its own inference endpoint.
 pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 /// Poolside Platform inference. Self-hosted deployments use `https://<domain>/openai/v1`.
@@ -203,6 +205,84 @@ pub fn normalize_model_for(provider_id: &str, model: &str) -> String {
         "inception" => normalize_inception_model_id(model),
         _ => model.trim().to_string(),
     }
+}
+
+/// Whether a bare model id (or one with `opencode-go/` prefix) belongs on the
+/// OpenCode **Go** endpoint (`/zen/go/v1`) rather than Zen (`/zen/v1`).
+///
+/// Go serves the low-cost coding catalog:
+/// `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.6`, `glm-5.2`, `glm-5.1`, `qwen3.7-max`,
+/// `qwen3.7-plus`, `qwen3.6-plus`, `deepseek-v4-pro/flash`, `mimo-v2.5/pro`,
+/// `minimax-m3/m2.7`, etc. Zen serves Claude/GPT/Gemini/Grok. Some ids like
+/// `grok-4.5` exist in both; they intentionally return **false** here so a
+/// bare `grok-4.5` stays on Zen (works for Zen-only keys) and only
+/// `opencode-go/grok-4.5` forces Go — the picker always offers both forms.
+pub fn is_opencode_go_model(id: &str) -> bool {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    // Explicit Go route prefix always means Go.
+    if lower.starts_with("opencode-go/") {
+        return true;
+    }
+    // Strip prefix if present for the bare check below (caller may have already
+    // stripped, but accept either form).
+    let bare = lower
+        .strip_prefix("opencode-go/")
+        .unwrap_or(&lower)
+        .trim();
+    // Go-exclusive families observed in
+    // https://julien.cloud/opencode-go-models/ + https://opencode.ai/docs/go/.
+    // `grok-` is deliberately excluded — it exists in both Zen and Go, and a
+    // Zen-only credential would break if bare `grok-4.5` were forced to Go.
+    const GO_PREFIXES: &[&str] = &[
+        "kimi-",
+        "glm-",
+        "qwen",
+        "mimo",
+        "minimax",
+        "deepseek",
+    ];
+    GO_PREFIXES.iter().any(|p| bare.starts_with(p))
+}
+
+/// Return the canonical bare model id and the correct OpenCode base URL for a
+/// picker entry that may be `opencode-go/<id>` or a bare Go-exclusive id like
+/// `kimi-k3` / `glm-5.2`. Always returns a valid base URL (Zen or Go).
+pub fn normalize_opencode_selection(id: &str) -> (String, &'static str) {
+    let trimmed = id.trim();
+    if trimmed.is_empty() {
+        return (String::new(), OPENCODE_ZEN_BASE_URL);
+    }
+    // Case-insensitive `opencode-go/` prefix — slice from the original string
+    // by its byte length so `OpenCode-Go/Kimi-K3` still yields `Kimi-K3`.
+    let lower = trimmed.to_ascii_lowercase();
+    let (bare, had_prefix) = if lower.starts_with("opencode-go/") {
+        let prefix_len = "opencode-go/".len();
+        (trimmed[prefix_len..].trim().to_string(), true)
+    } else {
+        (trimmed.to_string(), false)
+    };
+    let bare_lower = bare.to_ascii_lowercase();
+    let goes_to_go = had_prefix || {
+        const GO_PREFIXES: &[&str] = &[
+            "kimi-",
+            "glm-",
+            "qwen",
+            "mimo",
+            "minimax",
+            "deepseek",
+        ];
+        GO_PREFIXES.iter().any(|p| bare_lower.starts_with(p))
+    };
+    let base = if goes_to_go {
+        OPENCODE_GO_BASE_URL
+    } else {
+        OPENCODE_ZEN_BASE_URL
+    };
+    (bare, base)
 }
 
 /// Floor version xAI enforces on `cli-chat-proxy` (HTTP 426 if missing → "none").
@@ -858,7 +938,7 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: "opencode",
         name: "OpenCode",
-        base_url: "https://opencode.ai/zen/v1",
+        base_url: OPENCODE_ZEN_BASE_URL,
         // Zen still serves `claude-sonnet-4`, so this was never a 404 — just a
         // two-generation-old default that failover also aimed at (`plan_targets`
         // seeds from `default_model`). Verified present in the live Zen catalog
@@ -1237,6 +1317,55 @@ mod tests {
             "{} is not a current Zen id",
             p.default_model
         );
+    }
+
+    #[test]
+    fn opencode_go_routing_splits_zen_and_go() {
+        // Bare Go-exclusive families go to Go
+        for id in [
+            "kimi-k3",
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+            "glm-5.2",
+            "glm-5.1",
+            "qwen3.7-max",
+            "qwen3.7-plus",
+            "qwen3.6-plus",
+            "deepseek-v4-pro",
+            "deepseek-v4-flash",
+            "mimo-v2.5",
+            "mimo-v2.5-pro",
+            "minimax-m3",
+            "minimax-m2.7",
+        ] {
+            assert!(
+                is_opencode_go_model(id),
+                "{id} should be detected as Go model"
+            );
+            let (bare, base) = normalize_opencode_selection(id);
+            assert_eq!(bare, id);
+            assert_eq!(base, OPENCODE_GO_BASE_URL, "{id} must route to Go");
+        }
+        // Zen-only stays on Zen
+        for id in ["claude-sonnet-5", "claude-opus-4-8", "gpt-5.5"] {
+            assert!(!is_opencode_go_model(id));
+            let (_, base) = normalize_opencode_selection(id);
+            assert_eq!(base, OPENCODE_ZEN_BASE_URL);
+        }
+        // Overlap grok-4.5 stays on Zen unless explicitly prefixed
+        assert!(!is_opencode_go_model("grok-4.5"));
+        assert_eq!(
+            normalize_opencode_selection("grok-4.5").1,
+            OPENCODE_ZEN_BASE_URL
+        );
+        assert!(is_opencode_go_model("opencode-go/grok-4.5"));
+        let (bare, base) = normalize_opencode_selection("opencode-go/grok-4.5");
+        assert_eq!(bare, "grok-4.5");
+        assert_eq!(base, OPENCODE_GO_BASE_URL);
+        // Prefix handling is case-insensitive and strips to bare
+        let (bare, base) = normalize_opencode_selection("opencode-go/kimi-k3");
+        assert_eq!(bare, "kimi-k3");
+        assert_eq!(base, OPENCODE_GO_BASE_URL);
     }
 
     /// Every id nur can put on the wire for xAI must be one `api.x.ai` still
