@@ -601,6 +601,47 @@ impl AgentRunner {
                 .filter(|i| matches!(i, crate::api::types::OutputItem::Other))
                 .count();
 
+            // ── truncation detection (finish_reason: length) ──────────────
+            // Previously a response truncated at max_tokens ended the run
+            // quietly with a partial answer. Detect it via the mapped status
+            // field (chat completions sets status="length") and ask the model
+            // to continue, rather than reporting success on a clipped output.
+            if let Some(st) = resp.status.as_deref() {
+                if st == "length" {
+                    let _ = tx.send(AgentEvent::Status(
+                        "model response truncated at max_tokens (finish_reason: length) — asking to continue…".into(),
+                    ));
+                    // Keep the partial text in history so continuation has context,
+                    // then nudge the model to carry on.
+                    if !text.trim().is_empty() {
+                        // The partial answer is already in `replayed`? For text-only
+                        // completions `replayed` contains the message; we still push a
+                        // continuation hint so the next turn continues the same thought.
+                        session.input_items.push(
+                            crate::api::types::user_text_item(
+                                "[harness] Your previous response was cut off by the provider's max_tokens limit                                  (finish_reason: length). The user saw a truncated, incomplete answer.                                  Continue exactly where you left off, without repeating the preamble.                                  If you were in the middle of a tool call, retry that call.                                  If you were writing an answer, finish it.",
+                            ),
+                        );
+                        self.persist_session(session);
+                        continue;
+                    } else {
+                        // No text at all but truncated (e.g. tool-call args cut)
+                        session.input_items.push(
+                            crate::api::types::user_text_item(
+                                "[harness] Your previous response was truncated at max_tokens (finish_reason: length)                                  with no usable output. Retry the last step, possibly with smaller chunks,                                  or summarize and continue.",
+                            ),
+                        );
+                        self.persist_session(session);
+                        continue;
+                    }
+                }
+                if st == "content_filter" {
+                    let _ = tx.send(AgentEvent::Status(
+                        "model stopped for content_filter — surfacing partial output and ending turn".into(),
+                    ));
+                }
+            }
+
             if text_deltas == 0 && !text.is_empty() {
                 let _ = tx.send(AgentEvent::AssistantMessage(text.clone()));
             }

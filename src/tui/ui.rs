@@ -2862,8 +2862,8 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
             .cloned()
             .collect();
 
-        let (mut spine, back_edge) = sg_build_spine(model, &this_turn, tick, running);
-        let canvas = sg_paint(&mut spine, back_edge, iw);
+        let mut forest = sg_build_forest(model, &this_turn, tick, running);
+        let canvas = sg_paint_forest(&mut forest, iw);
         lines = canvas.to_lines();
     }
 
@@ -3194,6 +3194,7 @@ fn sg_draw_box(c: &mut SgCanvas, n: &SgLay) {
 }
 
 /// Place the spine, then stamp boxes and edge polylines into a canvas.
+#[allow(dead_code)]
 fn sg_paint(spine: &mut [SgLay], back_edge: Option<(usize, usize)>, panel_w: usize) -> SgCanvas {
     if spine.is_empty() {
         return SgCanvas::new(panel_w.max(1), 1);
@@ -3312,6 +3313,7 @@ fn sg_paint(spine: &mut [SgLay], back_edge: Option<(usize, usize)>, panel_w: usi
 
 /// Turn the graph model into placed-node input: the root prompt, one node per
 /// step, live subagents fanned out under the `agent` tool that spawned them.
+#[allow(dead_code)]
 fn sg_build_spine(
     model: &crate::tui::app::SideGraphModel,
     this_turn: &[crate::agent::swarm::AgentRun],
@@ -3516,11 +3518,616 @@ fn sg_build_spine(
                     vec![(status_str.to_string(), hue)],
                 ));
             }
+            SgNode::Prompt { text } => {
+                let mut lay = SgLay::new(
+                    "■",
+                    theme::CYAN,
+                    "prompt",
+                    "",
+                    theme::CYAN,
+                    vec![(text.clone(), theme::MUTED)],
+                );
+                lay.double = true;
+                spine.push(lay);
+            }
         }
     }
 
     (spine, back_edge)
 }
+
+// ── sidegraph forest: categorized trees ───────────────────────────────────────
+// Many trees per category, live tools own tree delegated on completion.
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum SgCat {
+    Main,
+    Live,
+    Search,
+    Edit,
+    Exec,
+    Agent,
+    Knowledge,
+    Other,
+}
+
+fn sg_cat_for_tool(name: &str) -> SgCat {
+    match name {
+        // search / read
+        "read_file" | "list_dir" | "grep" | "glob" | "git_status" | "git_diff"
+        | "web_fetch" | "web_search" | "look" | "browser" => SgCat::Search,
+        // editing
+        "write_file" | "edit_file" | "multi_edit" | "apply_patch" => SgCat::Edit,
+        // execution
+        "bash" | "extract_frames" | "excalidraw" | "tldraw" => SgCat::Exec,
+        // agent / delegation
+        "agent" | "omp" | "fractal" => SgCat::Agent,
+        // knowledge / memory / planning
+        "graphify" | "graphjin" | "plur" | "ruflo" | "memory" | "skill" | "todo_write"
+        | "submit_plan" | "akarso" | "executor" | "penecho" | "t3code" => SgCat::Knowledge,
+        _ => SgCat::Other,
+    }
+}
+
+fn sg_cat_hue(cat: SgCat) -> Color {
+    match cat {
+        SgCat::Main => theme::VIOLET,
+        SgCat::Live => theme::NUR_GOLD,
+        SgCat::Search => theme::CYAN,
+        SgCat::Edit => theme::SUCCESS,
+        SgCat::Exec => theme::AMBER,
+        SgCat::Agent => theme::NUR_GOLD_SKY,
+        SgCat::Knowledge => theme::INDIGO,
+        SgCat::Other => theme::MUTED,
+    }
+}
+
+#[allow(dead_code)]
+fn sg_cat_label(cat: SgCat) -> &'static str {
+    match cat {
+        SgCat::Main => "reasoning",
+        SgCat::Live => "live",
+        SgCat::Search => "search",
+        SgCat::Edit => "edit",
+        SgCat::Exec => "exec",
+        SgCat::Agent => "agent",
+        SgCat::Knowledge => "knowledge",
+        SgCat::Other => "other",
+    }
+}
+
+fn sg_cat_order(cat: SgCat) -> usize {
+    match cat {
+        SgCat::Main => 0,
+        SgCat::Live => 1,
+        SgCat::Search => 2,
+        SgCat::Edit => 3,
+        SgCat::Exec => 4,
+        SgCat::Agent => 5,
+        SgCat::Knowledge => 6,
+        SgCat::Other => 7,
+    }
+}
+
+#[allow(dead_code)]
+struct SgToolTrack {
+    name: String,
+    cat: SgCat,
+    hue: Color,
+    nodes: Vec<SgLay>,
+}
+
+struct SgForest {
+    root: SgLay,
+    main: Vec<SgLay>,
+    live: Vec<SgLay>,
+    tool_tracks: Vec<SgToolTrack>,
+    back_edge: Option<(usize, usize)>,
+}
+
+fn track_content_width(nodes: &[SgLay]) -> usize {
+    nodes.iter().map(sg_span_w).max().unwrap_or(SG_NODE_W)
+}
+
+fn sg_build_forest(
+    model: &crate::tui::app::SideGraphModel,
+    this_turn: &[crate::agent::swarm::AgentRun],
+    tick: Duration,
+    running: bool,
+) -> SgForest {
+    use crate::tui::app::{SgNode, SgState};
+    use std::collections::HashMap;
+
+    let rq = if model.query.is_empty() {
+        "(no query yet — send a prompt)".to_string()
+    } else {
+        model.query.clone()
+    };
+    let mut root = SgLay::new(
+        "■",
+        theme::NUR_GOLD,
+        "root prompt",
+        "",
+        theme::CYAN,
+        vec![(rq, theme::style_status().fg.unwrap_or(theme::MUTED))],
+    );
+    root.double = true;
+
+    let mut main: Vec<SgLay> = Vec::new();
+    let mut live: Vec<SgLay> = Vec::new();
+    let mut map: HashMap<String, Vec<SgLay>> = HashMap::new();
+    let mut last_thinking: Option<usize> = None;
+    let mut back_edge: Option<(usize, usize)> = None;
+
+    if model.nodes.is_empty() && running {
+        main.push(SgLay::new(
+            theme::spinner_frame(tick),
+            theme::NUR_GOLD,
+            "thinking",
+            "",
+            theme::VIOLET,
+            Vec::new(),
+        ));
+    }
+
+    let n_nodes = model.nodes.len();
+    for (i, node) in model.nodes.iter().enumerate() {
+        let is_last = i + 1 == n_nodes;
+        match node {
+            SgNode::Thinking {
+                excerpt,
+                live: l,
+                started,
+                duration,
+            } => {
+                let (glyph, ghue, dur) = if *l {
+                    (
+                        theme::spinner_frame(tick).to_string(),
+                        theme::NUR_GOLD,
+                        theme::fmt_elapsed_live(started.elapsed()),
+                    )
+                } else {
+                    (
+                        "◇".to_string(),
+                        theme::VIOLET,
+                        duration.map(theme::fmt_duration).unwrap_or_default(),
+                    )
+                };
+                last_thinking = Some(main.len());
+                main.push(SgLay::new(
+                    &glyph,
+                    ghue,
+                    "reasoning",
+                    &dur,
+                    theme::VIOLET,
+                    vec![(excerpt.clone(), theme::MUTED)],
+                ));
+            }
+            SgNode::Tool {
+                name,
+                args_formatted,
+                result_formatted,
+                state,
+                started,
+                duration,
+                agent,
+            } => {
+                let (glyph, hue, dur) = match state {
+                    SgState::Running => (
+                        theme::spinner_frame(tick).to_string(),
+                        theme::NUR_GOLD,
+                        theme::fmt_elapsed_live(started.elapsed()),
+                    ),
+                    SgState::Ok => (
+                        "✓".to_string(),
+                        theme::SUCCESS,
+                        duration.map(theme::fmt_duration).unwrap_or_default(),
+                    ),
+                    SgState::Failed => (
+                        "✗".to_string(),
+                        theme::ERROR,
+                        duration.map(theme::fmt_duration).unwrap_or_default(),
+                    ),
+                };
+                let mut raw: Vec<(String, Color)> = args_formatted
+                    .iter()
+                    .map(|a| (a.clone(), theme::NUR_GOLD_SKY))
+                    .collect();
+                if let Some(res) = result_formatted {
+                    let rhue = if matches!(state, SgState::Failed) {
+                        theme::ERROR
+                    } else {
+                        theme::SUCCESS
+                    };
+                    raw.extend(res.iter().map(|r| (r.clone(), rhue)));
+                }
+                let show_children = *agent
+                    && !this_turn.is_empty()
+                    && (is_last || matches!(state, SgState::Running));
+                let mut lay = SgLay::new(&glyph, hue, name, &dur, hue, raw);
+                if show_children {
+                    let mut children = this_turn.to_vec();
+                    children.sort_by_key(|r| {
+                        (
+                            r.state != crate::agent::swarm::RunState::Running,
+                            std::cmp::Reverse(r.id),
+                        )
+                    });
+                    let shown = SG_MAX_KIDS.min(children.len());
+                    if children.len() > shown {
+                        lay.details.push((
+                            format!("… +{} more subagents", children.len() - shown),
+                            theme::FAINT,
+                        ));
+                        lay.h += 1;
+                    }
+                    for run in children.iter().take(shown) {
+                        let (chue, cglyph) = run_look(run.state, tick);
+                        let elapsed = if run.state == crate::agent::swarm::RunState::Running {
+                            theme::fmt_elapsed_live(run.elapsed())
+                        } else {
+                            theme::fmt_duration(run.elapsed())
+                        };
+                        lay.kids.push(SgLay::new(
+                            &cglyph.to_string(),
+                            chue,
+                            &format!("#{}·{}", run.id, run.kind),
+                            &elapsed,
+                            chue,
+                            vec![(run.task.clone(), theme::MUTED)],
+                        ));
+                    }
+                }
+                if matches!(state, SgState::Running) {
+                    live.push(lay);
+                } else {
+                    map.entry(name.clone()).or_default().push(lay);
+                }
+            }
+            SgNode::Answering { text_excerpt } => main.push(SgLay::new(
+                "✎",
+                theme::CYAN,
+                "answering",
+                "",
+                theme::CYAN,
+                vec![(text_excerpt.clone(), theme::MUTED)],
+            )),
+            SgNode::Steer { text } => {
+                if let Some(t) = last_thinking {
+                    back_edge = Some((main.len(), t));
+                }
+                main.push(SgLay::new(
+                    "↻",
+                    theme::WARN,
+                    "steer",
+                    "",
+                    theme::WARN,
+                    vec![(text.clone(), theme::MUTED)],
+                ));
+            }
+            SgNode::Queued { text } => main.push(SgLay::new(
+                "↗",
+                theme::MUTED,
+                "queued",
+                "",
+                theme::MUTED,
+                vec![(text.clone(), theme::MUTED)],
+            )),
+            SgNode::Done {
+                duration,
+                interrupted,
+            } => {
+                let (glyph, hue, status_str) = if *interrupted {
+                    ("◼", theme::WARN, "interrupted")
+                } else {
+                    ("✓", theme::SUCCESS, "completed")
+                };
+                main.push(SgLay::new(
+                    glyph,
+                    hue,
+                    "turn",
+                    &theme::fmt_duration(*duration),
+                    hue,
+                    vec![(status_str.to_string(), hue)],
+                ));
+            }
+            SgNode::Prompt { text } => {
+                // Prompt nodes are double-bordered like root, titled "prompt"
+                let mut lay = SgLay::new(
+                    "■",
+                    theme::CYAN,
+                    "prompt",
+                    "",
+                    theme::CYAN,
+                    vec![(text.clone(), theme::MUTED)],
+                );
+                lay.double = true;
+                main.push(lay);
+            }
+        }
+    }
+
+    let mut tool_tracks: Vec<SgToolTrack> = map
+        .into_iter()
+        .map(|(name, nodes)| {
+            let cat = sg_cat_for_tool(&name);
+            SgToolTrack {
+                name,
+                cat,
+                hue: sg_cat_hue(cat),
+                nodes,
+            }
+        })
+        .collect();
+    // sort by category order then name to keep stable, grouped view
+    tool_tracks.sort_by(|a, b| {
+        sg_cat_order(a.cat)
+            .cmp(&sg_cat_order(b.cat))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    SgForest {
+        root,
+        main,
+        live,
+        tool_tracks,
+        back_edge,
+    }
+}
+
+fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
+    // collect widths in display order: main, live, then per-tool tracks
+    let mut widths: Vec<usize> = Vec::new();
+    let mut track_kinds: Vec<SgCat> = Vec::new(); // for debugging / future
+    let mut has_main = false;
+    let mut has_live = false;
+
+    if !forest.main.is_empty() {
+        widths.push(track_content_width(&forest.main));
+        track_kinds.push(SgCat::Main);
+        has_main = true;
+    }
+    if !forest.live.is_empty() {
+        widths.push(track_content_width(&forest.live));
+        track_kinds.push(SgCat::Live);
+        has_live = true;
+    }
+    for tt in &forest.tool_tracks {
+        widths.push(track_content_width(&tt.nodes));
+        track_kinds.push(tt.cat);
+    }
+
+    let n_tracks = widths.len();
+    let gutter = if forest.back_edge.is_some() { 16 } else { 1 };
+
+    if n_tracks == 0 {
+        // only root + maybe empty — still draw root
+        let canvas_w = (SG_NODE_W + 2).max(panel_w) + gutter;
+        let canvas_h = forest.root.h + 1;
+        let mut c = SgCanvas::new(canvas_w, canvas_h);
+        forest.root.x = (canvas_w - gutter - SG_NODE_W) / 2;
+        forest.root.y = 0;
+        sg_draw_box(&mut c, &forest.root);
+        return c;
+    }
+
+    let gap = SG_GAP + 1; // track gap
+    let total_tracks_w = widths.iter().sum::<usize>() + gap * n_tracks.saturating_sub(1);
+    let canvas_w = (total_tracks_w + 2).max(panel_w) + gutter;
+    let base_left = (canvas_w - gutter - total_tracks_w) / 2;
+
+    // root
+    forest.root.x = base_left + (total_tracks_w - SG_NODE_W) / 2;
+    forest.root.y = 0;
+
+    // track x positions
+    let mut track_xs: Vec<usize> = Vec::with_capacity(n_tracks);
+    let mut cur_x = base_left;
+    for w in &widths {
+        track_xs.push(cur_x);
+        cur_x += *w + gap;
+    }
+    let centers: Vec<usize> = track_xs
+        .iter()
+        .zip(widths.iter())
+        .map(|(x, w)| x + w / 2)
+        .collect();
+
+    let rail_y = forest.root.y + forest.root.h;
+    let first_y = rail_y + 2;
+
+    // layout nodes per track
+    let mut max_y = first_y;
+    // helper to layout a slice
+    let layout_track = |nodes: &mut Vec<SgLay>, tx: usize, tw: usize, start_y: usize| -> usize {
+        let tc = tx + tw / 2;
+        let mut y = start_y;
+        for n in nodes.iter_mut() {
+            n.x = tc.saturating_sub(SG_NODE_W / 2);
+            n.y = y;
+            if !n.kids.is_empty() {
+                let k = n.kids.len();
+                let kids_w = k * SG_NODE_W + SG_GAP * (k - 1);
+                let kleft = tc.saturating_sub(kids_w / 2);
+                let ky = y + n.h + 2;
+                let kh = n.kids.iter().map(|kd| kd.h).max().unwrap_or(0);
+                for (i, kid) in n.kids.iter_mut().enumerate() {
+                    kid.x = kleft + i * (SG_NODE_W + SG_GAP);
+                    kid.y = ky;
+                    kid.h = kh;
+                }
+            }
+            y += sg_subtree_h(n) + 2;
+        }
+        y
+    };
+
+    let mut idx = 0usize;
+    if has_main {
+        let tx = track_xs[idx];
+        let tw = widths[idx];
+        let y_end = layout_track(&mut forest.main, tx, tw, first_y);
+        if y_end > max_y {
+            max_y = y_end;
+        }
+        idx += 1;
+    }
+    if has_live {
+        let tx = track_xs[idx];
+        let tw = widths[idx];
+        let y_end = layout_track(&mut forest.live, tx, tw, first_y);
+        if y_end > max_y {
+            max_y = y_end;
+        }
+        idx += 1;
+    }
+    for tt in forest.tool_tracks.iter_mut() {
+        let tx = track_xs[idx];
+        let tw = widths[idx];
+        let y_end = layout_track(&mut tt.nodes, tx, tw, first_y);
+        if y_end > max_y {
+            max_y = y_end;
+        }
+        idx += 1;
+    }
+
+    let canvas_h = max_y.saturating_sub(1).max(forest.root.h + 2);
+    let mut c = SgCanvas::new(canvas_w, canvas_h.max(1));
+    let edge = theme::style_faint();
+
+    // root box
+    sg_draw_box(&mut c, &forest.root);
+    let cx_root = forest.root.center();
+    c.put(
+        cx_root,
+        forest.root.y + forest.root.h - 1,
+        '┬',
+        Style::default().fg(forest.root.hue),
+    );
+
+    // fan-out rail from root to all tracks
+    if !centers.is_empty() {
+        let lc = *centers.first().unwrap();
+        let rc = *centers.last().unwrap();
+        for x in lc..=rc {
+            let ch = sg_junction(x == cx_root, centers.contains(&x), x > lc, x < rc);
+            c.put(x, rail_y, ch, edge);
+        }
+        for &tc in &centers {
+            c.put(tc, rail_y + 1, '▼', edge);
+        }
+
+        // draw each track's nodes
+        let mut t_idx = 0usize;
+        let mut draw_track_nodes = |nodes: &[SgLay], tc: usize| {
+            for (i, n) in nodes.iter().enumerate() {
+                sg_draw_box(&mut c, n);
+                if !n.kids.is_empty() {
+                    let lc_k = n.kids.first().map(|k| k.center()).unwrap_or(tc);
+                    let rc_k = n.kids.last().map(|k| k.center()).unwrap_or(tc);
+                    let kid_centers: Vec<usize> = n.kids.iter().map(|k| k.center()).collect();
+                    c.put(tc, n.y + n.h - 1, '┬', Style::default().fg(n.hue));
+                    let rail = n.y + n.h;
+                    for x in lc_k..=rc_k {
+                        let ch = sg_junction(x == tc, kid_centers.contains(&x), x > lc_k, x < rc_k);
+                        c.put(x, rail, ch, edge);
+                    }
+                    for kid in &n.kids {
+                        c.put(kid.center(), rail + 1, '▼', edge);
+                        sg_draw_box(&mut c, kid);
+                    }
+                    let kb = n.kids.iter().map(|k| k.y + k.h - 1).max().unwrap_or(rail);
+                    let fin_y = kb + 1;
+                    for kid in &n.kids {
+                        c.put(
+                            kid.center(),
+                            kid.y + kid.h - 1,
+                            '┴',
+                            Style::default().fg(kid.hue),
+                        );
+                    }
+                    let continues = i + 1 < nodes.len();
+                    for x in lc_k..=rc_k {
+                        let ch = sg_junction(
+                            kid_centers.contains(&x),
+                            continues && x == tc,
+                            x > lc_k,
+                            x < rc_k,
+                        );
+                        c.put(x, fin_y, ch, edge);
+                    }
+                    if continues {
+                        let next_y = nodes[i + 1].y;
+                        if next_y > fin_y + 1 {
+                            c.vline(tc, fin_y + 1, next_y - 2, edge);
+                            c.put(tc, next_y - 1, '▼', edge);
+                        }
+                    }
+                } else if i + 1 < nodes.len() {
+                    let next_y = nodes[i + 1].y;
+                    c.put(
+                        tc,
+                        n.y + n.h - 1,
+                        '┬',
+                        Style::default().fg(n.hue),
+                    );
+                    if next_y >= 2 {
+                        c.vline(tc, n.y + n.h, next_y - 2, edge);
+                    }
+                    c.put(tc, next_y - 1, '▼', edge);
+                }
+            }
+        };
+
+        if has_main {
+            let tc = centers[t_idx];
+            draw_track_nodes(&forest.main, tc);
+            t_idx += 1;
+        }
+        if has_live {
+            let tc = centers[t_idx];
+            draw_track_nodes(&forest.live, tc);
+            t_idx += 1;
+        }
+        for tt in &forest.tool_tracks {
+            let tc = centers[t_idx];
+            draw_track_nodes(&tt.nodes, tc);
+            t_idx += 1;
+        }
+
+        // back-edge (steer re-entry) within main track gutter
+        if let Some((from_i, to_i)) = forest.back_edge {
+            if has_main && from_i < forest.main.len() && to_i < forest.main.len() {
+                let from_node = &forest.main[from_i];
+                let to_node = &forest.main[to_i];
+                let st = Style::default().fg(theme::WARN);
+                let (fx, fy, fh) = (from_node.x, from_node.y, from_node.h);
+                let (tx_, ty, th) = (to_node.x, to_node.y, to_node.h);
+                let fy_mid = fy + fh / 2;
+                let ty_mid = ty + th / 2;
+                let gx = base_left + total_tracks_w + 3;
+                if gx < canvas_w && ty_mid < fy_mid {
+                    for x in (fx + SG_NODE_W)..gx {
+                        c.put(x, fy_mid, '─', st);
+                    }
+                    c.put(gx, fy_mid, '┘', st);
+                    for yy in (ty_mid + 1)..fy_mid {
+                        c.put(gx, yy, '│', st);
+                    }
+                    c.put(gx, ty_mid, '┐', st);
+                    for x in (tx_ + SG_NODE_W + 1)..gx {
+                        c.put(x, ty_mid, '─', st);
+                    }
+                    c.put(tx_ + SG_NODE_W, ty_mid, '◄', st);
+                    c.text(gx + 2, ty_mid, "↻ re-entry", st);
+                }
+            }
+        }
+    }
+
+    c
+}
+
 
 
 /// Truncate to `width` display columns, marking the cut with an ellipsis.
@@ -6029,5 +6636,54 @@ mod sidegraph_canvas_tests {
             let s: String = l.spans.iter().map(|sp| sp.content.as_ref()).collect::<String>();
             println!("{s}");
         }
+    }
+
+    #[test]
+    fn forest_many_trees_per_category() {
+        let mut m = demo_model();
+        let now = std::time::Instant::now();
+        m.nodes.push(SgNode::Tool {
+            name: "bash".into(),
+            args_formatted: vec!["cmd: cargo test".into()],
+            result_formatted: Some(vec!["✓ return".into()]),
+            state: SgState::Ok,
+            started: now,
+            duration: Some(Duration::from_millis(120)),
+            agent: false,
+        });
+        m.nodes.push(SgNode::Tool {
+            name: "edit_file".into(),
+            args_formatted: vec!["path: src/main.rs".into()],
+            result_formatted: Some(vec!["✓".into()]),
+            state: SgState::Ok,
+            started: now,
+            duration: Some(Duration::from_millis(80)),
+            agent: false,
+        });
+        m.nodes.push(SgNode::Tool {
+            name: "grep".into(),
+            args_formatted: vec!["pattern: TODO".into()],
+            result_formatted: Some(vec!["✓".into()]),
+            state: SgState::Ok,
+            started: now,
+            duration: Some(Duration::from_millis(50)),
+            agent: false,
+        });
+        m.nodes.push(SgNode::Tool {
+            name: "agent".into(),
+            args_formatted: vec!["task: explore".into()],
+            result_formatted: None,
+            state: SgState::Running,
+            started: now,
+            duration: None,
+            agent: true,
+        });
+        let mut forest = sg_build_forest(&m, &[], Duration::from_millis(0), true);
+        assert!(forest.tool_tracks.len() >= 3, "should have many tool tracks, got {}", forest.tool_tracks.len());
+        assert!(!forest.main.is_empty());
+        assert!(!forest.live.is_empty(), "live track should have running tool");
+        let canvas = sg_paint_forest(&mut forest, 40);
+        let widest = canvas.to_lines().iter().map(|l| l.width()).max().unwrap_or(0);
+        assert!(widest > 40, "forest canvas {} should exceed panel 40 to make panning useful", widest);
     }
 }

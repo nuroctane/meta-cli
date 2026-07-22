@@ -371,22 +371,38 @@ pub fn parse_completion(v: &Value) -> Value {
         .and_then(|t| t.as_array())
         .cloned()
         .unwrap_or_default();
-    build_response_value(
+    let finish_reason = v
+        .pointer("/choices/0/finish_reason")
+        .and_then(|x| x.as_str());
+    build_response_value_with_status(
         v.get("id").and_then(|x| x.as_str()),
         v.get("model").and_then(|x| x.as_str()),
         &content,
         &tool_calls,
         v.get("usage"),
+        finish_reason,
     )
 }
 
 /// Build a Responses-shaped response object (deserialized by the caller).
+#[allow(dead_code)]
 pub fn build_response_value(
     id: Option<&str>,
     model: Option<&str>,
     content: &str,
     tool_calls: &[Value],
     usage: Option<&Value>,
+) -> Value {
+    build_response_value_with_status(id, model, content, tool_calls, usage, None)
+}
+
+pub fn build_response_value_with_status(
+    id: Option<&str>,
+    model: Option<&str>,
+    content: &str,
+    tool_calls: &[Value],
+    usage: Option<&Value>,
+    finish_reason: Option<&str>,
 ) -> Value {
     let mut output: Vec<Value> = Vec::new();
     if !content.is_empty() {
@@ -424,9 +440,14 @@ pub fn build_response_value(
             })
         })
         .unwrap_or(json!({}));
+    let status = match finish_reason {
+        Some("length") => "length",
+        Some("content_filter") => "content_filter",
+        _ => "completed",
+    };
     json!({
         "id": id,
-        "status": "completed",
+        "status": status,
         "model": model,
         "output": output,
         "usage": usage_obj,
@@ -556,6 +577,8 @@ pub struct StreamAccumulator {
     calls: Vec<(String, String, String)>,
     usage: Option<Value>,
     think: ThinkSplitter,
+    /// finish_reason from the provider, e.g. "length" for truncation.
+    pub finish_reason: Option<String>,
 }
 
 impl StreamAccumulator {
@@ -577,6 +600,26 @@ impl StreamAccumulator {
         if let Some(u) = v.get("usage") {
             if u.is_object() {
                 self.usage = Some(u.clone());
+            }
+        }
+        // Capture finish_reason for truncation detection (length).
+        if self.finish_reason.is_none() {
+            if let Some(fr) = v
+                .pointer("/choices/0/finish_reason")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+            {
+                if !fr.is_empty() && fr != "null" {
+                    self.finish_reason = Some(fr);
+                }
+            } else if let Some(fr) = v
+                .pointer("/choices/0/delta/finish_reason")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string())
+            {
+                if !fr.is_empty() && fr != "null" {
+                    self.finish_reason = Some(fr);
+                }
             }
         }
         let delta = v.pointer("/choices/0/delta");
@@ -672,12 +715,13 @@ impl StreamAccumulator {
                 })
             })
             .collect();
-        build_response_value(
+        build_response_value_with_status(
             self.id.as_deref(),
             self.model.as_deref(),
             &self.content,
             &tool_calls,
             self.usage.as_ref(),
+            self.finish_reason.as_deref(),
         )
     }
 }

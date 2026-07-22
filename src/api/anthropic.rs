@@ -5,7 +5,6 @@
 //! root cause of "Anthropic isn't working" for both API keys and Claude OAuth.
 //! This module translates Responses ↔ Messages (including tools + streaming).
 
-use super::chat::build_response_value;
 use super::types::ResponseRequest;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -665,7 +664,11 @@ pub fn parse_message(v: &Value) -> Value {
         }
     }
     let usage = v.get("usage").map(chat_usage_from_anthropic);
-    build_response_value(id, model, &text, &tool_calls, usage.as_ref())
+    let stop = v.get("stop_reason").and_then(|s| s.as_str()).map(|s| match s {
+        "max_tokens" => "length",
+        other => other,
+    });
+    super::chat::build_response_value_with_status(id, model, &text, &tool_calls, usage.as_ref(), stop)
 }
 
 /// Streaming accumulator for Anthropic SSE events.
@@ -679,6 +682,7 @@ pub struct StreamAccumulator {
     /// index of current content block if tool_use
     current_tool_idx: Option<usize>,
     usage: Option<Value>,
+    pub finish_reason: Option<String>,
 }
 
 impl StreamAccumulator {
@@ -751,6 +755,13 @@ impl StreamAccumulator {
                 None
             }
             "message_delta" => {
+                if self.finish_reason.is_none() {
+                    if let Some(sr) = v.get("delta").and_then(|d| d.get("stop_reason")).and_then(|s| s.as_str()) {
+                        if !sr.is_empty() {
+                            self.finish_reason = Some(sr.to_string());
+                        }
+                    }
+                }
                 if let Some(u) = v.get("usage") {
                     // message_delta usage often only has output_tokens
                     let mut base = self.usage.clone().unwrap_or_else(
@@ -788,12 +799,18 @@ impl StreamAccumulator {
                 })
             })
             .collect();
-        build_response_value(
+        // Anthropic uses "max_tokens" for length truncation
+        let fr = self.finish_reason.as_deref().map(|s| match s {
+            "max_tokens" => "length",
+            other => other,
+        });
+        super::chat::build_response_value_with_status(
             self.id.as_deref(),
             self.model.as_deref(),
             &self.content,
             &tool_calls,
             self.usage.as_ref(),
+            fr,
         )
     }
 }

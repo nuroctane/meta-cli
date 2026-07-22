@@ -372,6 +372,9 @@ pub enum SgNode {
     },
     /// A mid-turn user steer (`/steer` or an injected follow-up).
     Steer { text: String },
+    /// A user prompt that starts a new turn (persistent view). Rendered like
+    /// root prompt (double border) but titled "prompt", not "root prompt".
+    Prompt { text: String },
     /// A follow-up queued while the turn runs.
     Queued { text: String },
     /// The turn settled — completed or interrupted.
@@ -6640,57 +6643,21 @@ impl App {
                 .unwrap_or("");
             line.chars().take(cap).collect()
         };
-        // Adversarial fix: anchor on TurnDone boundaries, not last User, so mid-turn steers don't re-root.
-        let last_done_pos = self
-            .cells
-            .iter()
-            .rposition(|c| matches!(c, Cell::TurnDone { .. }));
-        let root_idx: Option<usize> = if let Some(ld) = last_done_pos {
-            let after = self.cells[ld + 1..]
-                .iter()
-                .position(|c| matches!(c, Cell::User(_)))
-                .map(|p| ld + 1 + p);
-            if let Some(idx) = after {
-                Some(idx)
-            } else {
-                let prev_done = self.cells[..ld]
-                    .iter()
-                    .rposition(|c| matches!(c, Cell::TurnDone { .. }));
-                let search_start = prev_done.map(|p| p + 1).unwrap_or(0);
-                self.cells[search_start..ld]
-                    .iter()
-                    .position(|c| matches!(c, Cell::User(_)))
-                    .map(|p| search_start + p)
-            }
-        } else {
-            self.cells.iter().position(|c| matches!(c, Cell::User(_)))
-        };
 
-        let (query, start) = match root_idx {
-            Some(idx) => {
-                let q = match &self.cells[idx] {
-                    Cell::User(t) => first_line(t, 160),
-                    _ => String::new(),
-                };
-                (q, idx + 1)
-            }
-            None => (String::new(), 0),
-        };
-
-        let end = if self.busy {
-            self.cells.len()
-        } else if let Some(r) = root_idx {
-            self.cells[r + 1..]
-                .iter()
-                .position(|c| matches!(c, Cell::TurnDone { .. }))
-                .map(|p| r + 1 + p + 1)
-                .unwrap_or(self.cells.len())
-        } else {
-            self.cells.len()
-        };
-
+        // Persistent view: show entire transcript, not just current query.
+        // First User cell is the root prompt (query), subsequent Users that appear
+        // after a TurnDone become Prompt nodes (double-bordered like root, titled
+        // "prompt"). Users that appear mid-turn (while in_turn) are Steers with
+        // back-edge. This way interruption or "send now" does not clear the graph
+        // — new prompts flow in after previous Done nodes, like the transcript.
+        let mut query = String::new();
         let mut nodes: Vec<SgNode> = Vec::new();
-        for c in &self.cells[start..end] {
+        let mut first_user_seen = false;
+        let mut in_turn = false;
+
+        let end = self.cells.len();
+
+        for c in &self.cells[0..end] {
             match c {
                 Cell::Thinking {
                     text,
@@ -6698,12 +6665,15 @@ impl App {
                     started,
                     duration,
                     ..
-                } => nodes.push(SgNode::Thinking {
-                    excerpt: first_line(text, 120),
-                    live: *active,
-                    started: *started,
-                    duration: *duration,
-                }),
+                } => {
+                    in_turn = true;
+                    nodes.push(SgNode::Thinking {
+                        excerpt: first_line(text, 120),
+                        live: *active,
+                        started: *started,
+                        duration: *duration,
+                    })
+                },
                 Cell::Tool {
                     name,
                     args,
@@ -6712,30 +6682,48 @@ impl App {
                     started,
                     duration,
                     ..
-                } => nodes.push(SgNode::Tool {
-                    name: name.clone(),
-                    args_formatted: format_tool_args_lines(args),
-                    result_formatted: result.as_ref().map(|r| format_tool_result_lines(r)),
-                    state: match ok {
-                        None => SgState::Running,
-                        Some(true) => SgState::Ok,
-                        Some(false) => SgState::Failed,
-                    },
-                    started: *started,
-                    duration: *duration,
-                    agent: name == "agent",
-                }),
+                } => {
+                    in_turn = true;
+                    nodes.push(SgNode::Tool {
+                        name: name.clone(),
+                        args_formatted: format_tool_args_lines(args),
+                        result_formatted: result.as_ref().map(|r| format_tool_result_lines(r)),
+                        state: match ok {
+                            None => SgState::Running,
+                            Some(true) => SgState::Ok,
+                            Some(false) => SgState::Failed,
+                        },
+                        started: *started,
+                        duration: *duration,
+                        agent: name == "agent",
+                    })
+                },
                 Cell::Assistant { streaming, text } => {
                     if *streaming {
+                        in_turn = true;
                         nodes.push(SgNode::Answering {
                             text_excerpt: first_line(text, 80),
                         });
                     }
                 }
-                // A user cell inside the turn span is a mid-turn steer.
-                Cell::User(text) => nodes.push(SgNode::Steer {
-                    text: first_line(text, 120),
-                }),
+                Cell::User(text) => {
+                    if !first_user_seen {
+                        query = first_line(text, 160);
+                        first_user_seen = true;
+                        in_turn = true;
+                    } else if in_turn {
+                        // Mid-turn user message -> steer
+                        nodes.push(SgNode::Steer {
+                            text: first_line(text, 120),
+                        });
+                    } else {
+                        // New turn prompt after previous Done
+                        nodes.push(SgNode::Prompt {
+                            text: first_line(text, 120),
+                        });
+                        in_turn = true;
+                    }
+                }
                 Cell::Queued { text } => nodes.push(SgNode::Queued {
                     text: first_line(text, 120),
                 }),
@@ -6743,10 +6731,13 @@ impl App {
                     duration,
                     interrupted,
                     ..
-                } => nodes.push(SgNode::Done {
-                    duration: *duration,
-                    interrupted: *interrupted,
-                }),
+                } => {
+                    in_turn = false;
+                    nodes.push(SgNode::Done {
+                        duration: *duration,
+                        interrupted: *interrupted,
+                    })
+                },
                 _ => {}
             }
         }
@@ -6758,6 +6749,7 @@ impl App {
         }
     }
 
+    /// Refresh the `/sidegraph` panel model
     /// Refresh the `/sidegraph` panel model (called on turn events). No-op
     /// unless the panel is open and live.
     fn refresh_sidegraph(&mut self) {
@@ -6775,10 +6767,12 @@ impl App {
         }
         self.sidegraph_live = on;
         if on {
-            // A new turn re-roots the graph: land the user on the new content
-            // (scroll stays sticky across same-turn refreshes, not new roots).
+            // Persistent view: graph never clears, new prompts flow in after
+            // previous Done. Keep horizontal pan sticky (user may be inspecting
+            // a far-right tree), but pin vertical to bottom (newest) like the
+            // transcript. Previously this re-rooted and reset both axes.
             self.sidegraph_scroll = 0;
-            self.sidegraph_scroll_x = 0;
+            // self.sidegraph_scroll_x is intentionally kept sticky for persistence
             self.refresh_sidegraph();
         }
     }

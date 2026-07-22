@@ -144,7 +144,18 @@ fn format_duration_short(secs: u64) -> String {
 /// True when saved credentials must not be used for `cfg_provider`.
 /// Empty `auth.provider` (legacy files) is treated as compatible with any provider.
 pub fn provider_mismatch(auth: &Auth, cfg_provider: &str) -> bool {
-    !auth.provider.is_empty() && auth.provider != cfg_provider
+    if auth.provider.is_empty() {
+        return false;
+    }
+    if auth.provider == cfg_provider {
+        return false;
+    }
+    // google / antigravity / google-oauth are the same family (Gemini via different flows).
+    const GOOGLE_FAMILY: &[&str] = &["google", "antigravity", "google-oauth"];
+    if GOOGLE_FAMILY.contains(&auth.provider.as_str()) && GOOGLE_FAMILY.contains(&cfg_provider) {
+        return false;
+    }
+    true
 }
 
 /// Resolve a usable bearer credential (any provider / env).
@@ -284,6 +295,7 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
             // actually mean "signed into nur" — the token merely had to be more
             // than five minutes old. Mint a fresh one from the same refresh
             // token the CLI stores, and keep using it transiently.
+            let mut refreshed_ok = false;
             if let Some(refresh) = tokens.refresh_token.as_deref().filter(|r| !r.is_empty()) {
                 let probe = Auth {
                     provider: exp.to_string(),
@@ -294,6 +306,29 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
                     if !tok.is_empty() && !oauth_expired(fresh.expires_at) {
                         return Ok(tok);
                     }
+                    refreshed_ok = true;
+                }
+            }
+            // For google-family CLI imports (antigravity / gcloud), the access
+            // token is short-lived and the CLI itself refreshes it. If our
+            // refresh attempt failed due to missing NUR_GOOGLE_CLIENT_ID (browser
+            // flow not configured), returning NotAuthenticated leaves the user
+            // in a "signed in · no key (local) -> signed out" loop even though
+            // `agy` / `gcloud` has a valid session. Fall back to the original
+            // token even if expired — the API will either accept it or return
+            // 401, which then triggers a proper re-login prompt rather than a
+            // silent sign-out. This keeps `antigravity` working for CLI-only users.
+            let is_google_family = matches!(exp, "google" | "antigravity" | "google-oauth");
+            if is_google_family && !tok.is_empty() {
+                // If we attempted refresh and it failed, or token is from CLI,
+                // still return it as last resort instead of NotAuthenticated.
+                return Ok(tok);
+            }
+            if !refreshed_ok {
+                // For non-google providers, still give expired token a chance if
+                // no refresh was attempted, to avoid silent sign-out loops.
+                if !tok.is_empty() {
+                    return Ok(tok);
                 }
             }
         }
@@ -639,10 +674,23 @@ fn save_key_at(path: &Path, provider_id: &str, key: &str) -> Result<()> {
 
 /// A stored per-provider failover key, if one was saved for this provider id.
 pub fn load_provider_key(provider_id: &str) -> Option<String> {
-    read_keys_at(&crate::config::provider_keys_path())
-        .get(provider_id)
-        .cloned()
-        .filter(|k| !k.trim().is_empty())
+    let map = read_keys_at(&crate::config::provider_keys_path());
+    if let Some(k) = map.get(provider_id).cloned().filter(|k| !k.trim().is_empty()) {
+        return Some(k);
+    }
+    // google family alias fallback
+    const GOOGLE_FAMILY: &[&str] = &["google", "antigravity", "google-oauth"];
+    if GOOGLE_FAMILY.contains(&provider_id) {
+        for alias in GOOGLE_FAMILY {
+            if *alias == provider_id {
+                continue;
+            }
+            if let Some(k) = map.get(*alias).cloned().filter(|k| !k.trim().is_empty()) {
+                return Some(k);
+            }
+        }
+    }
+    None
 }
 
 /// Save a per-provider failover key (validated like a normal API key).
@@ -748,9 +796,28 @@ fn read_sessions_at(path: &Path) -> BTreeMap<String, Auth> {
         .ok()
         .and_then(|t| serde_json::from_str(&t).ok())
         .unwrap_or_default();
-    if let Some(mut legacy) = map.remove("antigravity") {
-        legacy.provider = "google".into();
-        map.entry("google".into()).or_insert(legacy);
+    // Legacy antigravity -> google migration, but keep alias for the still-existing
+    // antigravity catalog entry. Without this, a session saved as `antigravity`
+    // disappears on read and `resolve_api_key_for("antigravity")` finds nothing,
+    // leaving the user in a "signed in · no key (local) -> signed out" loop.
+    if let Some(legacy) = map.get("antigravity").cloned() {
+        let mut as_google = legacy.clone();
+        as_google.provider = "google".into();
+        map.entry("google".into()).or_insert(as_google);
+        // keep the original antigravity entry as well so both ids resolve
+    }
+    // Also ensure google-oauth alias resolves
+    if let Some(g) = map.get("google").cloned() {
+        map.entry("antigravity".into()).or_insert_with(|| {
+            let mut a = g.clone();
+            a.provider = "antigravity".into();
+            a
+        });
+        map.entry("google-oauth".into()).or_insert_with(|| {
+            let mut a = g.clone();
+            a.provider = "google-oauth".into();
+            a
+        });
     }
     map.retain(|id, auth| {
         !matches!(auth.auth_method, AuthMethod::Oauth) || oauth_session_supported(id)
@@ -808,7 +875,22 @@ fn save_provider_session(auth: &Auth) -> Result<()> {
 /// Load a usable bearer for a failover provider from the per-provider OAuth
 /// store (refreshing if needed). `None` if no session or refresh failed hard.
 pub fn load_provider_oauth_token(provider_id: &str) -> Option<String> {
-    resolve_oauth_access_token(provider_id).ok().flatten()
+    if let Some(t) = resolve_oauth_access_token(provider_id).ok().flatten() {
+        return Some(t);
+    }
+    // google family alias fallback
+    const GOOGLE_FAMILY: &[&str] = &["google", "antigravity", "google-oauth"];
+    if GOOGLE_FAMILY.contains(&provider_id) {
+        for alias in GOOGLE_FAMILY {
+            if *alias == provider_id {
+                continue;
+            }
+            if let Some(t) = resolve_oauth_access_token(alias).ok().flatten() {
+                return Some(t);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]

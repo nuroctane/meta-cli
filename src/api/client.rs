@@ -1208,6 +1208,20 @@ fn handle_sse_json(
     {
         if let Some(resp) = v.get("response") {
             let mut parsed: ApiResponse = serde_json::from_value(resp.clone())?;
+            // Responses API signals truncation via `incomplete` event with reason max_output_tokens.
+            // Surface it as status="length" so the agent loop can ask for continuation instead of
+            // silently reporting a clipped answer.
+            if type_ == "response.incomplete" {
+                let reason = resp
+                    .pointer("/incomplete_details/reason")
+                    .and_then(|r| r.as_str())
+                    .unwrap_or("");
+                if reason.contains("max_output") || reason.contains("length") || parsed.status.as_deref() == Some("incomplete") {
+                    parsed.status = Some("length".to_string());
+                } else if parsed.status.is_none() {
+                    parsed.status = Some("incomplete".to_string());
+                }
+            }
             // Prefer streamed items when completed.output is empty or thinner
             // (fewer tool calls) than what we already collected.
             if !streamed_items.is_empty() {
