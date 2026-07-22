@@ -166,12 +166,13 @@ impl ApiClient {
     /// proved `POST {"model":"local-model"}` → 400 on a live llama.cpp instance
     /// while a real id from `GET /v1/models` → 200. Lazily resolve by hitting
     /// `/models` first; on failure keep the original so the error is still
-    /// surfaced.
+    /// surfaced. Parsing is shared via `crate::api::local` so sync/async paths
+    /// don't duplicate `/models` logic.
     pub async fn resolve_local_model(&self, model: &str) -> String {
-        if !crate::providers::is_placeholder_local_model(model) {
+        if !crate::api::local::is_placeholder(model) {
             return model.to_string();
         }
-        if !crate::providers::is_local_provider(&self.provider_id) {
+        if !crate::api::local::is_local_provider_id(&self.provider_id) {
             // Also allow localhost base_urls even when provider_id is custom
             let is_localhost = self.base_url.contains("localhost")
                 || self.base_url.contains("127.0.0.1")
@@ -200,18 +201,14 @@ impl ApiClient {
             Ok(b) => b,
             Err(_) => return model.to_string(),
         };
-        if let Ok(ids) = crate::api::models::parse_model_ids(&body) {
-            if let Some(first) = ids.into_iter().next() {
-                if !first.trim().is_empty() && first != "local-model" {
-                    tracing::info!(
-                        provider = %self.provider_id,
-                        placeholder = %model,
-                        resolved = %first,
-                        "resolved local placeholder model via /models"
-                    );
-                    return first;
-                }
-            }
+        if let Some(first) = crate::api::local::parse_first_id(&body) {
+            tracing::info!(
+                provider = %self.provider_id,
+                placeholder = %model,
+                resolved = %first,
+                "resolved local placeholder model via /models"
+            );
+            return first;
         }
         model.to_string()
     }

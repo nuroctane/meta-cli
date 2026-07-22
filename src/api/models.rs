@@ -174,26 +174,25 @@ pub fn fetch_model_ids(
 /// `/models` resolution, not a better placeholder.
 ///
 /// This helper is the blocking, synchronous path used at config load / CLI
-/// startup. For the async streaming path see `ApiClient::resolve_model_async`.
+/// startup. For the async streaming path see `ApiClient::resolve_local_model`.
+/// Delegates first-id picking to `crate::api::local` so sync/async share parsing.
 pub fn resolve_local_model_if_needed(
     base_url: &str,
     provider_id: &str,
     api_key: &str,
     model: &str,
 ) -> String {
-    if !crate::providers::is_placeholder_local_model(model) {
+    if !crate::api::local::is_placeholder(model) {
         return model.to_string();
     }
-    if !crate::providers::is_local_provider(provider_id) {
+    if !crate::api::local::is_local_provider_id(provider_id) {
         return model.to_string();
     }
     // Attempt live list; on any failure keep the placeholder — the later
     // request will surface the real error and the user can `/model <id>`.
     if let Ok(ids) = fetch_model_ids(base_url, api_key, Some(provider_id)) {
-        if let Some(first) = ids.into_iter().next() {
-            if !first.trim().is_empty() {
-                return first;
-            }
+        if let Some(first) = crate::api::local::pick_first_id(ids) {
+            return first;
         }
     }
     model.to_string()
