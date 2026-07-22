@@ -4309,6 +4309,21 @@ impl App {
         self.cfg.model = id.clone();
         crate::pricing::maybe_apply_context_window(&mut self.cfg);
         let _ = crate::config::save_config(&self.cfg);
+        // `/model` can move within a provider to a different inference route
+        // (OpenCode Zen -> Go). Rebuild the live client as well as persisting
+        // config; otherwise the next turn still posts to the previous base URL.
+        let provider = crate::providers::by_id(&self.cfg.provider)
+            .copied()
+            .unwrap_or(*crate::providers::default_provider());
+        let bearer = crate::auth::resolve_api_key_for(Some(provider.id)).unwrap_or_default();
+        if let Ok(client) = crate::api::ApiClient::for_provider(
+            &self.cfg.base_url,
+            &bearer,
+            provider.id,
+        ) {
+            self.client = client.with_style(provider.style);
+            self.authed = !bearer.is_empty() || provider.key_optional;
+        }
         if let Some(s) = &mut self.session {
             s.model = id.clone();
         }
