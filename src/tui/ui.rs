@@ -3514,13 +3514,38 @@ fn sg_build_spine(
                         } else {
                             theme::fmt_duration(run.elapsed())
                         };
+                        let mut kid_details: Vec<(String, Color)> = Vec::new();
+                        kid_details.push((run.task.clone(), theme::MUTED));
+                        if let Some(t) = run.tool.as_deref() {
+                            let short: String = t.chars().take(32).collect();
+                            let ell = if t.chars().count() > 32 { "…" } else { "" };
+                            kid_details.push((format!("⚒ {}{}", short, ell), chue));
+                        }
+                        if !run.activity.trim().is_empty() {
+                            let act = run.activity.lines().next().unwrap_or("").trim();
+                            if !act.is_empty() && act != run.task {
+                                let clipped: String = act.chars().take(40).collect();
+                                let ell = if act.chars().count() > 40 { "…" } else { "" };
+                                kid_details.push((format!("{clipped}{ell}"), theme::FAINT));
+                            }
+                        }
+                        if run.tools_done > 0 || run.tokens > 0 {
+                            let mut stats = format!("{}⚒", run.tools_done);
+                            if run.tools_failed > 0 {
+                                stats.push_str(&format!(" {}✗", run.tools_failed));
+                            }
+                            if run.tokens > 0 {
+                                stats.push_str(&format!(" {} tok", run.tokens));
+                            }
+                            kid_details.push((stats, theme::FAINT));
+                        }
                         lay.kids.push(SgLay::new(
                             &cglyph.to_string(),
                             chue,
                             &format!("#{}·{}", run.id, run.kind),
                             &elapsed,
                             chue,
-                            vec![(run.task.clone(), theme::MUTED)],
+                            kid_details,
                         ));
                     }
                 }
@@ -3828,13 +3853,38 @@ fn sg_build_forest(
                         } else {
                             theme::fmt_duration(run.elapsed())
                         };
+                        let mut kid_details: Vec<(String, Color)> = Vec::new();
+                        kid_details.push((run.task.clone(), theme::MUTED));
+                        if let Some(t) = run.tool.as_deref() {
+                            let short: String = t.chars().take(32).collect();
+                            let ell = if t.chars().count() > 32 { "…" } else { "" };
+                            kid_details.push((format!("⚒ {}{}", short, ell), chue));
+                        }
+                        if !run.activity.trim().is_empty() {
+                            let act = run.activity.lines().next().unwrap_or("").trim();
+                            if !act.is_empty() && act != run.task {
+                                let clipped: String = act.chars().take(40).collect();
+                                let ell = if act.chars().count() > 40 { "…" } else { "" };
+                                kid_details.push((format!("{clipped}{ell}"), theme::FAINT));
+                            }
+                        }
+                        if run.tools_done > 0 || run.tokens > 0 {
+                            let mut stats = format!("{}⚒", run.tools_done);
+                            if run.tools_failed > 0 {
+                                stats.push_str(&format!(" {}✗", run.tools_failed));
+                            }
+                            if run.tokens > 0 {
+                                stats.push_str(&format!(" {} tok", run.tokens));
+                            }
+                            kid_details.push((stats, theme::FAINT));
+                        }
                         lay.kids.push(SgLay::new(
                             &cglyph.to_string(),
                             chue,
                             &format!("#{}·{}", run.id, run.kind),
                             &elapsed,
                             chue,
-                            vec![(run.task.clone(), theme::MUTED)],
+                            kid_details,
                         ));
                     }
                 }
