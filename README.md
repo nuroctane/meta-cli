@@ -51,7 +51,7 @@ nur                 # open the TUI
 nur doctor          # health check
 ```
 
-Or run `nur` and use **`/login`** in the TUI: pick any of **61 providers**
+Or run `nur` and use **`/login`** in the TUI: pick any of **60 providers**
 (OpenAI, Anthropic, Gemini, xAI, Groq, OpenRouter, Requesty, local Ollama/LM Studio, Meta Model API, and so on).
 For **OpenAI, Anthropic, xAI, Kimi Code, Google Gemini, Azure OpenAI, GitHub Models, and GitHub Copilot** you can **sign in with a browser or an official CLI session** (or import an existing Codex / Claude Code / Grok / Kimi CLI session) instead of pasting an API key. OAuth sessions refresh before use, retry once after an authentication rejection, and `/model` detects the models available to the active credential. No credential on launch and login opens automatically.
 
@@ -246,6 +246,9 @@ nur "steal UI design tokens from demo.mp4 and scaffold a matching component"
 | **Executor** | MCP / OpenAPI gateway |
 | **Skills** | Progressive packs via `skill` |
 | **AKM** | Skill package manager |
+| **[fractal](https://github.com/plasma-ai/fractal)** | Hierarchical recursive agent loops in git worktrees (`/fractal`). Apache-2.0. **Unix only** — fractal 1.0.0 imports `fcntl`, so use WSL on Windows. Python 3.12–3.14 |
+| **[penecho](https://github.com/penecho/penecho)** | Infinite thinking canvas run as a sidecar (`/penecho`). AGPL-3.0 |
+| **[t3code](https://github.com/pingdotgg/t3code)** | Vendor-CLI auth delegation — driver probing, env isolation, pairing. MIT |
 
 ### TUI (gold)
 - Streaming · thought/tool cards · duration chips · peek · ↓ End  

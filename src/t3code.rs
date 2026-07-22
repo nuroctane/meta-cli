@@ -190,9 +190,7 @@ fn probes_have_credentials(driver: DriverId, dir: &Path) -> bool {
                 || dir.join("credentials.json").exists()
                 || dir.join(".claude.json").exists()
         }
-        DriverId::Codex => {
-            dir.join("auth.json").exists() || dir.join("config.toml").exists()
-        }
+        DriverId::Codex => dir.join("auth.json").exists() || dir.join("config.toml").exists(),
         DriverId::Cursor => {
             dir.join("auth.json").exists()
                 || dir.join("mcp.json").exists()
@@ -367,23 +365,17 @@ fn parse_duration_to_secs(s: &str) -> Option<u64> {
     })
 }
 
+/// Pairing tokens come from the shared CSPRNG in [`crate::oauth::flows`].
+///
+/// This used to be a local LCG seeded from `DefaultHasher` (fixed-key SipHash).
+/// Because the alphabet is exactly 64 chars, `seed % 64` read only the low six
+/// bits — and for an LCG modulo 2^64 the low *k* bits depend solely on the low
+/// *k* bits of the seed. The entire 32-char token was therefore determined by
+/// `seed % 64`: **64 distinct tokens existed in total**, verified by generating
+/// from 200k random seeds and getting exactly 64 unique results. Never
+/// hand-roll this; a pairing token is a credential.
 fn random_urlsafe(nbytes: usize) -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    // Not cryptographically strong, but sufficient for pairing link demo.
-    // For production DPoP, use `ring` or `ed25519-dalek` like t3code's `jose`.
-    let mut out = String::new();
-    let mut hasher = DefaultHasher::new();
-    SystemTime::now().hash(&mut hasher);
-    std::thread::current().id().hash(&mut hasher);
-    let mut seed = hasher.finish();
-    const ALPH: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    for _ in 0..nbytes {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-        let idx = (seed % ALPH.len() as u64) as usize;
-        out.push(ALPH[idx] as char);
-    }
-    out
+    crate::oauth::random_urlsafe(nbytes)
 }
 
 /// Env isolation — per-provider env map merged like t3code's

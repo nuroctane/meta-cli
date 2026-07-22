@@ -226,7 +226,7 @@ plur, ruflo, skill, memory, todo_write, submit_plan, agent
   sessions. Auto-injected at session start. Never store secrets.
 - ruflo: vector memory + swarm harness. Global DB at ~/.nur/ruflo/. Prefer plur for preferences,
   ruflo for pattern/embedding memory, graphify for code structure.
-- executor: MCP gateway (executor.sh) for external OpenAI/GraphQL/MCP integrations — not for
+- executor: MCP gateway (executor.sh) for external OpenAPI/GraphQL/MCP integrations — not for
   local repo edits. action=sources|search|call.
 - skill: action=list / action=read — load one skill by name when needed. Skills are **not**
   pre-loaded into this prompt (catalog would waste tokens). Discover with skill(list) or

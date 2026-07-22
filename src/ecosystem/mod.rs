@@ -1034,6 +1034,17 @@ mod tests {
         let result = run_capture_cancelled("sh", &["-c", "sleep 30"], None, 60_000, &cancel);
 
         assert!(result.unwrap_err().contains("cancelled"));
-        assert!(started.elapsed() < Duration::from_secs(5));
+        // The property is "cancellation does not wait for the child to finish
+        // on its own" — the child sleeps 30s, so anything comfortably under
+        // that proves it. The old 5s bound was really measuring PowerShell's
+        // cold-start time and failed intermittently whenever the rest of the
+        // suite was spawning processes in parallel; a flaky assertion trains
+        // people to ignore failures, which costs more than the tighter bound
+        // ever bought.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(15),
+            "cancel took {elapsed:?} — should not wait out the child's 30s sleep"
+        );
     }
 }

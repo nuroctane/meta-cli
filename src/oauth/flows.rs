@@ -191,7 +191,13 @@ pub mod opencode {
     }
 }
 
-fn random_urlsafe(nbytes: usize) -> String {
+/// CSPRNG-backed URL-safe random string (v4 UUID bytes → base64url, no pad).
+///
+/// The single source of randomness for anything credential-shaped: PKCE
+/// verifiers, OAuth `state`, and pairing tokens. Do not hand-roll another —
+/// an LCG seeded from a `DefaultHasher` looks fine and silently collapses to a
+/// handful of possible outputs.
+pub(crate) fn random_urlsafe(nbytes: usize) -> String {
     let mut raw = Vec::with_capacity(nbytes);
     while raw.len() < nbytes {
         raw.extend_from_slice(Uuid::new_v4().as_bytes());

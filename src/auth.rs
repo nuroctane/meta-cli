@@ -88,6 +88,18 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
+/// Is an OAuth expiry already past (or about to be)?
+///
+/// `None` means "no stated expiry" and is treated as still valid. Uses the same
+/// 5-minute skew as [`refresh_oauth_in_place`] so a token that would be
+/// refreshed there is not accepted here, where no refresh is possible.
+pub fn oauth_expired(expires_at: Option<u64>) -> bool {
+    match expires_at {
+        None => false,
+        Some(exp) => exp <= now_unix().saturating_add(300),
+    }
+}
+
 /// Human-relative expiry: `in 42m`, `expired 3m ago`, `no expiry`.
 pub fn format_expires_relative(expires_at: Option<u64>) -> String {
     format_expires_relative_at(expires_at, now_unix())
@@ -256,9 +268,15 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
         }
         // t3code-style fallback: try vendor CLI session import before giving up.
         // Mirrors t3code's import-first probing (zero-secret-storage delegate).
+        //
+        // The imported token is used *transiently* — it is never persisted as an
+        // `Auth`, so `ensure_fresh_oauth` never refreshes it. That makes honoring
+        // `expires_at` mandatory: an expired vendor session would otherwise be
+        // handed to the API on every request forever, producing an endless 401
+        // loop with a misleading error instead of a clean "run /login".
         if let Ok(Some(tokens)) = crate::oauth::import_existing_session(exp) {
             let tok = tokens.access_token.trim().to_string();
-            if !tok.is_empty() {
+            if !tok.is_empty() && !oauth_expired(tokens.expires_at) {
                 return Ok(tok);
             }
         }

@@ -540,7 +540,7 @@ node instead, so operators normally don't spawn children manually.
 
 NurCLI bundles fractal as a first-class skill:
 
-- **Binary management**: probe via `fractal` tool (`action=probe|status|doctor`). Install via `pipx install plasma-fractal` (requires Python 3.10+). Nur checks PATH robustly (Windows .exe handling).
+- **Binary management**: probe via `fractal` tool (`action=probe|status|doctor`). Install via `pipx install plasma-fractal` (requires **Python 3.12-3.14** - PyPI metadata for plasma-fractal 1.0.0 is `>=3.12,<3.15`; the older "3.10+" claim was wrong). Nur checks PATH robustly (Windows .exe handling). **fractal is Unix-only**: 1.0.0 imports the Unix-only `fcntl` module, so every invocation - including `--version` and `--help` - fails on Windows. Use WSL or a Linux/macOS host.
 - **Repo detection**: `~/.nur` cache? No, per-repo `.fractal` and `.worktrees` folders at git root. `can_init` checks git repo presence.
 - **Tool**: `fractal` tool with actions `status|probe|doctor|init|node list|node status|node start|node attach|node merge|node activity|pause|resume|open|track|commit|destroy` — forwards to `fractal` CLI, captures output, falls back to enumerating `.worktrees` if CLI fails.
 - **TUI**: `/fractal` slash command opens live node list / triggers actions directly (status/list/open/status/start via tool, no extra TUI blocking). Upstream launches nodes via tmux detached, so TUI stays responsive; `fractal node attach <name>` for interactive. Fast-path uses direct tool dispatch, directive path uses skill turn.

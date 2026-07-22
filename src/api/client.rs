@@ -183,7 +183,10 @@ impl ApiClient {
         }
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
         // Local servers are expected to answer quickly; keep it short.
-        let req = self.http.get(&url).timeout(std::time::Duration::from_secs(5));
+        let req = self
+            .http
+            .get(&url)
+            .timeout(std::time::Duration::from_secs(5));
         // Apply auth if any — most local servers allow empty bearer.
         let req = if self.api_key.trim().is_empty() {
             req
@@ -907,8 +910,13 @@ impl ApiClient {
             }
         }
 
-        let saw_reasoning = !acc.reasoning.is_empty();
+        // Sample AFTER `finish()`: it flushes a stream that ended mid-`<think>`
+        // out of the marker buffer and into `acc.reasoning`. Reading first meant
+        // a reasoning-only turn looked empty, and because the guard below
+        // reports `status: 0` — which `should_failover_for` always fails over on
+        // — a legitimate reply silently moved the user to another provider.
         let shaped = acc.finish();
+        let saw_reasoning = !acc.reasoning.is_empty();
         let resp = super::chat::to_api_response(shaped)
             .map_err(|e| MuseError::Other(format!("chat stream map failed: {e}")))?;
         // An OpenCode gateway that loses its upstream mid-turn can close a 200
@@ -1269,17 +1277,47 @@ fn consume_sse_text(body: &str, on_event: &mut impl FnMut(StreamEvent)) -> Resul
 /// 400, which is otherwise a permanent "your request is wrong" status.
 fn is_transient_upstream_message(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
+    // Permanent problems with OUR request also arrive wrapped in the gateway's
+    // "Error from provider (...)" envelope. Retrying those burns four attempts
+    // and then cascades the same broken request onto the next provider, which
+    // rejects it identically. A validation marker vetoes transience.
+    if has_permanent_marker(&m) {
+        return false;
+    }
+    // Only phrases that actually name an upstream *failure*. The bare wrapper
+    // ("error from provider", "provider error", "console go") is not evidence
+    // of transience — it prefixes permanent errors just as often.
     const NEEDLES: &[&str] = &[
         "upstream request failed",
-        "error from provider",
         "upstream error",
-        "console go",
-        "provider error",
         "upstream failed",
         "upstream timeout",
         "upstream unavailable",
+        "upstream connect",
+        "temporarily unavailable",
     ];
     NEEDLES.iter().any(|n| m.contains(n))
+}
+
+/// Does this message describe a permanent problem with the request we sent?
+///
+/// Shared by the retry and failover paths so they cannot drift apart.
+pub(crate) fn has_permanent_marker(lowercase_message: &str) -> bool {
+    const PERMANENT: &[&str] = &[
+        "tool_use",
+        "tool_result",
+        "tool call id",
+        "tool call ids",
+        "invalid_request",
+        "invalid request",
+        "unsupported parameter",
+        "unsupported value",
+        "max_tokens",
+        "context length",
+        "does not exist",
+        "not found",
+    ];
+    PERMANENT.iter().any(|n| lowercase_message.contains(n))
 }
 
 /// Retry decision for one failed HTTP attempt.

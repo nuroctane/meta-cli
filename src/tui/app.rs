@@ -382,13 +382,9 @@ pub enum SgNode {
     /// The assistant is streaming an answer right now.
     Answering,
     /// A mid-turn user steer (`/steer` or an injected follow-up).
-    Steer {
-        text: String,
-    },
+    Steer { text: String },
     /// A follow-up queued while the turn runs.
-    Queued {
-        text: String,
-    },
+    Queued { text: String },
     /// The turn settled — completed or interrupted.
     Done {
         duration: Duration,
@@ -1583,6 +1579,15 @@ pub struct App {
     /// When true, a cancel (send-now interject) keeps the queue so the follow-up
     /// can start immediately after the interrupted turn ends.
     preserve_queue_on_interrupt: bool,
+    /// Swarm card already auto-surfaced for this turn (see
+    /// [`App::poll_swarm_autoshow`]). Reset in `start_turn`.
+    swarm_autoshow_done: bool,
+    /// User dismissed the swarm card with `/swarm hide`; do not auto-surface it
+    /// again until the next turn.
+    swarm_autoshow_suppressed: bool,
+    /// A foreground child program repainted the screen; ratatui must discard its
+    /// previous buffer before the next draw or the diff renders nothing.
+    pub needs_full_redraw: bool,
 
     pub busy: bool,
     /// True after Esc/Ctrl+C until Done arrives — spinners show "cancelling…".
@@ -1630,6 +1635,71 @@ pub struct App {
     auto_update_last_seen_at: u64,
     auto_update_announced_version: String,
     pub update_modal: Option<UpdateModal>,
+}
+
+/// Hand the terminal to a full-screen child program, run it, then take it back.
+///
+/// `fractal open` (and `fractal node attach`, which drops into tmux) are
+/// *interactive full-screen* apps: they need raw mode, the main screen, and
+/// inherited stdio. nur is already holding all of that. Running them through
+/// `Command::output()` — which is what the tool path does — captures stdout and
+/// blocks until a child that never exits returns, freezing the TUI with no way
+/// back. So we tear our terminal state down, let the child own the tty, and
+/// rebuild afterwards.
+///
+/// Returns the child's exit status text, or an error describing the failure.
+pub fn run_foreground_program(
+    bin: &std::path::Path,
+    args: &[String],
+    cwd: &std::path::Path,
+) -> Result<String> {
+    use std::process::Command;
+    suspend_terminal();
+    // Whatever happens to the child, we must get the terminal back.
+    let result = Command::new(bin)
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::inherit())
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .status();
+    resume_terminal();
+    match result {
+        Ok(st) if st.success() => Ok(format!("{} exited cleanly", bin.display())),
+        Ok(st) => Ok(format!(
+            "{} exited with {}",
+            bin.display(),
+            st.code()
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "signal".into())
+        )),
+        Err(e) => Err(crate::error::MuseError::Other(format!(
+            "failed to launch {}: {e}",
+            bin.display()
+        ))),
+    }
+}
+
+/// Drop the TUI's terminal modes so a child can own the tty. Mirrors
+/// [`TermGuard::drop`]; pair with [`resume_terminal`].
+fn suspend_terminal() {
+    disable_mouse();
+    let _ = stdout().execute(DisableFocusChange);
+    let _ = stdout().execute(Show);
+    let _ = disable_raw_mode();
+    let _ = stdout().execute(DisableBracketedPaste);
+    let _ = stdout().execute(LeaveAlternateScreen);
+}
+
+/// Re-establish the TUI's terminal modes after a foreground child exits.
+/// Mirrors the setup in `run()` so the two cannot drift.
+fn resume_terminal() {
+    let _ = enable_raw_mode();
+    let _ = stdout().execute(EnterAlternateScreen);
+    let _ = stdout().execute(EnableBracketedPaste);
+    let _ = stdout().execute(EnableFocusChange);
+    enable_mouse();
+    let _ = stdout().execute(Hide);
 }
 
 struct TermGuard;
@@ -1826,6 +1896,9 @@ pub async fn run_tui(
         input: InputState::new(),
         queue: VecDeque::new(),
         preserve_queue_on_interrupt: false,
+        swarm_autoshow_done: false,
+        swarm_autoshow_suppressed: false,
+        needs_full_redraw: false,
         busy: false,
         cancelling: false,
         turn_kind: TurnMode::Chat,
@@ -1931,6 +2004,9 @@ pub async fn run_tui(
         app.poll_model_picker();
         app.poll_plugin_picker();
         app.poll_auto_update();
+        if app.poll_swarm_autoshow() {
+            dirty = true;
+        }
         while let Ok(ev) = app.rx.try_recv() {
             app.on_agent_event(ev);
             dirty = true;
@@ -2259,6 +2335,16 @@ pub async fn run_tui(
         }
 
         // 4) Paint once after input has been applied.
+        //
+        // A foreground child (`/fractal open`, `attach`) repaints the whole
+        // screen behind ratatui's back. `draw` only emits the diff against its
+        // previous buffer, so without discarding that buffer first the screen
+        // comes back blank until something happens to resize the window.
+        if app.needs_full_redraw {
+            app.needs_full_redraw = false;
+            let _ = terminal.clear();
+            dirty = true;
+        }
         if dirty {
             terminal.draw(|f| super::ui::draw(f, &mut app))?;
             last_draw = Instant::now();
@@ -2736,6 +2822,29 @@ impl App {
         }
     }
 
+    /// Remove every cell matching `pred`, keeping `tool_cells` correct.
+    ///
+    /// `tool_cells` maps a tool id to an **absolute** index into `cells`, so a
+    /// bare `cells.retain(...)` silently corrupts it: every surviving tool card
+    /// shifts down, and the next `ToolEnd` writes its result into a neighbouring
+    /// card while the real one spins forever. The "resurface at the bottom"
+    /// commands (`/swarm`, `/graph`, `/sidegraph`) are reachable *mid-turn* —
+    /// `submit_text` routes a `/` line to `run_command` before the busy check —
+    /// so they must go through this rather than `retain`. See [`Self::remove_cell`].
+    fn remove_cells_matching(&mut self, pred: impl Fn(&Cell) -> bool) {
+        let doomed: Vec<usize> = self
+            .cells
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| pred(c))
+            .map(|(i, _)| i)
+            .collect();
+        // Descending, so each removal cannot invalidate the next index.
+        for idx in doomed.into_iter().rev() {
+            self.remove_cell(idx);
+        }
+    }
+
     /// Mirror the visible transcript into the session's replay log.
     ///
     /// This runs implicitly at the end of every turn, so it must never SHRINK
@@ -2770,12 +2879,10 @@ impl App {
 
     // ── keys ───────────────────────────────────────────────────────────
     fn on_key(&mut self, key: event::KeyEvent) {
-        // Update-available modal (parity with other pickers)
-        if self.update_modal.is_some() {
-            self.on_update_modal_key(key.code);
-            return;
-        }
         // Secure login modal swallows all keys (masked key entry).
+        // Ordered ABOVE the update modal on purpose: the updater opens on a
+        // background timer, and if it could win this race it would swallow the
+        // characters of an API key being typed.
         if self.login.is_some() {
             self.on_login_key(key);
             return;
@@ -2793,6 +2900,15 @@ impl App {
         // Approval modal swallows all keys.
         if self.approval.is_some() {
             self.on_approval_key(key);
+            return;
+        }
+        // Update-available modal (parity with other pickers). Deliberately LAST
+        // among the modals: it is the only one that opens on a background timer,
+        // so every user-initiated modal must out-rank it. Otherwise it appeared
+        // over `/login` or an approval prompt and swallowed keystrokes into a
+        // handler that understands only Esc/q/Enter.
+        if self.update_modal.is_some() {
+            self.on_update_modal_key(key.code);
             return;
         }
         // Session picker swallows all keys while open.
@@ -3064,7 +3180,10 @@ impl App {
             KeyCode::PageUp => self.scroll_up(self.page()),
             KeyCode::PageDown => self.scroll_down(self.page()),
             KeyCode::Char('l') if ctrl => {
+                // Everything but the banner goes, so every `tool_cells` index is
+                // stale; leaving them would misroute the running turn's results.
                 self.cells.retain(|c| matches!(c, Cell::Banner));
+                self.tool_cells.clear();
                 self.scroll_from_bottom = 0;
             }
             KeyCode::Char('r') if ctrl => self.input.search_begin(),
@@ -4168,11 +4287,15 @@ impl App {
             KeyCode::Esc | KeyCode::Char('q') => self.close_update_modal(),
             KeyCode::Enter => {
                 // Trigger update in new console (same as `nur update` / `spawn_console`)
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nur"));
+                let exe =
+                    std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nur"));
                 let args = vec!["update".to_string()];
                 let _ = crate::tui::app::commands::spawn_console_for_update(&exe, &args);
                 self.close_update_modal();
-                self.push_note(crate::theme::Tone::Mode, "update started in new window · restart after it finishes".into());
+                self.push_note(
+                    crate::theme::Tone::Mode,
+                    "update started in new window · restart after it finishes".into(),
+                );
             }
             _ => {}
         }
@@ -4193,11 +4316,15 @@ impl App {
                     return;
                 }
                 if rect_contains(hit.update_btn, col, row) {
-                    let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nur"));
+                    let exe =
+                        std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("nur"));
                     let args = vec!["update".to_string()];
                     let _ = crate::tui::app::commands::spawn_console_for_update(&exe, &args);
                     self.close_update_modal();
-                    self.push_note(crate::theme::Tone::Mode, "update started in new window · restart after it finishes".into());
+                    self.push_note(
+                        crate::theme::Tone::Mode,
+                        "update started in new window · restart after it finishes".into(),
+                    );
                     return;
                 }
                 if !rect_contains(hit.frame, col, row) {
@@ -5358,7 +5485,20 @@ impl App {
         };
         self.push_note(crate::theme::Tone::Mode, msg.clone());
         // Open proper modal window (peek/session picker parity) if not already open.
-        if self.update_modal.is_none() {
+        //
+        // Never steal focus from a modal the user is actively typing into. This
+        // fires on a background timer, and `on_key` checks `update_modal` first,
+        // so opening it over `/login` sent the user's API-key keystrokes to a
+        // handler that only understands Esc/q/Enter — the characters vanished
+        // and Enter spawned an updater instead of submitting the key. The note
+        // above is still pushed either way, so nothing is lost by waiting.
+        let modal_busy = self.login.is_some()
+            || self.approval.is_some()
+            || self.picker.is_some()
+            || self.model_picker.is_some()
+            || self.plugin_picker.is_some()
+            || self.ctx_menu.is_some();
+        if self.update_modal.is_none() && !modal_busy {
             self.open_update_modal(current.to_string(), remote);
         }
     }
@@ -5919,6 +6059,39 @@ impl App {
     /// Arm or freeze every inline swarm card. Live cards re-read the subagent
     /// registry each frame; freezing them at end of turn keeps an idle TUI from
     /// re-rendering a static grid forever.
+    /// Surface the swarm card automatically the moment a subagent spawns.
+    ///
+    /// [`Self::set_swarm_live`] only *re-arms an existing* card, so before this
+    /// a user who had never typed `/swarm` saw nothing at all while subagents
+    /// ran — the whole fan-out was invisible. Spawning an agent is exactly when
+    /// you want the panel, so the first run of a turn opens it.
+    ///
+    /// Auto-shows at most once per turn, and never fights the user: `/swarm hide`
+    /// sets [`Self::swarm_autoshow_suppressed`] and this stays out of the way
+    /// until the next turn re-arms it.
+    ///
+    /// Returns true when the transcript changed (caller marks the frame dirty).
+    pub fn poll_swarm_autoshow(&mut self) -> bool {
+        if self.swarm_autoshow_done || self.swarm_autoshow_suppressed {
+            return false;
+        }
+        if crate::agent::swarm::running_count() == 0 {
+            return false;
+        }
+        self.swarm_autoshow_done = true;
+        if self.cells.iter().any(|c| matches!(c, Cell::Swarm { .. })) {
+            // Already on screen — just make sure it is the live one at the end.
+            self.set_swarm_live(true);
+            return true;
+        }
+        self.cells.push(Cell::Swarm {
+            live: true,
+            detail: false,
+        });
+        self.scroll_from_bottom = 0;
+        true
+    }
+
     fn set_swarm_live(&mut self, on: bool) {
         if on {
             // Re-arm: bring the card to the bottom so new turn's subagents are visible without scrolling up.
@@ -5931,7 +6104,7 @@ impl App {
                 }
             }
             if had {
-                self.cells.retain(|c| !matches!(c, Cell::Swarm { .. }));
+                self.remove_cells_matching(|c| matches!(c, Cell::Swarm { .. }));
                 self.cells.push(Cell::Swarm {
                     live: true,
                     detail: merged_detail,
@@ -5968,7 +6141,10 @@ impl App {
                 return;
             }
             "hide" | "close" => {
-                self.cells.retain(|c| !matches!(c, Cell::Swarm { .. }));
+                self.remove_cells_matching(|c| matches!(c, Cell::Swarm { .. }));
+                // Respect the dismissal: auto-show must not immediately put it
+                // back while subagents are still running.
+                self.swarm_autoshow_suppressed = true;
                 self.push_note(Tone::Neutral, "swarm · card removed".into());
                 return;
             }
@@ -5986,7 +6162,7 @@ impl App {
             }
         }
         if found {
-            self.cells.retain(|c| !matches!(c, Cell::Swarm { .. }));
+            self.remove_cells_matching(|c| matches!(c, Cell::Swarm { .. }));
             self.cells.push(Cell::Swarm {
                 live: true,
                 detail: existing_detail,
@@ -5996,10 +6172,7 @@ impl App {
             return;
         }
 
-        self.cells.push(Cell::Swarm {
-            live: true,
-            detail,
-        });
+        self.cells.push(Cell::Swarm { live: true, detail });
         self.scroll_to_bottom();
         let running = crate::agent::swarm::running_count();
         self.push_note(
@@ -6024,14 +6197,32 @@ impl App {
             let mut lines = Vec::new();
             lines.push(format!(
                 "fractal · binary={} version={:?} git={} fractal_repo={} worktrees={}",
-                if probe.binary.is_some() { "found" } else { "missing" },
+                // "found" must mean *runnable*. On Windows the binary is on PATH
+                // but dies during import, so reporting `found` from
+                // `binary.is_some()` alone sent users hunting a phantom install.
+                match (probe.binary.is_some(), probe.usable) {
+                    (false, _) => "missing",
+                    (true, true) => "found",
+                    (true, false) => "found but not runnable",
+                },
                 probe.version.as_deref().unwrap_or("-"),
                 probe.is_git_repo,
                 probe.is_fractal_repo,
                 probe.worktrees_exist
             ));
-            if !probe.binary.is_some() {
-                lines.push("install: pipx install plasma-fractal (Python 3.10+) · https://github.com/plasma-ai/fractal".into());
+            if probe.binary.is_none() {
+                lines.push("install: pipx install plasma-fractal (Python 3.12–3.14) · https://github.com/plasma-ai/fractal".into());
+                self.push_note(Tone::Neutral, lines.join("\n"));
+                return;
+            }
+            if !probe.usable {
+                // One actionable line, never a Python traceback.
+                lines.push(
+                    probe
+                        .unusable_reason
+                        .clone()
+                        .unwrap_or_else(|| crate::fractal::PLATFORM_UNSUPPORTED.to_string()),
+                );
                 self.push_note(Tone::Neutral, lines.join("\n"));
                 return;
             }
@@ -6041,7 +6232,8 @@ impl App {
                 return;
             }
             if !probe.is_fractal_repo {
-                lines.push("not yet a fractal repo — try `/fractal init` to seed `.fractal`".into());
+                lines
+                    .push("not yet a fractal repo — try `/fractal init` to seed `.fractal`".into());
                 self.push_note(Tone::Neutral, lines.join("\n"));
                 return;
             }
@@ -6084,10 +6276,75 @@ impl App {
         let lower = arg_trim.to_ascii_lowercase();
         let is_init = lower == "init" || lower.starts_with("init ");
         let is_list = lower == "list" || lower == "node list" || lower == "node_list";
-        let is_open = lower.starts_with("open ");
+        // Bare `/fractal open` is the common case (the CLI's own dashboard needs
+        // no node name); the old `starts_with("open ")` missed it and fell
+        // through to a whole LLM turn.
+        let is_open = lower == "open" || lower.starts_with("open ");
         let is_status = lower.starts_with("node status ") || lower.starts_with("status ");
         let is_attach = lower.starts_with("node attach ") || lower.starts_with("attach ");
-        if is_init || is_list || is_open || is_status || is_attach {
+        // `open` and `attach` are full-screen interactive programs (fractal's
+        // own four-pane dashboard; attach drops into tmux). They must OWN the
+        // terminal — routing them through the tool's `Command::output()` captured
+        // their stdout and blocked forever on a child that never exits, wedging
+        // the TUI with no way back. Hand the tty over and take it back after.
+        if is_open || is_attach {
+            let probe = crate::fractal::probe_at(&self.cwd);
+            let Some(bin) = probe.binary.clone() else {
+                self.push_error(
+                    "fractal binary not found — install: pipx install plasma-fractal \
+                     (Python 3.12–3.14)"
+                        .into(),
+                );
+                return;
+            };
+            // Don't tear down the TUI for a binary that cannot start: the child
+            // would die during import and we'd suspend/restore the terminal for
+            // nothing, flashing the screen and showing no reason why.
+            if !probe.usable {
+                self.push_error(
+                    probe
+                        .unusable_reason
+                        .clone()
+                        .unwrap_or_else(|| crate::fractal::PLATFORM_UNSUPPORTED.to_string()),
+                );
+                return;
+            }
+            let name = if is_open {
+                arg_trim[4..].trim().to_string()
+            } else if lower.starts_with("node attach ") {
+                arg_trim["node attach ".len()..].trim().to_string()
+            } else {
+                arg_trim["attach ".len()..].trim().to_string()
+            };
+            let mut cli: Vec<String> = if is_open {
+                vec!["open".into()]
+            } else {
+                vec!["node".into(), "attach".into()]
+            };
+            if !name.is_empty() {
+                if !crate::fractal::is_valid_fractal_node_name(&name) {
+                    self.push_error(format!(
+                        "invalid node name `{name}` — ^[A-Za-z0-9_]+$, max 64 chars"
+                    ));
+                    return;
+                }
+                cli.push(name);
+            } else if is_attach {
+                self.push_error("attach needs a node name — /fractal attach <name>".into());
+                return;
+            }
+            let cwd = self.cwd.clone();
+            match run_foreground_program(&bin, &cli, &cwd) {
+                Ok(msg) => self.push_note(Tone::Neutral, format!("fractal {}", msg)),
+                Err(e) => self.push_error(e.to_string()),
+            }
+            // The child repainted the whole screen behind ratatui's back.
+            self.needs_full_redraw = true;
+            self.scroll_to_bottom();
+            return;
+        }
+
+        if is_init || is_list || is_status {
             let (action, node_arg) = if is_init {
                 ("init".to_string(), String::new())
             } else if is_list {
@@ -6146,7 +6403,7 @@ impl App {
         let fresh = self.build_graph_lines();
         // Resurface at bottom (UX fix) instead of in-place refresh.
         if self.cells.iter().any(|c| matches!(c, Cell::Graph { .. })) {
-            self.cells.retain(|c| !matches!(c, Cell::Graph { .. }));
+            self.remove_cells_matching(|c| matches!(c, Cell::Graph { .. }));
             self.cells.push(Cell::Graph {
                 lines: fresh,
                 live: true,
@@ -6173,7 +6430,11 @@ impl App {
     /// Derived from the transcript cells, so it always matches what ran.
     fn build_sidegraph_model(&self) -> SideGraphModel {
         let first_line = |text: &str, cap: usize| -> String {
-            let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+            let line = text
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
             line.chars().take(cap).collect()
         };
         // Adversarial fix: anchor on TurnDone boundaries, not last User, so mid-turn steers don't re-root.
@@ -6316,7 +6577,7 @@ impl App {
                 }
             }
             if let Some(model) = existing {
-                self.cells.retain(|c| !matches!(c, Cell::SideGraph { .. }));
+                self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
                 self.cells.push(Cell::SideGraph { model, live: true });
             }
             return;
@@ -6339,7 +6600,7 @@ impl App {
                 return;
             }
             "hide" | "close" => {
-                self.cells.retain(|c| !matches!(c, Cell::SideGraph { .. }));
+                self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
                 self.push_note(Tone::Neutral, "sidegraph · card removed".into());
                 return;
             }
@@ -6351,13 +6612,20 @@ impl App {
         // to satisfy the borrow checker (build reads `self.cells` immutably).
         let model = self.build_sidegraph_model();
         let has_query = !model.query.is_empty();
-        if self.cells.iter().any(|c| matches!(c, Cell::SideGraph { .. })) {
-            self.cells.retain(|c| !matches!(c, Cell::SideGraph { .. }));
+        if self
+            .cells
+            .iter()
+            .any(|c| matches!(c, Cell::SideGraph { .. }))
+        {
+            self.remove_cells_matching(|c| matches!(c, Cell::SideGraph { .. }));
             self.cells.push(Cell::SideGraph {
                 model: Box::new(model),
                 live: true,
             });
-            self.push_note(Tone::Neutral, "sidegraph · refreshed · moved to bottom".into());
+            self.push_note(
+                Tone::Neutral,
+                "sidegraph · refreshed · moved to bottom".into(),
+            );
             self.scroll_to_bottom();
             return;
         }
@@ -6372,8 +6640,7 @@ impl App {
                 "sidegraph · maps the current query as it runs · /sidegraph off to freeze"
                     .to_string()
             } else {
-                "sidegraph · send a prompt first — the graph maps the whole query live"
-                    .to_string()
+                "sidegraph · send a prompt first — the graph maps the whole query live".to_string()
             },
         );
     }
@@ -6435,6 +6702,9 @@ impl App {
         // Tool ids restart at 1 each turn, so last turn's map would alias this
         // turn's ids onto finished cards sitting in the scrollback.
         self.tool_cells.clear();
+        // Re-arm swarm auto-show for the new turn, including after a `/swarm hide`.
+        self.swarm_autoshow_done = false;
+        self.swarm_autoshow_suppressed = false;
         // Re-arm any swarm card the user left in the transcript so this turn's
         // subagents animate in it without re-running `/swarm`.
         self.set_swarm_live(true);
@@ -6789,14 +7059,14 @@ impl App {
                 // unless send-now asked to preserve the queue for interjection.
                 if interrupted && !self.preserve_queue_on_interrupt {
                     self.queue.clear();
-                    self.cells.retain(|c| !matches!(c, Cell::Queued { .. }));
+                    self.remove_cells_matching(|c| matches!(c, Cell::Queued { .. }));
                 } else if let Some(next) = self.queue.pop_front() {
                     self.preserve_queue_on_interrupt = false;
                     // Drop matching Queued cards for this text.
                     let next_clone = next.clone();
-                    self.cells.retain(|c| match c {
-                        Cell::Queued { text } => text != &next_clone,
-                        _ => true,
+                    self.remove_cells_matching(|c| match c {
+                        Cell::Queued { text } => text == &next_clone,
+                        _ => false,
                     });
                     self.submit_text(&next);
                 } else {

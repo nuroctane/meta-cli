@@ -57,6 +57,17 @@ pub const OPENCODE_GO_BASE_URL: &str = "https://opencode.ai/zen/go/v1";
 /// Poolside Platform inference. Self-hosted deployments use `https://<domain>/openai/v1`.
 pub const POOLSIDE_BASE_URL: &str = "https://inference.poolside.ai/v1";
 
+/// Docs that quote the provider count verbatim. Named here so the assertion in
+/// `catalog_is_well_formed` can tell you exactly what to update when it trips.
+#[cfg(test)]
+const PROVIDER_COUNT_DOC_SITES: &[&str] = &[
+    "README.md",
+    "docs/index.md (x2)",
+    "docs/quickstart.md",
+    "docs/authentication.md",
+    "docs/tui.md",
+];
+
 /// Current xAI flagship on `api.x.ai`.
 ///
 /// Source of truth: <https://docs.x.ai/docs/models>. The whole Grok 4 line was
@@ -1128,12 +1139,18 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), n, "duplicate provider id");
         assert_eq!(default_provider().id, "meta");
-        // Provider count is intentionally not asserted as a magic number —
-        // `PROVIDERS` is the source of truth and the previous `assert_eq!(len, 60)`
-        // broke on every addition/deprecation (e.g. yi removal). If you need to
-        // surface a user-facing count, derive it from `PROVIDERS.len()` at the
-        // call site rather than hard-coding here.
-        assert!(PROVIDERS.len() >= 50, "catalog seems unexpectedly small");
+        // This IS a tripwire, and breaking on every addition/removal is the
+        // entire point: six user-facing docs quote the provider count, and when
+        // this was relaxed to `>= 50` the `yi` removal took the catalog to 60
+        // while README/docs kept advertising 61. A test that cannot fail cannot
+        // remind you to update them. If you change the catalog, update
+        // `PROVIDER_COUNT_DOC_SITES` below too.
+        assert_eq!(
+            PROVIDERS.len(),
+            60,
+            "provider count changed — update the docs that quote it: {}",
+            PROVIDER_COUNT_DOC_SITES.join(", ")
+        );
     }
 
     #[test]

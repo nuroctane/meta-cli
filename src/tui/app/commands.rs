@@ -33,7 +33,10 @@ pub(crate) fn spawn_console(exe: &std::path::Path, args: &[String]) -> std::io::
     cmd.spawn().map(|_| ())
 }
 
-pub(crate) fn spawn_console_for_update(exe: &std::path::Path, args: &[String]) -> std::io::Result<()> {
+pub(crate) fn spawn_console_for_update(
+    exe: &std::path::Path,
+    args: &[String],
+) -> std::io::Result<()> {
     spawn_console(exe, args)
 }
 

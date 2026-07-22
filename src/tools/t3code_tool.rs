@@ -7,10 +7,17 @@ pub fn is_read_only_action(args_json: &str) -> bool {
     // pairing_create creates token (mutating), others are read-only probes
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_json) {
         if let Some(action) = v.get("action").and_then(|a| a.as_str()) {
-            return matches!(action, "status" | "probe" | "probe_all" | "delegate" | "env");
+            return matches!(
+                action,
+                "status" | "probe" | "probe_all" | "delegate" | "env"
+            );
         }
     }
-    true
+    // Fail CLOSED, matching `fractal_tool` and `akarso`: unparseable or
+    // action-less args must require approval, not auto-approve. Today the
+    // default action happens to be read-only, so this is latent — but adding
+    // any mutating action would silently turn malformed args into a bypass.
+    false
 }
 
 pub struct T3Code;

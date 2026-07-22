@@ -104,17 +104,26 @@ fn is_gateway_provider(provider_id: &str) -> bool {
     matches!(provider_id.trim().to_ascii_lowercase().as_str(), "opencode")
 }
 
+/// Gateway-wrapped *transient* upstream failure.
+///
+/// Deliberately narrow, and shares [`crate::api::client::has_permanent_marker`]
+/// with the retry path so the two cannot drift. A permanent validation error
+/// (bad tool ids, unsupported parameter) arrives inside the very same
+/// "Error from provider (...)" envelope, and failing over on it just replays a
+/// request that is broken by construction against a second provider.
 fn is_transient_upstream_message(message: &str) -> bool {
     let m = message.to_ascii_lowercase();
+    if crate::api::client::has_permanent_marker(&m) {
+        return false;
+    }
     const NEEDLES: &[&str] = &[
         "upstream request failed",
-        "error from provider",
         "upstream error",
-        "console go",
-        "provider error",
         "upstream failed",
         "upstream timeout",
         "upstream unavailable",
+        "upstream connect",
+        "temporarily unavailable",
     ];
     NEEDLES.iter().any(|n| m.contains(n))
 }
@@ -324,6 +333,42 @@ mod tests {
                 "status {status} msg={message:?} must NOT fail over"
             );
         }
+    }
+
+    /// A permanent validation error wrapped in the gateway's envelope must NOT
+    /// fail over. It is broken by construction, so replaying it against a
+    /// second provider just produces the same 400 twice — and the retry path
+    /// burns four attempts before that. This is the exact shape the tool-pairing
+    /// bug produced, so the two fixes must not undo each other.
+    #[test]
+    fn gateway_wrapped_validation_errors_are_permanent() {
+        for message in [
+            "Error from provider (Console Go): messages.5: `tool_use` ids were found without \
+             `tool_result` blocks",
+            "Error from provider (anthropic): tool call ids must be unique",
+            "Error from provider: unsupported parameter: reasoning",
+            "Error from provider (openai): max_tokens is too large",
+            "provider error: model does not exist",
+        ] {
+            assert!(
+                !should_failover_for(
+                    &MuseError::Api {
+                        status: 400,
+                        message: message.into()
+                    },
+                    "opencode"
+                ),
+                "must NOT fail over: {message:?}"
+            );
+        }
+        // A genuine upstream outage still does.
+        assert!(should_failover_for(
+            &MuseError::Api {
+                status: 400,
+                message: "Error from provider (Console Go): Upstream request failed".into()
+            },
+            "opencode"
+        ));
     }
 
     /// The gateway relaxation must not leak: a plain 400 from a first-party

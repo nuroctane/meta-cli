@@ -665,6 +665,44 @@ mod tests {
         }
     }
 
+    /// Pin the two arms that actually double-probed, by exact URL vector.
+    ///
+    /// The generic uniqueness test above runs on the output of the dedup that it
+    /// is meant to be testing, so it passes no matter what the arms push. These
+    /// assert the real shape: both GitHub providers hard-code a URL that
+    /// `{base}/models` also produces for their shipped base, and each duplicate
+    /// costs a full request timeout on the failure path.
+    #[test]
+    fn github_arms_do_not_repeat_the_generic_models_url() {
+        let gm = crate::providers::by_id("github-models").expect("github-models");
+        assert_eq!(
+            model_list_urls(gm.base_url, "github-models", false),
+            vec![
+                "https://models.github.ai/catalog/models".to_string(),
+                "https://models.github.ai/inference/models".to_string(),
+            ],
+            "catalog first, inference once"
+        );
+
+        let gc = crate::providers::by_id("github-copilot").expect("github-copilot");
+        assert_eq!(
+            model_list_urls(gc.base_url, "github-copilot", false),
+            vec!["https://api.githubcopilot.com/models".to_string()],
+            "the hard-coded URL and {{base}}/models are the same string here"
+        );
+    }
+
+    /// The dedup must keep the FIRST occurrence — probe order is meaningful
+    /// (GitHub's curated catalog must be tried before the inference base).
+    #[test]
+    fn dedup_preserves_probe_order() {
+        let urls = model_list_urls("https://models.github.ai/inference", "github-models", false);
+        assert!(
+            urls[0].contains("/catalog/"),
+            "curated catalog must stay first: {urls:?}"
+        );
+    }
+
     #[test]
     fn every_browser_provider_has_a_model_detection_endpoint() {
         for id in crate::providers::oauth_browser_provider_ids() {

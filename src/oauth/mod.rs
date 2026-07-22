@@ -13,6 +13,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub use browser::open_browser;
+/// Crate-internal CSPRNG for credential-shaped strings (see [`flows::random_urlsafe`]).
+pub(crate) use flows::random_urlsafe;
 pub use flows::{import_existing_session, login_browser, BrowserLoginProgress, OAuthTokens};
 
 /// Kimi managed-API device headers bound to the current OAuth device identity.

@@ -241,3 +241,59 @@ Spawn a subagent for complex tasks. `explore` runs read-only research; `general`
 inherits the parent permission mode. In the CLI, child approval requests are
 proxied to the parent prompt, and subagent transcripts stay out of the native
 session list while their usage is folded into the parent turn.
+
+### `fractal`
+
+Bridge to **[fractal](https://github.com/plasma-ai/fractal)** (Apache-2.0) —
+hierarchical recursive agent loops in git worktrees. Each node is an isolated
+worktree running its own autonomous loop; a parent spawns children for
+separable subtasks to get multiplicative parallelism.
+
+| Action | Behaviour |
+|--------|-----------|
+| `probe` · `doctor` · `status` | Binary, git repo, `.fractal` folder, worktrees |
+| `init` | Repo-level root init (`fractal init <path> --agent=…`) |
+| `node list` · `node status <name>` | Inspect the tree |
+| `node start <name>` | Launch a node's loop. Run caps come from `config.json` (set at `fractal node init`), **not** from flags on `start` |
+| `open` | fractal's own full-screen dashboard — nur suspends its TUI, hands over the terminal, and restores it on exit |
+
+!!! warning "Unix only"
+    fractal 1.0.0 imports the Unix-only `fcntl` module, so **every** invocation
+    fails on Windows — including `--version` and `--help`. Use WSL or a
+    Linux/macOS host. nur detects this and reports one clear line rather than a
+    Python traceback. Requires **Python 3.12–3.14**:
+    `pipx install plasma-fractal` (or `uv tool install plasma-fractal`).
+
+Paths are sandboxed: `workdir`, `--path=…`, and any bare absolute path in the
+free-text `args` must resolve inside the workspace.
+
+### `penecho`
+
+Bridge to **[penecho](https://github.com/penecho/penecho)** (AGPL-3.0) — an
+infinite canvas for thinking beyond the chat box (20k × 20k, ink, MathJax,
+plots, animation scenes). Run as a **sidecar**: nur launches it and maps auth
+into its `config.env`; there is no linking.
+
+| Action | Behaviour |
+|--------|-----------|
+| `probe` · `doctor` | Binary, `~/.penecho/config.env`, codex/claude CLI presence |
+| `export` | Render a `config.env` mapping nur's provider settings to `AI_PROVIDER=api` |
+| `atlas` | Describe a canvas image |
+| `launch` | Sidecar launch instructions |
+
+**The API key is never rendered.** `export` emits a redacted placeholder —
+tool results are sent to the model provider and persisted to
+`~/.nur/sessions/*.json`, so echoing a live key would write it to disk in
+cleartext. Fill `AI_API_KEY` in `~/.penecho/config.env` yourself.
+
+### `t3code`
+
+Compatibility layer mirroring **[t3code](https://github.com/pingdotgg/t3code)**
+(MIT) — delegate auth to vendor CLIs instead of storing secrets.
+
+| Action | Behaviour |
+|--------|-----------|
+| `probe` · `probe_all` · `status` | Driver detection with env isolation (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, …) so probing never disturbs a vendor's keychain |
+| `delegate` | Report which vendor CLI can serve a provider, without copying its secret |
+| `env` | The env map a driver instance needs |
+| `pairing_create` | Issue a TTL-bounded pairing token (CSPRNG-backed) |

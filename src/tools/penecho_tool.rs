@@ -11,7 +11,8 @@ pub fn is_read_only_action(args_json: &str) -> bool {
             return matches!(action, "status" | "probe" | "doctor" | "atlas");
         }
     }
-    true
+    // Fail CLOSED — see `t3code_tool::is_read_only_action`.
+    false
 }
 
 pub struct Penecho;
@@ -42,7 +43,8 @@ impl Tool for Penecho {
 
     fn execute(&self, args: &Value, _ctx: &ToolContext) -> Result<String> {
         let action = arg_str(args, "action").unwrap_or_else(|_| "status".into());
-        let api_url = arg_str(args, "api_url").unwrap_or_else(|_| "https://api.openai.com/v1".into());
+        let api_url =
+            arg_str(args, "api_url").unwrap_or_else(|_| "https://api.openai.com/v1".into());
         let api_key = arg_str(args, "api_key").unwrap_or_else(|_| "".into());
         let model = arg_str(args, "model").unwrap_or_else(|_| "gpt-4o".into());
         let effort_s = arg_str(args, "effort").unwrap_or_else(|_| "medium".into());
@@ -77,17 +79,22 @@ impl Tool for Penecho {
                 ))
             }
             "export" => {
-                // Use provided key or try to resolve from nur auth
+                // Never harvest a live key from the environment here. This
+                // result is returned to the model and persisted to the session
+                // file, so a resolved key would be exfiltrated by a tool call
+                // whose approval prompt reads as a harmless config dump.
+                // Validation only needs a non-placeholder string.
                 let key = if api_key.trim().is_empty() {
-                    // Try resolve from env / auth
-                    std::env::var("OPENAI_API_KEY")
-                        .or_else(|_| std::env::var("ANTHROPIC_API_KEY"))
-                        .unwrap_or_else(|_| "sk-placeholder".into())
+                    "sk-local".to_string()
                 } else {
                     api_key
                 };
-                match crate::penecho::export_to_penecho_env(&api_url, &key, &model, effort) {
-                    Ok(s) => Ok(format!("penecho config.env export (maps nur auth to AI_PROVIDER=api):\n{s}\n\nWrite via action=launch or manually to ~/.penecho/config.env")),
+                match crate::penecho::export_to_penecho_env(&api_url, &key, &model, effort, true) {
+                    Ok(s) => Ok(format!(
+                        "penecho config.env export (maps nur auth to AI_PROVIDER=api):\n{s}\n\n\
+                         The key is redacted on purpose — fill AI_API_KEY in \
+                         ~/.penecho/config.env yourself."
+                    )),
                     Err(e) => Ok(format!("export failed: {e}")),
                 }
             }
@@ -121,16 +128,26 @@ impl Tool for Penecho {
                 out.push_str("- AI_PROVIDER=api|codex-cli|claude-cli\n");
                 out.push_str("- API mode: AI_API_URL, AI_API_KEY, AI_API_MODEL, AI_API_FORMAT openai|anthropic auto-detect from suffix /chat/completions vs /v1/messages\n");
                 out.push_str("- Codex CLI: CODEX_CLI_PATH, findOnPath with .exe/.cmd handling, codex --version, login status, debug models --bundled\n");
-                out.push_str("- Claude CLI: CLAUDE_CLI_PATH, .js/.cjs/.mjs => node prefix, .ps1 on win\n");
+                out.push_str(
+                    "- Claude CLI: CLAUDE_CLI_PATH, .js/.cjs/.mjs => node prefix, .ps1 on win\n",
+                );
                 out.push_str("- Effort: unified config|none|low|medium|high|max|xhigh → anthropic thinking adaptive/disabled + tokens, openai reasoning_effort\n\n");
-                out.push_str(&format!("Current probe: binary={:?} config_exists={} has_key={} codex={} claude={}\n",
-                    st.binary, st.config_exists, st.has_api_key, doc.codex_binary, doc.claude_binary));
+                out.push_str(&format!(
+                    "Current probe: binary={:?} config_exists={} has_key={} codex={} claude={}\n",
+                    st.binary,
+                    st.config_exists,
+                    st.has_api_key,
+                    doc.codex_binary,
+                    doc.claude_binary
+                ));
                 out.push_str("\nWhat nur-cli can learn:\n");
                 out.push_str("- Auto-detect openai vs anthropic from URL suffix (cleaner than per-provider flags)\n");
                 out.push_str("- Effort mapping unified (nur has ad-hoc flags)\n");
                 out.push_str("- Robust findOnPath with Windows .js wrapper detection\n");
                 out.push_str("- Placeholder detection your_/replace/changeme for doctor\n");
-                out.push_str("- Prompt headroom reservation (4096 + 7000 thinking) to avoid truncation\n");
+                out.push_str(
+                    "- Prompt headroom reservation (4096 + 7000 thinking) to avoid truncation\n",
+                );
                 out.push_str("- No-deps minimalism (vanilla JS, 2 deps) — nur already minimal Rust binary\n\n");
                 out.push_str("Full integration plan:\n");
                 out.push_str("- `nur penecho` command / skill: wrapper that spawns penecho, auto-detects AI_PROVIDER from nur auth list\n");
