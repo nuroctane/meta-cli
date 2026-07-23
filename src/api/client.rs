@@ -309,7 +309,7 @@ impl ApiClient {
                 }
             }
         }
-        if self.provider_id == "google" {
+        if matches!(self.provider_id.as_str(), "google" | "antigravity" | "google-oauth") {
             if let Some(project_id) = self
                 .oauth
                 .as_ref()

@@ -1040,6 +1040,33 @@ mod tests {
         assert_eq!(resp.usage.as_ref().unwrap().input_tokens, 10);
     }
 
+    /// finish_reason: "length" (max_tokens truncation) must map to status
+    /// "length" so the agent loop's truncation guard can detect it — the whole
+    /// v0.25.1 continuation harness hangs off this mapping.
+    #[test]
+    fn finish_reason_length_maps_to_status_length() {
+        let v = json!({
+            "id":"r1","model":"gpt-x",
+            "choices":[{"finish_reason":"length","message":{"content":"partial answer that was cut"}}],
+            "usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}
+        });
+        let parsed = parse_completion(&v);
+        assert_eq!(
+            parsed.get("status").and_then(|s| s.as_str()),
+            Some("length"),
+            "truncated completion must carry status=length"
+        );
+        // A normal stop must NOT look truncated.
+        let ok = json!({
+            "id":"r2","model":"gpt-x",
+            "choices":[{"finish_reason":"stop","message":{"content":"done"}}]
+        });
+        assert_eq!(
+            parse_completion(&ok).get("status").and_then(|s| s.as_str()),
+            Some("completed")
+        );
+    }
+
     #[test]
     fn streaming_accumulates_content_and_tool_args() {
         let mut acc = StreamAccumulator::default();

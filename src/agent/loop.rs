@@ -422,6 +422,7 @@ impl AgentRunner {
         // hard nudge + tool_choice=required before giving up.
         let mut empty_tool_stalls: u8 = 0;
         let mut truncation_continuations: u8 = 0;
+        let mut truncation_giving_up = false;
         let mut force_tool_choice = false;
 
         loop {
@@ -603,59 +604,72 @@ impl AgentRunner {
                 .count();
 
             // ── truncation detection (finish_reason: length) ──────────────
-            // Previously a response truncated at max_tokens ended the run
-            // quietly with a partial answer. Detect it via the mapped status
-            // field (chat completions sets status="length") and ask the model
-            // to continue, rather than reporting success on a clipped output.
-            // Guarded by MAX_TRUNCATION_CONTINUATIONS to avoid infinite loop.
+            // A response truncated at max_tokens must not end the run quietly
+            // with a partial answer. Detect it via the mapped status field
+            // (chat completions / anthropic set status="length").
+            //
+            // CRITICAL: only inject a continuation when there are NO tool calls.
+            // When the model was truncated mid tool-call, `replay_output_items`
+            // has already appended that `function_call` to history; the normal
+            // path below runs `execute_calls` and appends the paired
+            // `function_call_output`. Injecting a bare `[harness]` user message
+            // and `continue`-ing here instead would leave that `function_call`
+            // unpaired — which strict providers reject on the next request —
+            // and persist the poisoned history to disk. So for the tool-call
+            // case we fall through and let the real tool run; the continuation
+            // nudge is reserved for text-only truncation.
+            //
+            // Guarded by MAX_TRUNCATION_CONTINUATIONS. Once the limit is hit the
+            // guard is TERMINAL for the turn (a `truncation_giving_up` latch),
+            // so a model that truncates every round cannot rearm the allowance
+            // by processing one tool call and looping forever.
             let mut truncated_this_round = false;
-            if let Some(st) = resp.status.as_deref() {
-                if st == "length" {
-                    truncated_this_round = true;
-                    if truncation_continuations >= MAX_TRUNCATION_CONTINUATIONS {
-                        let _ = tx.send(AgentEvent::Status(
-                            format!(
-                                "model response truncated {truncation_continuations}× at max_tokens — giving up and surfacing partial output (limit {MAX_TRUNCATION_CONTINUATIONS})"
-                            ),
-                        ));
-                        // fall through to normal completion handling with partial text
-                        truncation_continuations = 0;
-                    } else {
-                        truncation_continuations += 1;
-                        let _ = tx.send(AgentEvent::Status(
-                            format!(
-                                "model response truncated at max_tokens (finish_reason: length) — asking to continue… ({truncation_continuations}/{MAX_TRUNCATION_CONTINUATIONS})"
-                            ),
-                        ));
-                        // Keep the partial text in history so continuation has context,
-                        // then nudge the model to carry on.
-                        if !text.trim().is_empty() {
-                            session.input_items.push(
-                                crate::api::types::user_text_item(
-                                    "[harness] Your previous response was cut off by the provider's max_tokens limit (finish_reason: length). The user saw a truncated, incomplete answer. Continue exactly where you left off, without repeating the preamble. If you were in the middle of a tool call, retry that call. If you were writing an answer, finish it.",
-                                ),
-                            );
-                            self.persist_session(session);
-                            continue;
-                        } else {
-                            session.input_items.push(
-                                crate::api::types::user_text_item(
-                                    "[harness] Your previous response was truncated at max_tokens (finish_reason: length) with no usable output. Retry the last step, possibly with smaller chunks, or summarize and continue.",
-                                ),
-                            );
-                            self.persist_session(session);
-                            continue;
-                        }
+            if resp.status.as_deref() == Some("length") {
+                truncated_this_round = true;
+                if truncation_giving_up || truncation_continuations >= MAX_TRUNCATION_CONTINUATIONS {
+                    // Terminal: surface partial output, never continue again.
+                    if !truncation_giving_up {
+                        truncation_giving_up = true;
+                        let _ = tx.send(AgentEvent::Status(format!(
+                            "model response truncated {truncation_continuations}× at max_tokens — giving up and surfacing partial output (limit {MAX_TRUNCATION_CONTINUATIONS})"
+                        )));
                     }
+                    // Fall through: if there are tool calls, run them; if not,
+                    // the `calls.is_empty()` branch returns the partial text.
+                } else if calls.is_empty() {
+                    // Text-only truncation: safe to inject a continuation nudge
+                    // (no unpaired function_call in history).
+                    truncation_continuations += 1;
+                    let _ = tx.send(AgentEvent::Status(format!(
+                        "model response truncated at max_tokens (finish_reason: length) — asking to continue… ({truncation_continuations}/{MAX_TRUNCATION_CONTINUATIONS})"
+                    )));
+                    let nudge = if !text.trim().is_empty() {
+                        "[harness] Your previous response was cut off by the provider's max_tokens limit (finish_reason: length). The user saw a truncated, incomplete answer. Continue exactly where you left off, without repeating the preamble. Finish the answer."
+                    } else {
+                        "[harness] Your previous response was truncated at max_tokens (finish_reason: length) with no usable output. Retry the last step, possibly with smaller chunks, or summarize and continue."
+                    };
+                    session.input_items.push(crate::api::types::user_text_item(nudge));
+                    self.persist_session(session);
+                    continue;
+                } else {
+                    // Truncated mid tool-call: count it, but DO NOT inject a
+                    // continuation. Fall through so `execute_calls` pairs the
+                    // function_call output; the model naturally continues next
+                    // round with the tool result in context.
+                    truncation_continuations += 1;
+                    let _ = tx.send(AgentEvent::Status(format!(
+                        "model truncated mid tool-call (finish_reason: length) — running the tool, then continuing ({truncation_continuations}/{MAX_TRUNCATION_CONTINUATIONS})"
+                    )));
                 }
-                if st == "content_filter" {
-                    let _ = tx.send(AgentEvent::Status(
-                        "model stopped for content_filter — surfacing partial output and ending turn".into(),
-                    ));
-                }
+            }
+            if resp.status.as_deref() == Some("content_filter") {
+                let _ = tx.send(AgentEvent::Status(
+                    "model stopped for content_filter — surfacing partial output and ending turn".into(),
+                ));
             }
             if !truncated_this_round {
                 truncation_continuations = 0;
+                truncation_giving_up = false;
             }
 
             if text_deltas == 0 && !text.is_empty() {
@@ -1129,16 +1143,26 @@ impl AgentRunner {
             let cancel_child = cancel.clone();
             let permits = permits.clone();
             handles.push(Some(tokio::spawn(async move {
-                let (prompt, kind, desc) = parsed?;
+                let (prompt, kind, desc, provider_override, model_override) = parsed?;
                 // Held for the whole child run: this is the concurrency cap.
                 let _permit = permits
                     .acquire()
                     .await
                     .map_err(|e| MuseError::Other(e.to_string()))?;
                 let _ = tx_child.send(AgentEvent::Status(format!("subagent · {desc}")));
+                // Cross-provider: if the call named a different provider, build a
+                // client + config for it from that provider's stored credentials.
+                // Falls back to the parent's client/config when omitted or unresolved.
+                let (child_client, child_config) = resolve_subagent_target(
+                    &client,
+                    &config,
+                    provider_override.as_deref(),
+                    model_override.as_deref(),
+                    &tx_child,
+                );
                 subagent::run_subagent(
-                    client,
-                    config,
+                    child_client,
+                    child_config,
                     cwd,
                     mode,
                     &prompt,
@@ -1563,7 +1587,7 @@ mod tests {
 
     #[test]
     fn agent_calls_parse_into_prompt_kind_and_label() {
-        let (prompt, kind, desc) =
+        let (prompt, kind, desc, _prov, _model) =
             parse_agent_call(&FunctionCallRef {
                 call_id: "a".into(),
                 name: "agent".into(),
@@ -1578,11 +1602,43 @@ mod tests {
         );
 
         // Defaults: explore, and the label falls back to the kind.
-        let (_, kind, desc) = parse_agent_call(&agent_call("b", "look around", "explore")).unwrap();
+        let (_, kind, desc, _prov, _model) = parse_agent_call(&agent_call("b", "look around", "explore")).unwrap();
         assert_eq!((kind.as_str(), desc.as_str()), ("explore", "explore"));
 
         // A missing prompt is a tool error, not a spawned no-op subagent.
         assert!(parse_agent_call(&call("c", "agent")).is_err());
+    }
+
+    /// Cross-provider: the agent call parses optional provider/model overrides,
+    /// and natural-language provider names resolve to the right catalog entry.
+    #[test]
+    fn agent_call_parses_cross_provider_overrides() {
+        let (_, _, _, prov, model) = parse_agent_call(&FunctionCallRef {
+            call_id: "a".into(),
+            name: "agent".into(),
+            arguments: r#"{"prompt":"audit auth","provider":"grok","model":"grok-4"}"#.into(),
+        })
+        .unwrap();
+        assert_eq!(prov.as_deref(), Some("grok"));
+        assert_eq!(model.as_deref(), Some("grok-4"));
+
+        // Omitted overrides are None (inherit parent).
+        let (_, _, _, prov2, model2) =
+            parse_agent_call(&agent_call("b", "look", "explore")).unwrap();
+        assert!(prov2.is_none() && model2.is_none());
+    }
+
+    #[test]
+    fn natural_language_provider_names_resolve() {
+        assert_eq!(resolve_provider_alias("grok").map(|p| p.id), Some("xai"));
+        assert_eq!(resolve_provider_alias("gemini").map(|p| p.id), Some("google"));
+        assert_eq!(resolve_provider_alias("claude").map(|p| p.id), Some("anthropic"));
+        assert_eq!(resolve_provider_alias("chatgpt").map(|p| p.id), Some("openai"));
+        assert_eq!(resolve_provider_alias("deepseek").map(|p| p.id), Some("deepseek"));
+        // Direct id passes through.
+        assert_eq!(resolve_provider_alias("anthropic").map(|p| p.id), Some("anthropic"));
+        // Unknown name → None (caller falls back to parent).
+        assert!(resolve_provider_alias("nonesuch-xyz").is_none());
     }
 
     /// The fan-out path must only ever claim a run of `agent` calls — grouping
@@ -2322,8 +2378,9 @@ type SubagentHandle = tokio::task::JoinHandle<Result<(String, TokenUsage)>>;
 /// batch queues behind the semaphore and starts as slots free up.
 const MAX_CONCURRENT_SUBAGENTS: usize = 4;
 
-/// `{prompt, subagent_type, description}` out of an `agent` tool call.
-fn parse_agent_call(call: &FunctionCallRef) -> Result<(String, String, String)> {
+/// `{prompt, subagent_type, description, provider?, model?}` out of an `agent`
+/// tool call. Provider/model are optional cross-provider overrides.
+fn parse_agent_call(call: &FunctionCallRef) -> Result<(String, String, String, Option<String>, Option<String>)> {
     let v: Value = serde_json::from_str(&call.arguments).unwrap_or(serde_json::json!({}));
     let prompt = v
         .get("prompt")
@@ -2343,7 +2400,19 @@ fn parse_agent_call(call: &FunctionCallRef) -> Result<(String, String, String)> 
         .and_then(|x| x.as_str())
         .unwrap_or(&kind)
         .to_string();
-    Ok((prompt, kind, desc))
+    let provider = v
+        .get("provider")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let model = v
+        .get("model")
+        .and_then(|x| x.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    Ok((prompt, kind, desc, provider, model))
 }
 
 async fn run_agent_tool(
@@ -2352,12 +2421,19 @@ async fn run_agent_tool(
     cancel: &CancellationToken,
     tx: &mpsc::UnboundedSender<AgentEvent>,
 ) -> Result<(String, TokenUsage)> {
-    let (prompt, kind, desc) = parse_agent_call(call)?;
+    let (prompt, kind, desc, provider_override, model_override) = parse_agent_call(call)?;
     let _ = tx.send(AgentEvent::Status(format!("subagent · {desc}")));
 
+    let (child_client, child_config) = resolve_subagent_target(
+        &runner.client,
+        &runner.config,
+        provider_override.as_deref(),
+        model_override.as_deref(),
+        tx,
+    );
     subagent::run_subagent(
-        runner.client.clone(),
-        runner.config.clone(),
+        child_client,
+        child_config,
         runner.cwd.clone(),
         runner.permission_mode.clone(),
         &prompt,
@@ -2366,6 +2442,115 @@ async fn run_agent_tool(
         tx,
     )
     .await
+}
+
+/// Resolve a subagent's client + config, honoring an optional cross-provider
+/// override. When `provider` names a DIFFERENT provider than the parent, build a
+/// client from that provider's stored credentials + catalog base/model. Any
+/// failure (unknown provider, not signed in) falls back to the parent's client
+/// with a status note, so a subagent never silently dies on a bad provider name.
+fn resolve_subagent_target(
+    parent_client: &ApiClient,
+    parent_config: &Config,
+    provider: Option<&str>,
+    model: Option<&str>,
+    tx: &mpsc::UnboundedSender<AgentEvent>,
+) -> (ApiClient, Config) {
+    let Some(requested) = provider else {
+        // No override: inherit parent, but still allow a model-only override.
+        if let Some(m) = model {
+            let mut cfg = parent_config.clone();
+            cfg.model = m.to_string();
+            return (parent_client.clone(), cfg);
+        }
+        return (parent_client.clone(), parent_config.clone());
+    };
+    let Some(prov) = resolve_provider_alias(requested) else {
+        let _ = tx.send(AgentEvent::Status(format!(
+            "subagent · unknown provider '{requested}' — using parent provider instead"
+        )));
+        return (parent_client.clone(), parent_config.clone());
+    };
+    // Same provider as parent → just reuse the parent client (maybe new model).
+    if prov.id == parent_config.provider {
+        let mut cfg = parent_config.clone();
+        if let Some(m) = model {
+            cfg.model = m.to_string();
+        }
+        return (parent_client.clone(), cfg);
+    }
+    // Different provider: resolve its credential and build a client.
+    let key = match crate::auth::resolve_api_key_for(Some(prov.id)) {
+        Ok(k) if !k.trim().is_empty() => k,
+        _ => {
+            // Try the per-provider failover stores (key or OAuth token).
+            crate::auth::load_provider_key(prov.id)
+                .or_else(|| crate::auth::load_provider_oauth_token(prov.id))
+                .unwrap_or_default()
+        }
+    };
+    if key.trim().is_empty() && !prov.key_optional {
+        let _ = tx.send(AgentEvent::Status(format!(
+            "subagent · not signed in to {} — using parent provider (run /login {} first)",
+            prov.name, prov.id
+        )));
+        return (parent_client.clone(), parent_config.clone());
+    }
+    let style = prov.style;
+    let client = match ApiClient::for_provider(prov.base_url, &key, prov.id) {
+        Ok(c) => c.with_style(style),
+        Err(e) => {
+            let _ = tx.send(AgentEvent::Status(format!(
+                "subagent · could not build {} client ({e}) — using parent",
+                prov.name
+            )));
+            return (parent_client.clone(), parent_config.clone());
+        }
+    };
+    let mut cfg = parent_config.clone();
+    cfg.provider = prov.id.to_string();
+    cfg.base_url = prov.base_url.to_string();
+    cfg.model = model
+        .map(str::to_string)
+        .unwrap_or_else(|| prov.default_model.to_string());
+    let _ = tx.send(AgentEvent::Status(format!(
+        "subagent · routed to {} · {}",
+        prov.name, cfg.model
+    )));
+    (client, cfg)
+}
+
+/// Map a natural-language provider name to a catalog provider. Accepts ids,
+/// display names, and common aliases ("grok" → xai, "gemini" → google,
+/// "claude" → anthropic, "gpt"/"chatgpt" → openai, …).
+fn resolve_provider_alias(raw: &str) -> Option<&'static crate::providers::Provider> {
+    let q = raw.trim().to_ascii_lowercase();
+    // Direct id hit first.
+    if let Some(p) = crate::providers::by_id(&q) {
+        return Some(p);
+    }
+    // Common natural-language aliases → canonical id.
+    let id = match q.as_str() {
+        "grok" | "x" | "x.ai" | "xai" => "xai",
+        "gemini" | "google" | "google-oauth" | "antigravity" | "bard" => "google",
+        "claude" | "anthropic" => "anthropic",
+        "gpt" | "chatgpt" | "openai" | "oai" => "openai",
+        "deepseek" | "ds" => "deepseek",
+        "mistral" | "le chat" | "lechat" => "mistral",
+        "kimi" | "moonshot" => "kimi",
+        "llama" | "meta" | "muse" | "spark" => "meta",
+        "opencode" | "zen" => "opencode",
+        _ => "",
+    };
+    if !id.is_empty() {
+        if let Some(p) = crate::providers::by_id(id) {
+            return Some(p);
+        }
+    }
+    // Fuzzy: match against display names ("Anthropic", "OpenAI", …).
+    crate::providers::PROVIDERS
+        .iter()
+        .find(|p| p.name.to_ascii_lowercase() == q || p.name.to_ascii_lowercase().contains(&q))
 }
 
 pub async fn compact_session(

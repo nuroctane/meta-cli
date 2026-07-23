@@ -21,8 +21,10 @@ const TEXT_CAP: usize = 240;
 const PULSE_CAP: usize = 64;
 /// Finished runs retained before the oldest are dropped.
 const HISTORY_CAP: usize = 24;
+/// Tool-event trace lines retained per run (drives the kid peek modal).
+const TRACE_CAP: usize = 40;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RunState {
     Running,
     Done,
@@ -56,6 +58,10 @@ pub struct AgentRun {
     pub tokens: u64,
     /// Recent activity intensity, oldest first — rendered as a sparkline.
     pub pulse: Vec<u8>,
+    /// Bounded log of recent tool events (`tool name` + ok/failed), newest last.
+    /// Feeds the kid click-to-peek modal so a subagent's tool activity is
+    /// inspectable without persisting full args/results (which we don't have).
+    pub trace: Vec<String>,
 }
 
 impl AgentRun {
@@ -104,6 +110,13 @@ fn bump(run: &mut AgentRun, weight: u8) {
     }
 }
 
+fn trim_trace(run: &mut AgentRun) {
+    if run.trace.len() > TRACE_CAP {
+        let overflow = run.trace.len() - TRACE_CAP;
+        run.trace.drain(..overflow);
+    }
+}
+
 /// Register a starting subagent; returns its handle id.
 pub fn begin(kind: &str, task: &str) -> u64 {
     let id = next_id();
@@ -120,6 +133,7 @@ pub fn begin(kind: &str, task: &str) -> u64 {
         tools_failed: 0,
         tokens: 0,
         pulse: vec![1],
+        trace: Vec::new(),
     };
     if let Ok(mut guard) = table().lock() {
         guard.push(run);
@@ -141,6 +155,8 @@ pub fn tool_start(id: u64, name: &str) {
     with_run(id, |run| {
         run.tool = Some(clip(name));
         run.activity = clip(name);
+        run.trace.push(format!("⚒ {}", clip(name)));
+        trim_trace(run);
         bump(run, 6);
     });
 }
@@ -148,12 +164,19 @@ pub fn tool_start(id: u64, name: &str) {
 /// A tool call finished inside the subagent.
 pub fn tool_end(id: u64, ok: bool) {
     with_run(id, |run| {
-        run.tool = None;
+        if let Some(name) = run.tool.take() {
+            if let Some(last) = run.trace.last_mut() {
+                if last.starts_with("⚒ ") {
+                    *last = format!("{} {}", if ok { "✓" } else { "✗" }, name);
+                }
+            }
+        }
         if ok {
             run.tools_done += 1;
         } else {
             run.tools_failed += 1;
         }
+        trim_trace(run);
         bump(run, if ok { 4 } else { 8 });
     });
 }
@@ -212,6 +235,11 @@ fn prune(runs: &mut Vec<AgentRun>) {
 /// Current table, oldest first.
 pub fn snapshot() -> Vec<AgentRun> {
     table().lock().map(|g| g.clone()).unwrap_or_default()
+}
+
+/// Cheap count of table entries without cloning the runs (PERF-D).
+pub fn snapshot_len() -> usize {
+    table().lock().map(|g| g.len()).unwrap_or(0)
 }
 
 /// Forget every finished run (running ones stay).

@@ -319,6 +319,11 @@ pub fn spinner_frame(elapsed: Duration) -> &'static str {
     SPINNER[i]
 }
 
+/// Current spinner phase index (for cheap change-detection fingerprints).
+pub fn spinner_index(elapsed: Duration) -> u8 {
+    ((elapsed.as_millis() / SPINNER_MS) as usize % SPINNER.len()) as u8
+}
+
 /// Soft pulse glyph — slight ease-out cadence (spend less time on the bright frame).
 pub fn pulse_frame(elapsed: Duration) -> &'static str {
     // Non-uniform dwell: dim frames hold longer (ease-out feel without CSS).

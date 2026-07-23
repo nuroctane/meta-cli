@@ -175,13 +175,29 @@ are the only ones nur has:
 - **Resize**: drag the panel's left border. Clamped so the transcript keeps ≥ 35 cols.
 - **Pan**: click and drag anywhere inside the panel to move the canvas under the
   cursor, both axes. Horizontal range exists only when the graph is genuinely
-  wider than the panel (fan-outs, back-edges).
+  wider than the panel (fan-outs, back-edges). Once you pan, the canvas stays put
+  as new nodes stream in — you keep control. Double-click empty space to snap back
+  to the root / latest prompt.
+- **Zoom**: `Ctrl`+mouse-wheel over the panel zooms between three levels —
+  `detailed` (full boxes), `compact` (title rows), and `minimap` (glyph dots) — so
+  a long graph shrinks vertically without touching the transcript, window, or
+  model. `/sidegraph zoom` / `zoom-out` / `reset` do the same from the palette.
+- **Peek a box**: double-click or right-click any node box to open its
+  click-to-peek modal (same content as the transcript's "click to peek"). Subagent
+  fan-out (kid) boxes open a **swarm peek** with a sticky task header (static
+  border) above the live tool output (border + colour follow the current tool);
+  `Ctrl+C` there copies only the tool output, never the sticky task. The same kid
+  peek opens by double-clicking a pane in the inline `/swarm` card.
 - Title shows `◈ sidegraph (N)` with the step count, `● live` + spinner while
   running, `◼ frozen` when frozen.
 - Mouse wheel scrolls vertically and agrees with drag direction; the view follows
   the newest node unless you scrolled up.
 - New turn re-roots the graph and resets both scroll axes; same-turn refreshes
   keep scroll sticky.
+- **Performance**: the painted canvas + hit-boxes are cached against a cheap
+  structural fingerprint and only rebuilt when something visible actually changes
+  — a long session never repaints the whole graph at spinner cadence. The node
+  list is bounded (most-recent 240) so history can't grow it without limit.
 - The model is derived from transcript cells on each turn event, so it can never
   drift from what actually ran; the renderer re-reads the swarm registry each
   frame for live subagent fan-out.

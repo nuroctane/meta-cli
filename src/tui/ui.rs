@@ -140,10 +140,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
                 app.peek_box = b;
                 app.peek_close = c;
             }
-            None => {
-                app.peek_box = Rect::default();
-                app.peek_close = Rect::default();
-            }
+            None => match draw_swarm_peek(f, app, area) {
+                Some((b, c)) => {
+                    app.peek_box = b;
+                    app.peek_close = c;
+                }
+                None => {
+                    app.peek_box = Rect::default();
+                    app.peek_close = Rect::default();
+                }
+            },
         }
     } else {
         app.peek_box = Rect::default();
@@ -1593,6 +1599,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     let mut hit_expand_phrase: Vec<Option<(usize, usize, usize)>> = Vec::new();
     let mut hit_queue_actions: Vec<Vec<(usize, usize, usize, u8)>> = Vec::new();
     let mut hit_urls: Vec<Vec<(usize, usize, String)>> = Vec::new();
+    let mut hit_swarm_panes: Vec<Vec<(u64, usize, usize)>> = Vec::new();
     let mut plain_lines: Vec<String> = Vec::new();
 
     for (cell_idx, cell) in app.cells.iter().enumerate() {
@@ -1610,6 +1617,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
                 hit_expand_phrase.push(None);
                 hit_queue_actions.push(Vec::new());
                 hit_urls.push(Vec::new());
+                hit_swarm_panes.push(Vec::new());
                 plain_lines.push(String::new());
             }
             prompts.push(text.clone());
@@ -1641,6 +1649,15 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             .unwrap_or_default();
         let collapsible = cell.is_collapsible();
         let peekable = cell.is_peekable();
+        // Swarm-card pane hit-boxes, indexed by the card's own body-relative row.
+        // The card emits: row 0 = blank, row 1 = header, then panes/rows. So a
+        // wrapped line at intra-cell index `i` maps to pane row `i - 2`.
+        let swarm_pane_rows: Option<Vec<Vec<(u64, usize, usize)>>> =
+            if let Cell::Swarm { detail, .. } = cell {
+                Some(swarm_card_pane_hits(inner_w as usize, *detail))
+            } else {
+                None
+            };
         let mut header_marked = false;
         for (i, line) in w.into_iter().enumerate() {
             // First non-empty line of a collapsible card is the click target.
@@ -1700,6 +1717,15 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             }
             // Clickable http(s) URLs on this visual line (after wrap).
             let urls = crate::open_uri::find_url_spans(&plain);
+            // Swarm-card pane hits for this row (card row i → pane row i-2).
+            let sp: Vec<(u64, usize, usize)> = if let Some(rows) = &swarm_pane_rows {
+                i.checked_sub(2)
+                    .and_then(|pane_row| rows.get(pane_row))
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             plain_lines.push(plain);
             wrapped.push(line);
             owner.push(current);
@@ -1717,6 +1743,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
             hit_expand_phrase.push(exp);
             hit_queue_actions.push(qa);
             hit_urls.push(urls);
+            hit_swarm_panes.push(sp);
         }
     }
     app.hit_headers = hit_headers;
@@ -1726,6 +1753,7 @@ fn draw_transcript(f: &mut Frame, app: &mut App, area: Rect) {
     app.hit_expand_phrase = hit_expand_phrase;
     app.hit_queue_actions = hit_queue_actions;
     app.hit_urls = hit_urls;
+    app.hit_swarm_panes = hit_swarm_panes;
     app.plain_lines = plain_lines;
 
     let total = wrapped.len() as u16;
@@ -2776,6 +2804,71 @@ fn swarm_card(
 // with live subagent fan-out under agent boxes. The model is cheap (derived
 // from transcript cells); the renderer re-reads the swarm registry each
 // frame so agent children animate live.
+
+/// Per-line swarm-card pane hit-boxes: for each rendered card row (relative to
+/// the card's first line), the run ids and column ranges of the panes that
+/// occupy that row. Mirrors `swarm_card`'s own layout so a double-click on a
+/// pane opens the matching kid peek. Returns rows indexed from the card's first
+/// emitted line (the leading blank line = row 0).
+pub fn swarm_card_pane_hits(width: usize, detail: bool) -> Vec<Vec<(u64, usize, usize)>> {
+    use crate::agent::swarm::RunState;
+    let w = width.max(4);
+    let compact = w < COMPACT_BELOW;
+    // PERF-D: `running_count()` is a cheap lock-scan; only pay for the full
+    // `snapshot()` clone when there is actually a run to place a hit-box on.
+    if crate::agent::swarm::running_count() == 0 && crate::agent::swarm::snapshot_len() == 0 {
+        return Vec::new();
+    }
+    let runs = crate::agent::swarm::snapshot();
+    // Card layout: row 0 = blank, row 1 = header, then body, then footer.
+    // We emit a Vec per body-relative row; the caller offsets by +2 (blank+header).
+    let mut rows: Vec<Vec<(u64, usize, usize)>> = Vec::new();
+    if runs.is_empty() {
+        return rows;
+    }
+    let mut ordered = runs;
+    ordered.sort_by_key(|r| (r.state != RunState::Running, std::cmp::Reverse(r.id)));
+
+    if compact {
+        let shown = ordered.len().min(MAX_COMPACT);
+        for run in ordered.iter().take(shown) {
+            // One row per run, spanning the whole width.
+            rows.push(vec![(run.id, 0, w)]);
+        }
+        return rows;
+    }
+
+    let pane_h = if detail { PANE_H_DETAIL } else { PANE_H };
+    let fit_columns = (w / MIN_PANE_W as usize).max(1);
+    let fit_rows = (MAX_CARD_ROWS / pane_h as usize).max(1);
+    let max_panes = MAX_PANES.min(fit_columns * fit_rows);
+    ordered.truncate(max_panes);
+
+    let layout = grid::layout_for(ordered.len(), w as u16, MIN_PANE_W);
+    let Some(zones) = grid::model_to_zones(&layout) else {
+        return rows;
+    };
+    let height = layout.rows as u16 * pane_h;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: w as u16,
+        height,
+    };
+    let rects = grid::zones_to_rects(&zones, area);
+    rows.resize(height as usize, Vec::new());
+    for (run, rect) in ordered.iter().zip(rects.iter()) {
+        let y0 = rect.y as usize;
+        let y1 = (rect.y + rect.height).min(height) as usize;
+        let lo = rect.x as usize;
+        let hi = (rect.x + rect.width) as usize;
+        for r in rows.iter_mut().take(y1).skip(y0) {
+            r.push((run.id, lo, hi));
+        }
+    }
+    rows
+}
+
 fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     let live = app.sidegraph_live;
     let tick = app.spinner_epoch.elapsed();
@@ -2822,10 +2915,15 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
         " ↔ resizing panel ".to_string()
     } else if app.sidegraph_drag_canvas {
         " ✥ panning canvas ".to_string()
+    } else if app.sidegraph_zoom > 0 {
+        format!(
+            " zoom: {} · Ctrl+wheel · drag to pan ",
+            app.sidegraph_zoom_label()
+        )
     } else if app.sidegraph_scroll_x > 0 {
-        format!(" panned +{} · drag to pan ", app.sidegraph_scroll_x)
+        format!(" panned +{} · Ctrl+wheel zoom ", app.sidegraph_scroll_x)
     } else {
-        " ↔ drag border · drag canvas to pan · wheel scrolls ".to_string()
+        " drag to pan · Ctrl+wheel zoom · dbl-click box to peek ".to_string()
     };
     let footer = clip_to(&hint, area.width as usize);
 
@@ -2844,30 +2942,85 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     // strings, so a box's width is set by coordinates and cannot drift from
     // its borders. Clipping happens only at paint time, which is what makes
     // horizontal panning reveal real content instead of a rendering overrun.
+    //
+    // PERF: rebuilding the forest + repainting the whole canvas every frame is
+    // O(cells) and, at spinner cadence on a long transcript, dragged the whole
+    // CLI. We now fingerprint the inputs (model node states, swarm run states,
+    // panel width, zoom, and — only while something is live — the spinner tick)
+    // and reuse the cached `Line`s + hit-boxes when nothing that affects the
+    // pixels changed. Panning/scrolling never invalidates the cache; it only
+    // changes the scroll offsets applied at render time.
     let iw = inner.width as usize;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    let mut built_forest: Option<SgForest> = None;
+    let zoom = app.sidegraph_zoom;
     if iw >= 8 && inner.height > 0 {
         let empty_model = crate::tui::app::SideGraphModel {
             query: String::new(),
             running: false,
             turn_started: std::time::Instant::now(),
             nodes: Vec::new(),
+            nodes_fp: 0,
         };
         let model = app.sidegraph_model.as_ref().unwrap_or(&empty_model);
 
         let runs = crate::agent::swarm::snapshot();
-        let this_turn: Vec<_> = runs
-            .iter()
-            .filter(|r| r.started.checked_duration_since(model.turn_started).is_some())
-            .cloned()
-            .collect();
+        // Spinner phase only matters when something is actually animating; when
+        // idle we drop it from the fingerprint so a frozen graph never rebuilds.
+        let any_live = running
+            || model.nodes.iter().any(|n| {
+                matches!(
+                    n,
+                    crate::tui::app::SgNode::Thinking { live: true, .. }
+                        | crate::tui::app::SgNode::Tool {
+                            state: crate::tui::app::SgState::Running,
+                            ..
+                        }
+                )
+            })
+            || runs
+                .iter()
+                .any(|r| r.state == crate::agent::swarm::RunState::Running);
+        let spin_phase = if any_live {
+            theme::spinner_index(tick)
+        } else {
+            0
+        };
+        let fp = sidegraph_fingerprint(model, &runs, spin_phase);
 
-        let mut forest = sg_build_forest(model, &this_turn, tick, running);
-        let canvas = sg_paint_forest(&mut forest, iw);
-        lines = canvas.to_lines();
-        built_forest = Some(forest);
+        let dirty = fp != app.sidegraph_cache_fp
+            || iw as u16 != app.sidegraph_cache_w
+            || zoom != app.sidegraph_cache_zoom;
+
+        if dirty {
+            let this_turn: Vec<_> = runs
+                .iter()
+                .filter(|r| r.started.checked_duration_since(model.turn_started).is_some())
+                .cloned()
+                .collect();
+
+            let mut forest = sg_build_forest(model, &this_turn, tick, running);
+            let canvas = sg_paint_forest_zoom(&mut forest, iw, zoom);
+            let lines = canvas.to_lines();
+            let max_line_w = lines.iter().map(|l| l.width() as u16).max().unwrap_or(0);
+
+            // Rebuild hit-boxes alongside the cache (only when the forest changed).
+            app.sidegraph_hits.clear();
+            app.sidegraph_swarm_hits.clear();
+            collect_sidegraph_hits(&forest, zoom, &mut app.sidegraph_hits, &mut app.sidegraph_swarm_hits);
+
+            app.sidegraph_cache_lines = lines;
+            app.sidegraph_cache_fp = fp;
+            app.sidegraph_cache_w = iw as u16;
+            app.sidegraph_cache_zoom = zoom;
+            app.sidegraph_cache_max_line_w = max_line_w;
+        }
+    } else {
+        app.sidegraph_cache_lines.clear();
+        app.sidegraph_cache_fp = 0;
+        app.sidegraph_hits.clear();
+        app.sidegraph_swarm_hits.clear();
     }
+
+    let lines = &app.sidegraph_cache_lines;
 
     // Vertical scroll: measured from bottom when not panned, but sticky when user has panned.
     let total = lines.len() as u16;
@@ -2891,11 +3044,7 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let top = max_scroll.saturating_sub(app.sidegraph_scroll);
 
-    let max_line_w = lines
-        .iter()
-        .map(|l| l.width() as u16)
-        .max()
-        .unwrap_or(0);
+    let max_line_w = app.sidegraph_cache_max_line_w;
     let max_pan_x = max_line_w.saturating_sub(inner.width);
     // Horizontal is absolute from left, so it is naturally stable when user panned.
     app.sidegraph_max_scroll_x = max_pan_x;
@@ -2904,35 +3053,24 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
         app.sidegraph_scroll_x = max_pan_x;
     }
 
+    // Clone only the visible window of cached lines into the Paragraph. Cloning
+    // the whole cache each frame would defeat the point on a long graph; the
+    // Paragraph's own scroll skips `top` rows, so we hand it the slice from
+    // `top` onward (bounded by the viewport height) and render at offset 0.
+    let start = top as usize;
+    let vis: Vec<Line<'static>> = lines
+        .iter()
+        .skip(start)
+        .take(view as usize)
+        .cloned()
+        .collect();
     f.render_widget(
-        Paragraph::new(lines).scroll((top, app.sidegraph_scroll_x)),
+        Paragraph::new(vis).scroll((0, app.sidegraph_scroll_x)),
         inner,
     );
     app.sidegraph_body = area;
-
-    // Build hit-boxes for click-to-peek: map canvas coords -> cell_idx
-    app.sidegraph_hits.clear();
-    if let Some(forest) = built_forest {
-        let mut push_hits = |nodes: &[SgLay]| {
-            for n in nodes {
-                if let Some(ci) = n.cell_idx {
-                    app.sidegraph_hits.push(crate::tui::app::SideGraphHit {
-                        cell_idx: ci,
-                        x: n.x,
-                        y: n.y,
-                        w: SG_NODE_W,
-                        h: n.h,
-                    });
-                }
-                // subagent kids don't have cell_idx (they are swarm runs), skip peek
-            }
-        };
-        push_hits(&forest.main);
-        push_hits(&forest.live);
-        for tt in &forest.tool_tracks {
-            push_hits(&tt.nodes);
-        }
-    }
+    // Remember the scroll top the hit-boxes are valid against (they store canvas
+    // coords; the mouse mapper subtracts this same `top`).
 }
 
 // ── sidegraph canvas primitives ──────────────────────────────────────────
@@ -3125,6 +3263,7 @@ struct SgLay {
     y: usize,
     h: usize,
     cell_idx: Option<usize>,
+    run_id: Option<u64>,
 }
 
 impl SgLay {
@@ -3172,6 +3311,7 @@ impl SgLay {
             y: 0,
             h,
             cell_idx,
+            run_id: None,
         }
     }
 
@@ -3539,14 +3679,16 @@ fn sg_build_spine(
                             }
                             kid_details.push((stats, theme::FAINT));
                         }
-                        lay.kids.push(SgLay::new(
+                        let mut kid = SgLay::new(
                             &cglyph.to_string(),
                             chue,
                             &format!("#{}·{}", run.id, run.kind),
                             &elapsed,
                             chue,
                             kid_details,
-                        ));
+                        );
+                        kid.run_id = Some(run.id);
+                        lay.kids.push(kid);
                     }
                 }
                 spine.push(lay);
@@ -3878,14 +4020,16 @@ fn sg_build_forest(
                             }
                             kid_details.push((stats, theme::FAINT));
                         }
-                        lay.kids.push(SgLay::new(
+                        let mut kid = SgLay::new(
                             &cglyph.to_string(),
                             chue,
                             &format!("#{}·{}", run.id, run.kind),
                             &elapsed,
                             chue,
                             kid_details,
-                        ));
+                        );
+                        kid.run_id = Some(run.id);
+                        lay.kids.push(kid);
                     }
                 }
                 if matches!(state, SgState::Running) {
@@ -3989,6 +4133,126 @@ fn sg_build_forest(
     }
 }
 
+/// Cheap change-detection fingerprint for the sidegraph render cache.
+///
+/// Covers everything that affects the painted pixels: each model node's kind +
+/// state + duration + a short text hash, plus every swarm run's live-visible
+/// fields, plus a spinner phase (the caller passes 0 when nothing is animating
+/// so a frozen graph never rebuilds). Panning/scrolling is NOT included — those
+/// only change the scroll offset applied at render time, never the canvas.
+fn sidegraph_fingerprint(
+    model: &crate::tui::app::SideGraphModel,
+    runs: &[crate::agent::swarm::AgentRun],
+    spin_phase: u8,
+) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    spin_phase.hash(&mut h);
+    model.running.hash(&mut h);
+    // PERF-B: fold in the precomputed structural fingerprint instead of
+    // re-hashing every node each frame. `nodes_fp` is computed once per model
+    // rebuild (per turn-event) in `build_sidegraph_model`, so this loop is now
+    // O(1) w.r.t. session history — only the bounded swarm runs (≤ HISTORY_CAP)
+    // are hashed live.
+    model.nodes_fp.hash(&mut h);
+    for r in runs {
+        r.id.hash(&mut h);
+        r.state.hash(&mut h);
+        r.tool.as_deref().map(|t| t.len()).hash(&mut h);
+        r.tool.hash(&mut h);
+        r.activity.len().hash(&mut h);
+        r.tools_done.hash(&mut h);
+        r.tools_failed.hash(&mut h);
+        r.tokens.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Collect click-to-peek hit-boxes from a painted forest. Node boxes map to a
+/// transcript `cell_idx`; subagent kid boxes map to a swarm `run_id`. Coords are
+/// in canvas space; the mouse mapper subtracts the current scroll to test them.
+fn collect_sidegraph_hits(
+    forest: &SgForest,
+    zoom: u8,
+    hits: &mut Vec<crate::tui::app::SideGraphHit>,
+    swarm_hits: &mut Vec<crate::tui::app::SwarmHit>,
+) {
+    let box_h = |n: &SgLay| if zoom >= 1 { 1usize } else { n.h };
+    let mut push = |nodes: &[SgLay]| {
+        for n in nodes {
+            if let Some(ci) = n.cell_idx {
+                hits.push(crate::tui::app::SideGraphHit {
+                    cell_idx: ci,
+                    x: n.x,
+                    y: n.y,
+                    w: SG_NODE_W,
+                    h: box_h(n),
+                });
+            }
+            for kid in &n.kids {
+                if let Some(rid) = kid.run_id {
+                    swarm_hits.push(crate::tui::app::SwarmHit {
+                        run_id: rid,
+                        x: kid.x,
+                        y: kid.y,
+                        w: SG_NODE_W,
+                        h: box_h(kid),
+                    });
+                }
+            }
+        }
+    };
+    push(&forest.main);
+    push(&forest.live);
+    for tt in &forest.tool_tracks {
+        push(&tt.nodes);
+    }
+}
+
+/// Zoom-aware paint. `zoom==0` paints the full detailed canvas; higher levels
+/// compact each node to a single labelled row (`zoom==1`) or a glyph dot
+/// (`zoom==2`) BEFORE layout, so the whole graph shrinks vertically — a form of
+/// zoom-out that never touches the transcript, the window, or the model. Node
+/// x/y are still assigned by the same layout so hit-testing stays correct.
+fn sg_paint_forest_zoom(forest: &mut SgForest, panel_w: usize, zoom: u8) -> SgCanvas {
+    if zoom == 0 {
+        return sg_paint_forest(forest, panel_w);
+    }
+    // Compact every node in place: drop details, and at zoom 2 drop the title
+    // text too (glyph + short id only). `h` recomputed so layout tightens.
+    let compact = |n: &mut SgLay| {
+        n.details.clear();
+        if zoom >= 2 {
+            // minimap: keep the glyph, shrink the title to its first token
+            let first: String = n.title.split_whitespace().next().unwrap_or("").chars().take(6).collect();
+            n.title = first;
+        }
+        n.h = 3; // top border + single content row + bottom border
+    };
+    for n in forest.main.iter_mut() {
+        compact(n);
+        for k in n.kids.iter_mut() {
+            compact(k);
+        }
+    }
+    for n in forest.live.iter_mut() {
+        compact(n);
+        for k in n.kids.iter_mut() {
+            compact(k);
+        }
+    }
+    for tt in forest.tool_tracks.iter_mut() {
+        for n in tt.nodes.iter_mut() {
+            compact(n);
+            for k in n.kids.iter_mut() {
+                compact(k);
+            }
+        }
+    }
+    compact(&mut forest.root);
+    sg_paint_forest(forest, panel_w)
+}
+
 fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
     // v0.25.1 anchored layout:
     // - root + main (prompt/steer/thinking/answering/done) + live (active tool) share
@@ -4017,12 +4281,23 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
 
     let gap = SG_GAP + 1;
     let gutter = if forest.back_edge.is_some() { 16 } else { 1 };
-    let anchor_x: usize = 2; // fixed left anchor for root/main/live
+    let anchor_x: usize = 2; // fixed left edge for the central column
+    // The central column's CENTER is the anchor point that root, main, and live
+    // all share. Fixing the center (not the left edge) keeps the root ┬, the
+    // fan-out rail, and every ▼ vertically aligned even when a fan-out node
+    // makes `central_w` wider than a single box (M2 fix: previously the root
+    // connector at cx_root=x+13 fell left of the rail span and drew into blank).
+    let central_center = anchor_x + central_w / 2;
 
-    // total width = anchor + central + gaps + side tracks
-    let side_total: usize = tool_widths.iter().sum::<usize>()
-        + gap * tool_widths.len().saturating_sub(0);
-    let total_needed = anchor_x + central_w + if !tool_widths.is_empty() { gap * 2 } else { 0 } + side_total + gutter + 2;
+    // total width = central column + gaps + side tracks (+ right gutter)
+    let side_total: usize =
+        tool_widths.iter().sum::<usize>() + gap * tool_widths.len().saturating_sub(1);
+    let total_needed = anchor_x
+        + central_w
+        + if !tool_widths.is_empty() { gap * 2 } else { 0 }
+        + side_total
+        + gutter
+        + 2;
     let canvas_w = total_needed.max(panel_w);
 
     let canvas_h_estimate = {
@@ -4044,8 +4319,8 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
         h + 10
     };
 
-    // place root at anchor
-    forest.root.x = anchor_x;
+    // place root centered on the shared central_center (not left-aligned)
+    forest.root.x = central_center.saturating_sub(SG_NODE_W / 2);
     forest.root.y = 0;
 
     let rail_y = forest.root.y + forest.root.h;
@@ -4075,8 +4350,8 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
         y
     };
 
-    // layout central spine: main then live stacked, same X
-    let central_tx = anchor_x;
+    // layout central spine: main then live stacked, sharing central_center
+    let central_tx = central_center.saturating_sub(central_w / 2);
     let central_tw = central_w;
     let mut max_y = first_y;
     let mut main_end = first_y;
@@ -4094,7 +4369,7 @@ fn sg_paint_forest(forest: &mut SgForest, panel_w: usize) -> SgCanvas {
         max_y = max_y.max(live_end);
     }
 
-    // layout side tracks to the right of central
+    // layout side tracks to the right of the central column's right edge
     let mut side_xs: Vec<usize> = Vec::new();
     let mut cur_x = central_tx + central_w + gap * 2;
     for w in &tool_widths {
@@ -4787,6 +5062,237 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
         let mut st = tui_scrollview::ScrollViewState::with_offset(Position::new(0, scroll));
         StatefulWidget::render(sv, inner, f.buffer_mut(), &mut st);
     }
+    Some((rect, close))
+}
+
+/// Click-to-peek modal for a swarm subagent (kid box). Mirrors `draw_hover_peek`
+/// geometry/scroll/dismiss, but with a two-zone layout the cell peek doesn't
+/// need:
+///   • a STICKY task header in a STATIC (structural `BORDER`) frame that never
+///     scrolls and whose colour never changes with the tool, and
+///   • below a tool-hue seam, the DYNAMIC tool-output content (border + accent
+///     colour follow the run's current tool) which scrolls independently.
+/// Ctrl+C copies only the dynamic content (handled in app.rs).
+fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Rect)> {
+    let run_id = app.peek_swarm?;
+    let run = crate::agent::swarm::snapshot()
+        .into_iter()
+        .find(|r| r.id == run_id)?;
+
+    use crate::agent::swarm::RunState;
+    // Dynamic accent: current tool's colour, or the run's terminal state colour.
+    let accent = match (run.tool.as_deref(), run.state) {
+        (Some(t), _) => theme::tool_color(t),
+        (None, RunState::Failed | RunState::Cancelled) => theme::ERROR,
+        (None, RunState::Done) => theme::SUCCESS,
+        (None, RunState::Running) => theme::NUR_GOLD,
+    };
+    // Static structural ink for the task frame — NEVER a tool accent.
+    let task_border = theme::BORDER;
+
+    // Freeze geometry once — never re-anchor to mouse or re-center.
+    let rect = if let Some(r) = app.peek_frozen {
+        let fitted = constrain_rect(area, r);
+        app.peek_frozen = Some(fitted);
+        fitted
+    } else {
+        let desired_w = (area.width.saturating_mul(7) / 10).clamp(40, 96);
+        let desired_h = (area.height.saturating_mul(6) / 10).clamp(10, 28);
+        let r = fit_modal_rect(area, desired_w, desired_h, 24, 7);
+        app.peek_frozen = Some(r);
+        r
+    };
+
+    f.render_widget(Clear, rect);
+
+    // Outer frame: title is the truncated task (sticky), border is the dynamic
+    // tool accent so the whole modal reads as "this subagent, on this tool".
+    let title_task: String = {
+        let raw = if run.task.trim().is_empty() {
+            "(no task)".to_string()
+        } else {
+            run.task.clone()
+        };
+        // "kid #N·kind — <task…>": prefix never truncated; task fills the rest.
+        let prefix = format!("kid #{}·{} — ", run.id, run.kind);
+        let budget = (rect.width as usize)
+            .saturating_sub(prefix.chars().count() + 4)
+            .max(6);
+        let t: String = raw.chars().take(budget).collect();
+        let ell = if raw.chars().count() > budget { "…" } else { "" };
+        format!("{prefix}{t}{ell}")
+    };
+    f.render_widget(
+        Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_style(Style::default().fg(accent))
+            .style(Style::default().bg(theme::SURFACE_2))
+            .title(format!(" {title_task} "))
+            .title_bottom(" Esc · outside · ✕ · Ctrl+C copies tool output "),
+        rect,
+    );
+    let inner = Rect {
+        x: rect.x.saturating_add(1),
+        y: rect.y.saturating_add(1),
+        width: rect.width.saturating_sub(2),
+        height: rect.height.saturating_sub(2),
+    };
+
+    // Clickable ✕ (top-right), matching the cell peek.
+    let close = Rect::new(rect.x + rect.width.saturating_sub(4), rect.y, 3, 1);
+    {
+        let cx = rect.x + rect.width.saturating_sub(3);
+        let buf = f.buffer_mut();
+        buf[(cx, rect.y)].set_char('✕').set_style(
+            Style::default()
+                .fg(theme::ERROR)
+                .bg(theme::SURFACE_2)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+
+    let bg = Style::default().bg(theme::SURFACE_2);
+    let iw = inner.width as usize;
+
+    // ── STICKY task zone (static frame, never scrolls) ────────────────────
+    // Full task print, wrapped, inside a static-ink label. Height is bounded so
+    // a long task can't eat the whole modal; it caps at 4 rows with an ellipsis.
+    let task_full = if run.task.trim().is_empty() {
+        "(no task provided)".to_string()
+    } else {
+        run.task.clone()
+    };
+    let mut task_lines: Vec<Line> = Vec::new();
+    task_lines.push(Line::from(Span::styled(
+        "TASK".to_string(),
+        Style::default().fg(task_border).add_modifier(Modifier::BOLD),
+    )));
+    {
+        let wrap_w = iw.saturating_sub(1).max(8);
+        let mut wrapped: Vec<String> = Vec::new();
+        for raw in task_full.lines() {
+            let mut rest = raw;
+            loop {
+                let chunk: String = rest.chars().take(wrap_w).collect();
+                let adv = chunk.len();
+                wrapped.push(chunk);
+                if adv >= rest.len() {
+                    break;
+                }
+                rest = &rest[adv..];
+            }
+        }
+        let cap = 4usize;
+        let over = wrapped.len() > cap;
+        for (i, w) in wrapped.into_iter().take(cap).enumerate() {
+            let shown = if over && i + 1 == cap {
+                format!("{w}…")
+            } else {
+                w
+            };
+            task_lines.push(Line::from(Span::styled(
+                shown,
+                Style::default().fg(theme::FG),
+            )));
+        }
+    }
+    let task_h = (task_lines.len() as u16).min(inner.height.saturating_sub(2)).max(1);
+    let task_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: task_h,
+    };
+    f.render_widget(Paragraph::new(task_lines).style(bg), task_area);
+
+    // ── seam: a tool-hue rule separating sticky task from scrollable content ─
+    let seam_y = inner.y + task_h;
+    if seam_y < inner.y + inner.height {
+        let rule: String = "─".repeat(iw);
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                rule,
+                Style::default().fg(accent).bg(theme::SURFACE_2),
+            ))),
+            Rect {
+                x: inner.x,
+                y: seam_y,
+                width: inner.width,
+                height: 1,
+            },
+        );
+    }
+
+    // ── DYNAMIC tool-content zone (scrolls) ───────────────────────────────
+    let content_y = seam_y + 1;
+    if content_y >= inner.y + inner.height {
+        return Some((rect, close));
+    }
+    let content_area = Rect {
+        x: inner.x,
+        y: content_y,
+        width: inner.width,
+        height: (inner.y + inner.height).saturating_sub(content_y),
+    };
+    let body = crate::tui::app::swarm_peek_tool_content(&run);
+    const PEEK_MAX_ROWS: usize = 400;
+    let max_cols = iw.saturating_sub(1).max(8);
+    let mut lines: Vec<Line> = Vec::new();
+    'outer: for raw in body.lines() {
+        let mut rest = raw;
+        loop {
+            if lines.len() >= PEEK_MAX_ROWS {
+                lines.push(Line::from(Span::styled(
+                    "… truncated".to_string(),
+                    Style::default().fg(theme::FAINT),
+                )));
+                break 'outer;
+            }
+            // Colour tool-trace glyph lines by outcome for legibility.
+            let hue = if rest.starts_with('✓') {
+                theme::SUCCESS
+            } else if rest.starts_with('✗') {
+                theme::ERROR
+            } else if rest.starts_with('⚒') {
+                accent
+            } else {
+                theme::FG
+            };
+            let chunk: String = rest.chars().take(max_cols).collect();
+            let adv = chunk.len();
+            lines.push(Line::from(Span::styled(chunk, Style::default().fg(hue))));
+            if adv >= rest.len() {
+                break;
+            }
+            rest = &rest[adv..];
+        }
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "(no tool activity yet)".to_string(),
+            theme::style_faint(),
+        )));
+    }
+
+    let total_rows = lines.len() as u16;
+    app.peek_rows = total_rows;
+    if total_rows <= content_area.height {
+        app.peek_scroll = 0;
+        f.render_widget(Paragraph::new(lines).style(bg), content_area);
+    } else {
+        use ratatui::widgets::StatefulWidget;
+        let scroll = app.peek_scroll.min(total_rows.saturating_sub(content_area.height));
+        app.peek_scroll = scroll;
+        let size = Size::new(content_area.width.saturating_sub(1).max(1), total_rows);
+        let mut sv = tui_scrollview::ScrollView::new(size);
+        sv.render_widget(
+            Paragraph::new(lines).style(bg),
+            Rect::new(0, 0, size.width, size.height),
+        );
+        let mut st = tui_scrollview::ScrollViewState::with_offset(Position::new(0, scroll));
+        StatefulWidget::render(sv, content_area, f.buffer_mut(), &mut st);
+    }
+
     Some((rect, close))
 }
 
@@ -5961,7 +6467,7 @@ fn cell_wrap_key(cell: &Cell, spin_i: u64) -> u64 {
                 // Frozen: fingerprint the table so a later run still repaints.
                 for run in crate::agent::swarm::snapshot() {
                     run.id.hash(&mut h);
-                    format!("{:?}", run.state).hash(&mut h);
+                    run.state.hash(&mut h);
                     run.tools_done.hash(&mut h);
                     run.tokens.hash(&mut h);
                 }
@@ -6668,6 +7174,7 @@ mod sidegraph_canvas_tests {
                     cell_idx: 3,
                 },
             ],
+            nodes_fp: 0,
         }
     }
 
@@ -6825,5 +7332,139 @@ mod sidegraph_canvas_tests {
         let canvas = sg_paint_forest(&mut forest, 40);
         let widest = canvas.to_lines().iter().map(|l| l.width()).max().unwrap_or(0);
         assert!(widest > 40, "forest canvas {} should exceed panel 40 to make panning useful", widest);
+    }
+
+    /// M2 regression: the fan-out rail must connect the root ┬ to the central
+    /// track center even when a fan-out node makes the central column wider than
+    /// one box. Before the fix, `cx_root` fell left of the rail span and the
+    /// root connector drew into blank space.
+    #[test]
+    fn root_connector_aligns_with_central_track_center() {
+        let mut m = demo_model();
+        m.nodes.truncate(1); // just reasoning under root
+        // Give the root's child track a fan-out so central_w > SG_NODE_W.
+        let now = std::time::Instant::now();
+        m.nodes.push(SgNode::Tool {
+            name: "agent".into(),
+            args_formatted: vec!["task: explore".into()],
+            result_formatted: None,
+            state: SgState::Running,
+            started: now,
+            duration: None,
+            agent: true,
+            cell_idx: 5,
+        });
+        let runs = vec![
+            mk_run(1, "explore", "map the module"),
+            mk_run(2, "explore", "trace the path"),
+        ];
+        let mut forest = sg_build_forest(&m, &runs, Duration::from_millis(0), true);
+        // root center must equal the central track center after paint.
+        let _canvas = sg_paint_forest(&mut forest, 40);
+        let root_c = forest.root.center();
+        // The first main-track node should share the root's center X.
+        let first_main_c = forest.main.first().map(|n| n.center());
+        if let Some(fc) = first_main_c {
+            assert_eq!(root_c, fc, "root and central column must share center X");
+        }
+    }
+
+    /// Zoom-out compacts every node to a single content row so the whole graph
+    /// shrinks vertically without touching the model.
+    #[test]
+    fn zoom_out_compacts_node_height() {
+        let m = demo_model();
+        let mut full = sg_build_forest(&m, &[], Duration::from_millis(0), true);
+        let full_canvas = sg_paint_forest_zoom(&mut full, 40, 0);
+        let full_h = full_canvas.to_lines().len();
+
+        let mut compact = sg_build_forest(&m, &[], Duration::from_millis(0), true);
+        let compact_canvas = sg_paint_forest_zoom(&mut compact, 40, 1);
+        let compact_h = compact_canvas.to_lines().len();
+
+        assert!(
+            compact_h < full_h,
+            "zoom 1 ({compact_h}) should be shorter than zoom 0 ({full_h})"
+        );
+    }
+
+    /// The render cache fingerprint must be stable across identical inputs and
+    /// change when a node's state changes — otherwise the cache never refreshes.
+    #[test]
+    fn fingerprint_stable_and_sensitive() {
+        use std::hash::{Hash, Hasher};
+        // Mirror build_sidegraph_model's nodes_fp computation so the test
+        // exercises the real per-frame path (which folds in the precomputed fp).
+        fn recompute_fp(m: &mut SideGraphModel) {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            m.query.len().hash(&mut h);
+            m.nodes.len().hash(&mut h);
+            for n in &m.nodes {
+                crate::tui::app::sg_node_fingerprint(n, &mut h);
+            }
+            m.nodes_fp = h.finish();
+        }
+
+        let mut m = demo_model();
+        recompute_fp(&mut m);
+        let a = sidegraph_fingerprint(&m, &[], 0);
+        let b = sidegraph_fingerprint(&m, &[], 0);
+        assert_eq!(a, b, "same inputs must fingerprint identically");
+        // A different spinner phase must still change the fp when passed.
+        let c = sidegraph_fingerprint(&m, &[], 3);
+        assert_ne!(a, c, "spinner phase must affect the fingerprint");
+        // A new node changes the precomputed nodes_fp → changes the frame fp.
+        let mut m2 = m.clone();
+        m2.nodes.push(SgNode::Answering { text_excerpt: "writing".into() });
+        recompute_fp(&mut m2);
+        let d = sidegraph_fingerprint(&m2, &[], 0);
+        assert_ne!(a, d, "adding a node must change the fingerprint");
+    }
+
+    /// Kid boxes in a fan-out expose their swarm run id for click-to-peek, and
+    /// node boxes expose their cell index — collected without overlap.
+    #[test]
+    fn hit_collection_maps_kids_to_run_ids() {
+        let mut m = demo_model();
+        m.nodes.truncate(1);
+        let now = std::time::Instant::now();
+        m.nodes.push(SgNode::Tool {
+            name: "agent".into(),
+            args_formatted: vec!["task: explore".into()],
+            result_formatted: None,
+            state: SgState::Running,
+            started: now,
+            duration: None,
+            agent: true,
+            cell_idx: 9,
+        });
+        let runs = vec![mk_run(7, "explore", "scan"), mk_run(8, "general", "build")];
+        let mut forest = sg_build_forest(&m, &runs, Duration::from_millis(0), true);
+        let _ = sg_paint_forest(&mut forest, 40);
+        let mut hits = Vec::new();
+        let mut swarm_hits = Vec::new();
+        collect_sidegraph_hits(&forest, 0, &mut hits, &mut swarm_hits);
+        let run_ids: Vec<u64> = swarm_hits.iter().map(|h| h.run_id).collect();
+        assert!(run_ids.contains(&7), "kid #7 should be a swarm hit");
+        assert!(run_ids.contains(&8), "kid #8 should be a swarm hit");
+        assert!(hits.iter().any(|h| h.cell_idx == 9), "agent tool box should be a cell hit");
+    }
+
+    fn mk_run(id: u64, kind: &str, task: &str) -> crate::agent::swarm::AgentRun {
+        crate::agent::swarm::AgentRun {
+            id,
+            kind: kind.into(),
+            task: task.into(),
+            state: crate::agent::swarm::RunState::Running,
+            started: std::time::Instant::now(),
+            ended: None,
+            activity: "starting".into(),
+            tool: Some("grep".into()),
+            tools_done: 1,
+            tools_failed: 0,
+            tokens: 42,
+            pulse: vec![1],
+            trace: vec!["⚒ grep".into(), "✓ grep".into()],
+        }
     }
 }

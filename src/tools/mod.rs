@@ -268,6 +268,11 @@ impl Tool for AgentStub {
          concurrently** (up to 4 at a time), so independent investigations cost \
          roughly one investigation's wall time. Split work that does not share \
          state: one subagent per subsystem, per hypothesis, or per file cluster. \
+         Optionally set `provider` (and `model`) to run a subagent on a DIFFERENT \
+         provider than the parent — e.g. provider:\"anthropic\", provider:\"openai\", \
+         provider:\"xai\" / \"grok\", provider:\"gemini\" / \"google\", provider:\"deepseek\". \
+         Natural-language names resolve to the right provider; the subagent uses \
+         that provider's stored credentials. Omit both to inherit the parent's. \
          Watch them live in the TUI with /swarm."
     }
 
@@ -281,6 +286,14 @@ impl Tool for AgentStub {
                     "type": "string",
                     "enum": ["explore", "general"],
                     "default": "explore"
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Optional: run this subagent on a different provider (e.g. anthropic, openai, xai/grok, google/gemini, deepseek, mistral). Natural-language names are accepted. Must be signed in to that provider."
+                },
+                "model": {
+                    "type": "string",
+                    "description": "Optional: exact model id for the chosen provider. Defaults to that provider's default model."
                 }
             },
             "required": ["prompt"]

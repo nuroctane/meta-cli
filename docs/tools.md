@@ -242,6 +242,16 @@ inherits the parent permission mode. In the CLI, child approval requests are
 proxied to the parent prompt, and subagent transcripts stay out of the native
 session list while their usage is folded into the parent turn.
 
+**Cross-provider subagents.** An `agent` call may set `provider` (and optionally
+`model`) to run a subagent on a *different* provider than the parent — in natural
+language. `provider:"grok"` → xAI, `"gemini"`/`"google"` → Google, `"claude"` →
+Anthropic, `"chatgpt"`/`"gpt"` → OpenAI, plus `deepseek`, `mistral`, `kimi`, and
+direct catalog ids. The subagent uses that provider's stored credentials; if
+you're not signed in to it, the run falls back to the parent provider with a
+status note rather than failing. Omit both to inherit the parent's provider/model.
+This lets one turn fan out across providers — e.g. an Opus reviewer arguing with a
+Sonnet reviewer — from a single prompt.
+
 ### `fractal`
 
 Bridge to **[fractal](https://github.com/plasma-ai/fractal)** (Apache-2.0) —

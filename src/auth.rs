@@ -411,15 +411,35 @@ pub fn load_auth() -> Result<Option<Auth>> {
 /// Return OAuth request metadata when `access_token` belongs to a stored OAuth
 /// session for `provider_id`. API keys deliberately return `None`.
 pub fn oauth_request_context(provider_id: &str, access_token: &str) -> Option<OAuthRequestContext> {
+    // The google family (google / antigravity / google-oauth) shares one login;
+    // a session saved under any of those ids must satisfy a context lookup for
+    // any other, or the request goes out WITHOUT `x-goog-user-project` and the
+    // generativelanguage host answers 401 UNAUTHENTICATED.
+    const GOOGLE_FAMILY: &[&str] = &["google", "antigravity", "google-oauth"];
+    let same_family = |a: &str, b: &str| -> bool {
+        a == b || (GOOGLE_FAMILY.contains(&a) && GOOGLE_FAMILY.contains(&b))
+    };
     let matches_session = |auth: &Auth| {
         matches!(auth.auth_method, AuthMethod::Oauth)
-            && auth.provider == provider_id
+            && same_family(auth.provider.as_str(), provider_id)
             && auth.api_key.trim() == access_token.trim()
     };
     let active = load_auth().ok().flatten().filter(&matches_session);
-    let stored = read_sessions_at(&crate::config::provider_sessions_path())
-        .remove(provider_id)
-        .filter(&matches_session);
+    // For the stored side, scan all family ids (the session may be under a
+    // sibling id even when `provider_id` is the configured one).
+    let stored = {
+        let sessions = read_sessions_at(&crate::config::provider_sessions_path());
+        let mut found = sessions.get(provider_id).cloned().filter(&matches_session);
+        if found.is_none() && GOOGLE_FAMILY.contains(&provider_id) {
+            for alias in GOOGLE_FAMILY {
+                if let Some(a) = sessions.get(*alias).cloned().filter(&matches_session) {
+                    found = Some(a);
+                    break;
+                }
+            }
+        }
+        found
+    };
     let auth = active.or(stored)?;
     let account_id = auth
         .oauth_meta

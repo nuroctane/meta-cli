@@ -338,7 +338,7 @@ pub enum Cell {
 }
 
 /// State of a `/sidegraph` node (mirrors the swarm run states).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SgState {
     Running,
     Ok,
@@ -385,6 +385,75 @@ pub enum SgNode {
         interrupted: bool,
         cell_idx: usize,
     },
+}
+
+/// Hash one `SgNode`'s structural identity into `h` — shared by the build-time
+/// model fingerprint (`build_sidegraph_model`) and any per-node hashing so the
+/// two can never drift. Uses derived `Hash` on `SgState` (no `format!` alloc).
+pub(crate) fn sg_node_fingerprint(n: &SgNode, h: &mut impl std::hash::Hasher) {
+    use std::hash::Hash;
+    match n {
+        SgNode::Thinking {
+            excerpt,
+            live,
+            duration,
+            cell_idx,
+            ..
+        } => {
+            0u8.hash(h);
+            live.hash(h);
+            duration.map(|d| d.as_millis()).hash(h);
+            excerpt.len().hash(h);
+            cell_idx.hash(h);
+        }
+        SgNode::Tool {
+            name,
+            args_formatted,
+            result_formatted,
+            state,
+            duration,
+            agent,
+            cell_idx,
+            ..
+        } => {
+            1u8.hash(h);
+            name.hash(h);
+            args_formatted.len().hash(h);
+            result_formatted.as_ref().map(|r| r.len()).unwrap_or(0).hash(h);
+            state.hash(h);
+            duration.map(|d| d.as_millis()).hash(h);
+            agent.hash(h);
+            cell_idx.hash(h);
+        }
+        SgNode::Answering { text_excerpt } => {
+            2u8.hash(h);
+            text_excerpt.len().hash(h);
+        }
+        SgNode::Steer { text, cell_idx } => {
+            3u8.hash(h);
+            text.len().hash(h);
+            cell_idx.hash(h);
+        }
+        SgNode::Prompt { text, cell_idx } => {
+            4u8.hash(h);
+            text.len().hash(h);
+            cell_idx.hash(h);
+        }
+        SgNode::Queued { text } => {
+            5u8.hash(h);
+            text.len().hash(h);
+        }
+        SgNode::Done {
+            duration,
+            interrupted,
+            cell_idx,
+        } => {
+            6u8.hash(h);
+            duration.as_millis().hash(h);
+            interrupted.hash(h);
+            cell_idx.hash(h);
+        }
+    }
 }
 
 /// Format tool JSON args into key-value lines for descriptive sidegraph rendering.
@@ -503,6 +572,12 @@ pub struct SideGraphModel {
     /// after this into the fan-out, so children animate live.
     pub turn_started: Instant,
     pub nodes: Vec<SgNode>,
+    /// Precomputed structural fingerprint of `query` + `nodes`, hashed ONCE at
+    /// build time (in `build_sidegraph_model`). The per-frame render cache folds
+    /// this in instead of re-hashing every node each frame, so the frame-path
+    /// fingerprint is O(1) w.r.t. session history (PERF-B). Any change to the
+    /// nodes rebuilds the model and this value with it.
+    pub nodes_fp: u64,
 }
 
 /// Concise node label for a tool in the execution graph (`name · <hint>`).
@@ -1650,6 +1725,10 @@ pub struct App {
     pub hit_queue_actions: Vec<Vec<(usize, usize, usize, u8)>>,
     /// Absolute line → clickable `http(s)://` spans `(col_lo, col_hi, url)`.
     pub hit_urls: Vec<Vec<(usize, usize, String)>>,
+    /// Absolute line → swarm run id for a `/swarm` transcript-card pane row, so
+    /// double-clicking a pane opens the same kid peek modal as the sidegraph.
+    /// `(run_id, col_lo, col_hi)`; col range is the pane's horizontal extent.
+    pub hit_swarm_panes: Vec<Vec<(u64, usize, usize)>>,
     /// First visible wrapped-line index in the transcript body (for hit-tests).
     pub transcript_top: u16,
     /// Brief highlight after toggle: (cell_idx, when).
@@ -1658,6 +1737,10 @@ pub struct App {
     pub hover_cell: Option<usize>,
     /// Stable click-to-peek: cell index while open.
     pub peek_open: Option<usize>,
+    /// Parallel click-to-peek target: a swarm subagent run id. Mutually
+    /// exclusive with `peek_open` (opening one closes the other). Reuses the
+    /// same frozen geometry + scroll + dismiss machinery as the cell peek.
+    pub peek_swarm: Option<u64>,
     /// Frozen dialogue geometry — set **once** on first draw, never moves.
     pub peek_frozen: Option<ratatui::layout::Rect>,
     /// Bounds used for outside-click / ✕ (equals `peek_frozen` while open).
@@ -1718,8 +1801,23 @@ pub struct App {
     pub sidegraph_prev_max_scroll_x: u16,
     /// Hit-boxes for sidegraph nodes that map to transcript cells (for click-to-peek).
     pub sidegraph_hits: Vec<SideGraphHit>,
+    /// Hit-boxes for sidegraph kids (swarm subagents) → run id (for click-to-peek).
+    pub sidegraph_swarm_hits: Vec<SwarmHit>,
     /// Last click in sidegraph for double-click detection (time + canvas coords).
     pub sidegraph_last_click: Option<(Instant, u16, u16)>,
+    /// Rendered-canvas cache: the painted lines from the last rebuild plus the
+    /// fingerprint they were built from. Rebuilt only when the fingerprint or
+    /// panel width changes (not every frame), so a long transcript no longer
+    /// repaints the whole graph at spinner cadence and drags the whole CLI.
+    pub sidegraph_cache_lines: Vec<ratatui::text::Line<'static>>,
+    pub sidegraph_cache_fp: u64,
+    pub sidegraph_cache_w: u16,
+    pub sidegraph_cache_zoom: u8,
+    pub sidegraph_cache_max_line_w: u16,
+    /// Zoom level for the sidegraph canvas: 0 = detailed (full boxes),
+    /// 1 = compact (titles only), 2 = minimap (glyph dots). Purely a render
+    /// concern — never touches the transcript, window, or model.
+    pub sidegraph_zoom: u8,
     /// Full panel rect (border included) for wheel / click hit-testing.
     pub sidegraph_body: ratatui::layout::Rect,
     /// One-shot flag: noted once that the open panel is hidden because the
@@ -1855,6 +1953,56 @@ impl Drop for TermGuard {
     }
 }
 
+/// Install a panic hook that routes panic output to a log file instead of
+/// stderr while the alternate screen is active. A panicking blocking tool task
+/// (caught as a JoinError in the agent loop) otherwise triggers the default
+/// hook, which writes the panic + backtrace to stderr — bleeding raw text over
+/// the input box and transcript. We keep the message (to `~/.nur/panic.log`)
+/// so real diagnostics survive, but never write it to the live terminal.
+fn install_tui_panic_hook() {
+    use std::sync::Once;
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            // Best-effort append to a log file; never write to stderr/stdout
+            // (that corrupts the TUI). If the log can't be opened, swallow it.
+            if let Some(dir) = dirs_next_home() {
+                let path = dir.join(".nur").join("panic.log");
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                {
+                    use std::io::Write as _;
+                    let _ = writeln!(f, "[{}] {}", now_stamp(), info);
+                }
+            }
+            // Deliberately do NOT call `prev` here — the default hook prints to
+            // stderr. Keep a reference so it isn't dropped/optimised oddly.
+            let _ = &prev;
+        }));
+    });
+}
+
+fn dirs_next_home() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+}
+
+fn now_stamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!("epoch:{secs}")
+}
+
 /// Capture mouse for drag-select, scrollbar, wheel, click-peek (always on).
 ///
 /// Mode 1002 (button-event tracking) reports motion only while a button is held
@@ -1913,6 +2061,13 @@ pub async fn run_tui(
     // Hardware cursor hidden — we paint a Nur-gold block caret ourselves.
     stdout().execute(Hide)?;
     let _guard = TermGuard;
+    // Suppress panic-hook stderr while the alternate screen is up. A panicking
+    // blocking tool task (already caught as a JoinError in the agent loop) still
+    // triggers the default hook, which writes the panic + backtrace to stderr —
+    // bleeding raw text over the input box and transcript. Route those messages
+    // to a log file instead so the TUI is never corrupted; real crashes still
+    // unwind and TermGuard restores the terminal.
+    install_tui_panic_hook();
     let backend = CrosstermBackend::new(stdout());
     let mut terminal = Terminal::new(backend)
         .map_err(|e| crate::error::MuseError::Other(format!("terminal init: {e}")))?;
@@ -2022,10 +2177,12 @@ pub async fn run_tui(
         hit_expand_phrase: Vec::new(),
         hit_queue_actions: Vec::new(),
         hit_urls: Vec::new(),
+        hit_swarm_panes: Vec::new(),
         transcript_top: 0,
         expand_flash: None,
         hover_cell: None,
         peek_open: None,
+        peek_swarm: None,
         peek_frozen: None,
         peek_box: ratatui::layout::Rect::default(),
         peek_close: ratatui::layout::Rect::default(),
@@ -2055,7 +2212,14 @@ pub async fn run_tui(
         sidegraph_prev_max_scroll: 0,
         sidegraph_prev_max_scroll_x: 0,
         sidegraph_hits: Vec::new(),
+        sidegraph_swarm_hits: Vec::new(),
         sidegraph_last_click: None,
+        sidegraph_cache_lines: Vec::new(),
+        sidegraph_cache_fp: 0,
+        sidegraph_cache_w: 0,
+        sidegraph_cache_zoom: 0,
+        sidegraph_cache_max_line_w: 0,
+        sidegraph_zoom: 0,
         sidegraph_body: ratatui::layout::Rect::default(),
         sidegraph_narrow: false,
         needs_full_redraw: false,
@@ -2945,6 +3109,7 @@ impl App {
 
     fn close_peek(&mut self) {
         self.peek_open = None;
+        self.peek_swarm = None;
         self.peek_frozen = None;
         self.peek_box = ratatui::layout::Rect::default();
         self.peek_close = ratatui::layout::Rect::default();
@@ -2955,9 +3120,22 @@ impl App {
     fn open_stable_peek(&mut self, idx: usize) {
         // Geometry is frozen on the *first draw* of this open (not from mouse).
         self.peek_open = Some(idx);
+        self.peek_swarm = None;
         self.peek_frozen = None;
         self.peek_scroll = 0;
         self.peek_scroll_cell = Some(idx);
+        self.hover_cell = None;
+    }
+
+    /// Open a stable peek on a swarm subagent run (kid box). Same geometry /
+    /// scroll / dismiss machinery as the cell peek — only the content source
+    /// differs. Mutually exclusive with `peek_open`.
+    fn open_swarm_peek(&mut self, run_id: u64) {
+        self.peek_open = None;
+        self.peek_swarm = Some(run_id);
+        self.peek_frozen = None;
+        self.peek_scroll = 0;
+        self.peek_scroll_cell = None;
         self.hover_cell = None;
     }
 
@@ -3131,6 +3309,19 @@ impl App {
                             clipboard_set(&body);
                             return;
                         }
+                    }
+                }
+                // Swarm kid peek: copy ONLY the tool-output content, never the
+                // sticky task header (per the spec — task is context, not payload).
+                if let Some(run_id) = self.peek_swarm {
+                    let body = crate::agent::swarm::snapshot()
+                        .iter()
+                        .find(|r| r.id == run_id)
+                        .map(swarm_peek_tool_content)
+                        .unwrap_or_default();
+                    if !body.trim().is_empty() {
+                        clipboard_set(&body);
+                        return;
                     }
                 }
                 if self.busy {
@@ -3522,13 +3713,19 @@ impl App {
                     // Wheel inside a pinned peek scrolls its body, not the page.
                     self.peek_scroll = self.peek_scroll.saturating_sub(3);
                 } else if self.wheel_over_sidegraph(m.column, m.row) {
-                    // Wheel inside the sidebar scrolls its flow graph (clamped
-                    // to the content so the offset can't run away).
-                    self.sidegraph_scroll = self
-                        .sidegraph_scroll
-                        .saturating_add(3)
-                        .min(self.sidegraph_max_scroll);
-                    self.sidegraph_user_panned = true;
+                    if m.modifiers.contains(KeyModifiers::CONTROL) {
+                        // Ctrl+wheel zooms the graph in (toward detail). Purely a
+                        // render concern — transcript, window, and model untouched.
+                        self.sidegraph_zoom_in();
+                    } else {
+                        // Wheel inside the sidebar scrolls its flow graph (clamped
+                        // to the content so the offset can't run away).
+                        self.sidegraph_scroll = self
+                            .sidegraph_scroll
+                            .saturating_add(3)
+                            .min(self.sidegraph_max_scroll);
+                        self.sidegraph_user_panned = true;
+                    }
                 } else {
                     // Always works — including during streaming and under approval.
                     self.scroll_up(3);
@@ -3556,8 +3753,13 @@ impl App {
                         .saturating_add(3)
                         .min(self.peek_rows.saturating_sub(1));
                 } else if self.wheel_over_sidegraph(m.column, m.row) {
-                    self.sidegraph_scroll = self.sidegraph_scroll.saturating_sub(3);
-                    self.sidegraph_user_panned = true;
+                    if m.modifiers.contains(KeyModifiers::CONTROL) {
+                        // Ctrl+wheel down zooms the graph out (toward minimap).
+                        self.sidegraph_zoom_out();
+                    } else {
+                        self.sidegraph_scroll = self.sidegraph_scroll.saturating_sub(3);
+                        self.sidegraph_user_panned = true;
+                    }
                 } else {
                     self.scroll_down(3);
                     if self.mouse_left_down && self.select_anchor.is_some() {
@@ -3592,7 +3794,7 @@ impl App {
                 // OUTSIDE the box closes it (and consumes the click); a click
                 // inside keeps it open. This is consistent on every side —
                 // including below the box.
-                if self.peek_open.is_some() {
+                if self.peek_is_open() {
                     if peek_click_dismisses(self.peek_close, self.peek_box, m.column, m.row) {
                         self.close_peek();
                     }
@@ -3619,8 +3821,14 @@ impl App {
                         })
                         .unwrap_or(false);
                     let hit = self.sidegraph_hit_at(m.column, m.row);
+                    let swarm_hit = self.sidegraph_swarm_hit_at(m.column, m.row);
                     if is_dbl {
                         self.sidegraph_last_click = None;
+                        if let Some(sh) = swarm_hit {
+                            // Double-click a subagent kid box -> swarm peek modal.
+                            self.open_swarm_peek(sh.run_id);
+                            return;
+                        }
                         if let Some(h) = hit {
                             // Double-click box -> open click-to-peek modal for that cell if peekable
                             if self.cells.get(h.cell_idx).map(|c| c.is_peekable()).unwrap_or(false) {
@@ -3655,6 +3863,24 @@ impl App {
                     self.last_click = None;
                     self.close_peek();
                     return;
+                }
+                // Double-click a `/swarm` card pane → open that subagent's kid
+                // peek modal (same modal the sidegraph kid boxes open).
+                if let Some(run_id) = self.swarm_pane_at_mouse(m.column, m.row) {
+                    let dbl = self
+                        .last_click
+                        .map(|(ci, t)| ci == run_id as usize && t.elapsed() < Duration::from_millis(450))
+                        .unwrap_or(false);
+                    if dbl {
+                        self.last_click = None;
+                        self.selecting = false;
+                        self.select_anchor = None;
+                        self.selection = None;
+                        self.open_swarm_peek(run_id);
+                        return;
+                    }
+                    self.last_click = Some((run_id as usize, Instant::now()));
+                    // fall through so a single click still selects text etc.
                 }
                 // Double-click a User prompt (in the transcript OR the sticky
                 // header) → open its context menu. A single click on a prompt
@@ -3729,6 +3955,10 @@ impl App {
                 }
                 // Right-click on sidegraph box -> open click-to-peek modal (same as transcript)
                 if self.wheel_over_sidegraph(m.column, m.row) {
+                    if let Some(sh) = self.sidegraph_swarm_hit_at(m.column, m.row) {
+                        self.open_swarm_peek(sh.run_id);
+                        return;
+                    }
                     if let Some(hit) = self.sidegraph_hit_at(m.column, m.row) {
                         if self.cells.get(hit.cell_idx).map(|c| c.is_peekable()).unwrap_or(false) {
                             self.open_stable_peek(hit.cell_idx);
@@ -3798,12 +4028,21 @@ impl App {
                     self.click_transcript(col, row);
                 }
                 self.selecting = false;
+                if self.sidegraph_drag_canvas && self.sidegraph_user_panned {
+                    // M3: a real pan just ended — clear the pending double-click
+                    // seed so the next click can't pair with the press that
+                    // started the drag (which would fire reset/peek by mistake).
+                    self.sidegraph_last_click = None;
+                }
                 self.sidegraph_drag_border = false;
                 self.sidegraph_drag_canvas = false;
                 self.sidegraph_drag_origin = None;
             }
             MouseEventKind::Up(_) => {
                 self.mouse_left_down = false;
+                if self.sidegraph_drag_canvas && self.sidegraph_user_panned {
+                    self.sidegraph_last_click = None;
+                }
                 self.sidegraph_drag_border = false;
                 self.sidegraph_drag_canvas = false;
                 self.sidegraph_drag_origin = None;
@@ -4100,6 +4339,37 @@ impl App {
         self.peek_open
     }
 
+    /// The swarm run id under the mouse in a `/swarm` transcript card pane, if
+    /// any — for double-click-to-peek parity with the sidegraph kid boxes.
+    fn swarm_pane_at_mouse(&self, col: u16, row: u16) -> Option<u64> {
+        let body = self.transcript_body;
+        if body.width == 0
+            || body.height == 0
+            || col < body.x
+            || col >= body.right()
+            || row < body.y
+            || row >= body.bottom()
+        {
+            return None;
+        }
+        let local_y = row.saturating_sub(body.y) as usize;
+        let line_idx = self.transcript_top as usize + local_y;
+        // body.x includes the 1-col left margin; pane columns are relative to it.
+        let local_x = col.saturating_sub(body.x) as usize;
+        let panes = self.hit_swarm_panes.get(line_idx)?;
+        for (run_id, lo, hi) in panes {
+            if local_x >= *lo && local_x < *hi {
+                return Some(*run_id);
+            }
+        }
+        None
+    }
+
+    /// Whether any peek modal (cell OR swarm kid) is currently open.
+    pub fn peek_is_open(&self) -> bool {
+        self.peek_open.is_some() || self.peek_swarm.is_some()
+    }
+
     /// Decoded terminal-graphics protocol for an image path, lazily built and
     /// cached (encoding is expensive; re-doing it per frame would melt the UI).
     #[cfg(feature = "image-peek")]
@@ -4157,7 +4427,7 @@ impl App {
 
     /// Wheel events over an open pinned peek scroll the peek body.
     fn wheel_over_open_peek(&self, col: u16, row: u16) -> bool {
-        self.peek_open.is_some() && rect_contains(self.peek_box, col, row)
+        self.peek_is_open() && rect_contains(self.peek_box, col, row)
     }
 
     /// Wheel events over the `/sidegraph` sidebar scroll its body instead of
@@ -4210,12 +4480,50 @@ impl App {
         None
     }
 
+    /// Hit-test a swarm kid (subagent fan-out box) at a mouse position → run id.
+    pub(crate) fn sidegraph_swarm_hit_at(&self, col: u16, row: u16) -> Option<SwarmHit> {
+        let (cx, cy) = self.sidegraph_canvas_coords(col, row)?;
+        for hit in &self.sidegraph_swarm_hits {
+            if cx >= hit.x && cx < hit.x + hit.w && cy >= hit.y && cy < hit.y + hit.h {
+                return Some(hit.clone());
+            }
+        }
+        None
+    }
+
     /// Double-click empty space should return to root / steer / prompt position.
     pub(crate) fn sidegraph_reset_view(&mut self) {
         self.sidegraph_scroll = 0;
         self.sidegraph_scroll_x = 0;
         self.sidegraph_user_panned = false;
         self.sidegraph_last_click = None;
+    }
+
+    /// Zoom levels: 0 = detailed (full boxes), 1 = compact (title row),
+    /// 2 = minimap (glyph + short id). Zoom only affects the sidegraph render;
+    /// it never touches the transcript, the window, the model, or the output.
+    pub(crate) fn sidegraph_zoom_in(&mut self) {
+        if self.sidegraph_zoom > 0 {
+            self.sidegraph_zoom -= 1;
+            // Re-anchor to bottom on zoom so the newest node stays visible;
+            // horizontal pan is preserved so the user keeps their place.
+            self.sidegraph_scroll = 0;
+        }
+    }
+
+    pub(crate) fn sidegraph_zoom_out(&mut self) {
+        if self.sidegraph_zoom < 2 {
+            self.sidegraph_zoom += 1;
+            self.sidegraph_scroll = 0;
+        }
+    }
+
+    pub(crate) fn sidegraph_zoom_label(&self) -> &'static str {
+        match self.sidegraph_zoom {
+            0 => "detailed",
+            1 => "compact",
+            _ => "minimap",
+        }
     }
 
     /// Check if mouse position is on or adjacent to the left border of the sidegraph panel.
@@ -6877,11 +7185,36 @@ impl App {
                 _ => {}
             }
         }
+        // PERF-C: bound the node vector so a long session can never grow the
+        // graph (or its per-event rebuild, canvas height, to_lines output, and
+        // hit-box vectors) without limit. Keep the most recent nodes — the live
+        // tail is what the user watches — and drop older ones. The root prompt
+        // is rendered separately from `query`, so trimming leading nodes only
+        // hides finished mid-history steps, which the transcript still holds.
+        const MAX_SG_NODES: usize = 240;
+        if nodes.len() > MAX_SG_NODES {
+            let drop = nodes.len() - MAX_SG_NODES;
+            nodes.drain(0..drop);
+        }
+        // PERF-B: precompute the structural fingerprint of query+nodes ONCE
+        // here (build time / per-event), so the per-frame render cache never
+        // re-hashes every node. Uses the shared sg_node_fingerprint helper.
+        let nodes_fp = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            query.len().hash(&mut h);
+            nodes.len().hash(&mut h);
+            for n in &nodes {
+                sg_node_fingerprint(n, &mut h);
+            }
+            h.finish()
+        };
         SideGraphModel {
             query,
             running: self.busy,
             turn_started: self.turn_started,
             nodes,
+            nodes_fp,
         }
     }
 
@@ -6939,6 +7272,30 @@ impl App {
                 self.sidegraph_open = false;
                 self.sidegraph_live = false;
                 self.push_note(Tone::Neutral, "sidegraph · panel closed".into());
+                return;
+            }
+            "zoom" | "zoom+" | "zoomin" | "zoom-in" | "in" => {
+                if !self.sidegraph_open {
+                    self.push_note(Tone::Neutral, "sidegraph · panel is closed — /sidegraph to open".into());
+                    return;
+                }
+                self.sidegraph_zoom_in();
+                self.push_note(Tone::Neutral, format!("sidegraph · zoom {} (Ctrl+wheel to zoom)", self.sidegraph_zoom_label()));
+                return;
+            }
+            "zoom-" | "zoomout" | "zoom-out" | "out" => {
+                if !self.sidegraph_open {
+                    self.push_note(Tone::Neutral, "sidegraph · panel is closed — /sidegraph to open".into());
+                    return;
+                }
+                self.sidegraph_zoom_out();
+                self.push_note(Tone::Neutral, format!("sidegraph · zoom {} (Ctrl+wheel to zoom)", self.sidegraph_zoom_label()));
+                return;
+            }
+            "zoom0" | "zoomreset" | "reset" => {
+                self.sidegraph_zoom = 0;
+                self.sidegraph_scroll = 0;
+                self.push_note(Tone::Neutral, "sidegraph · zoom reset to detailed".into());
                 return;
             }
             "on" | "live" | "" => {}
@@ -7701,6 +8058,39 @@ pub fn peek_click_dismisses(
     row: u16,
 ) -> bool {
     rect_contains(close, col, row) || !rect_contains(box_, col, row)
+}
+
+/// Tool-output content for a swarm kid peek — everything EXCEPT the sticky task
+/// header. This is exactly what Ctrl+C copies and what renders below the seam.
+/// Dynamic (changes with the run's tool activity), unlike the static task.
+pub fn swarm_peek_tool_content(run: &crate::agent::swarm::AgentRun) -> String {
+    use crate::agent::swarm::RunState;
+    let mut s = String::new();
+    let status = match run.state {
+        RunState::Running => "running",
+        RunState::Done => "done",
+        RunState::Failed => "failed",
+        RunState::Cancelled => "cancelled",
+    };
+    s.push_str(&format!("#{}·{} — {status}\n", run.id, run.kind));
+    if let Some(tool) = run.tool.as_deref() {
+        s.push_str(&format!("current tool: {tool}\n"));
+    }
+    if !run.activity.trim().is_empty() {
+        s.push_str(&format!("activity: {}\n", run.activity.trim()));
+    }
+    s.push_str(&format!(
+        "tools: {} done · {} failed · {} tok\n",
+        run.tools_done, run.tools_failed, run.tokens
+    ));
+    if !run.trace.is_empty() {
+        s.push_str("\n── tool trace ──\n");
+        for line in &run.trace {
+            s.push_str(line);
+            s.push('\n');
+        }
+    }
+    s
 }
 
 fn rect_contains(r: ratatui::layout::Rect, col: u16, row: u16) -> bool {
