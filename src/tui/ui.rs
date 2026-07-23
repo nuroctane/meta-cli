@@ -2923,7 +2923,7 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.sidegraph_scroll_x > 0 {
         format!(" panned +{} · Ctrl+wheel zoom ", app.sidegraph_scroll_x)
     } else {
-        " drag to pan · Ctrl+wheel zoom · dbl-click box to peek ".to_string()
+        " drag to pan · Ctrl+wheel zoom · rgt-click box to peek ".to_string()
     };
     let footer = clip_to(&hint, area.width as usize);
 
