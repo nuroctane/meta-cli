@@ -264,16 +264,30 @@ impl Tool for AgentStub {
         "Spawn a subagent for a focused subtask. \
          subagent_type: explore (read-only research) | general (same tools as parent). \
          Returns a text report. \
-         **Issue several agent calls in one response to fan them out — they run \
+         **Issue several agent calls in one response to fan them out - they run \
          concurrently** (up to 4 at a time), so independent investigations cost \
          roughly one investigation's wall time. Split work that does not share \
          state: one subagent per subsystem, per hypothesis, or per file cluster. \
-         Optionally set `provider` (and `model`) to run a subagent on a DIFFERENT \
-         provider than the parent — e.g. provider:\"anthropic\", provider:\"openai\", \
-         provider:\"xai\" / \"grok\", provider:\"gemini\" / \"google\", provider:\"deepseek\". \
-         Natural-language names resolve to the right provider; the subagent uses \
-         that provider's stored credentials. Omit both to inherit the parent's. \
-         Watch them live in the TUI with /swarm."
+         \n\nCROSS-PROVIDER DEPLOYMENT: set `provider` to run this subagent on a \
+         DIFFERENT model provider than yours - this is how you 'deploy a subagent \
+         on gemini', 'use grok', 'spawn a claude subagent', etc. When the user's \
+         request names a provider or model, you MUST pass it in `provider` (and \
+         optionally `model`); do not just describe it. `provider` accepts a catalog \
+         id, a display name, or a natural-language alias: \
+         provider:\"anthropic\" / \"claude\" / \"sonnet\" / \"opus\", \
+         provider:\"openai\" / \"gpt\" / \"chatgpt\", \
+         provider:\"xai\" / \"grok\", \
+         provider:\"google\" / \"gemini\" / \"flash\" / \"pro\", \
+         provider:\"antigravity\" (Google via agy CLI - its OWN provider, not google), \
+         provider:\"deepseek\", \"mistral\", \"kimi\", \"moonshot\", \"qwen\", \"groq\", \
+         \"openrouter\", \"ollama\" (local). `model` is optional - omit it and the \
+         subagent uses that provider's default model (recommended unless you know \
+         a valid model id for that provider). The subagent uses that \
+         provider's stored credentials. If you are NOT signed in to the requested \
+         provider, the run continues on the parent provider and the TUI pops a \
+         /login prompt pre-selected to that provider so the user can authenticate - \
+         tell the user to complete /login (or run /login <provider>) then retry. \
+         Omit `provider` and `model` to inherit yours. Watch runs live with /swarm."
     }
 
     fn parameters_schema(&self) -> Value {
@@ -289,11 +303,11 @@ impl Tool for AgentStub {
                 },
                 "provider": {
                     "type": "string",
-                    "description": "Optional: run this subagent on a different provider (e.g. anthropic, openai, xai/grok, google/gemini, deepseek, mistral). Natural-language names are accepted. Must be signed in to that provider."
+                    "description": "Optional: deploy this subagent on a DIFFERENT provider than yours. Pass this whenever the request names a provider/model. Accepts a catalog id, display name, or natural-language alias: anthropic/claude/sonnet/opus, openai/gpt/chatgpt, xai/grok, google/gemini/flash/pro, antigravity (distinct from google), deepseek, mistral, kimi, moonshot, qwen, groq, openrouter, ollama. Uses that provider's stored credentials; if missing, the TUI pops /login pre-selected to it. Omit to inherit the parent provider."
                 },
                 "model": {
                     "type": "string",
-                    "description": "Optional: exact model id for the chosen provider. Defaults to that provider's default model."
+                    "description": "Optional: exact model id for the chosen provider. Omit to use that provider's default model (recommended). If you supply a model id it is used as-is, so only pass one you know is valid for that provider."
                 }
             },
             "required": ["prompt"]

@@ -2425,8 +2425,7 @@ foreach ($t in $targets) {
         })
     }
 
-    fn load_code_assist(access_token: &str) -> Result<(String, String)> {
-        let body = serde_json::json!({
+    fn load_code_assist(access_token: &str) -> Result<(String, String)> {        let body = serde_json::json!({
             "metadata": {
                 "ideType": "IDE_UNSPECIFIED",
                 "platform": "PLATFORM_UNSPECIFIED",
@@ -2475,7 +2474,18 @@ foreach ($t in $targets) {
         Ok((project_id, tier_id))
     }
 
-    /// Returns the project the server confirms — it may differ from the one we
+    /// Public: resolve the Cloud Code project id for an access token via
+    /// `loadCodeAssist`. Used by the API layer when a Gemini Cloud Code request
+    /// has no stored `project_id` on its OAuth session (the body requires one).
+    pub fn resolve_project_id(access_token: &str) -> Result<String> {
+        let (project_id, _tier) = load_code_assist(access_token)?;
+        if project_id.is_empty() {
+            return Err(MuseError::Other(
+                "loadCodeAssist returned no cloudaicompanionProject".into(),
+            ));
+        }
+        Ok(project_id)
+    }
     /// asked for, and that is the id later calls must use.
     fn complete_onboarding(
         access_token: &str,
@@ -2546,9 +2556,23 @@ foreach ($t in $targets) {
             return super::google::fetch_access_token();
         }
 
-        // Standard Google refresh
+        // Standard Google refresh via a configured OAuth app.
         let (cid, csecret) = (client_id(), client_secret());
         if cid.is_empty() || csecret.is_empty() {
+            // CLI-import users (agy / Gemini CLI) have no nur-side Google OAuth
+            // app configured, so the direct refresh_token grant is unavailable.
+            // The vendor CLI, however, keeps its own auto-refreshing session and
+            // rewrites a fresh access token into Windows Credential Manager /
+            // its creds file. Re-import that instead of dead-ending on
+            // OAUTH_APP_UNSET - this is what makes `antigravity` work for
+            // CLI-only users (no NUR_GOOGLE_CLIENT_ID required).
+            if let Ok(Some(fresh)) = import_existing() {
+                if !fresh.access_token.trim().is_empty()
+                    && !crate::auth::oauth_expired(fresh.expires_at)
+                {
+                    return Ok(fresh);
+                }
+            }
             return Err(MuseError::Other(OAUTH_APP_UNSET.into()));
         }
         let form = [

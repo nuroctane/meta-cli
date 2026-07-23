@@ -3,6 +3,7 @@ pub mod chat;
 pub mod client;
 pub mod failover;
 pub mod fusion;
+pub mod gemini;
 pub mod local;
 pub mod models;
 pub mod sse;

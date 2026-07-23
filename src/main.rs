@@ -954,6 +954,18 @@ async fn run_headless(
                     theme::print_info(&format!("todos\n{text}"));
                 }
             }
+            AgentEvent::LoginRequired {
+                provider_id,
+                provider_name,
+                ..
+            } => {
+                // Headless: no modal to pop, so print an actionable line telling
+                // the user how to authenticate that provider, then continue on
+                // the parent provider.
+                theme::print_info(&format!(
+                    "not signed in to {provider_name} - run `nur` then `/login {provider_id}` (or export its API key) to deploy subagents there"
+                ));
+            }
             AgentEvent::PlanSubmitted(text) => {
                 if verbose {
                     theme::print_info(&format!("plan\n{text}"));

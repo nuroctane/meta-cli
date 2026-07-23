@@ -304,6 +304,20 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
                 if let Ok(fresh) = crate::oauth::refresh_tokens(exp, &probe, refresh) {
                     let tok = fresh.access_token.trim().to_string();
                     if !tok.is_empty() && !oauth_expired(fresh.expires_at) {
+                        // Persist the refreshed token back to the per-provider
+                        // session store. Without this, the token we return no
+                        // longer matches the stored session, so
+                        // `oauth_request_context` refuses to attach
+                        // `x-goog-user-project` and the generativelanguage host
+                        // answers 401 UNAUTHENTICATED. Re-saving keeps the
+                        // token <-> project_id link intact for google-family.
+                        let _ = save_provider_oauth(
+                            exp,
+                            &tok,
+                            fresh.refresh_token.clone().or_else(|| Some(refresh.to_string())),
+                            fresh.expires_at,
+                            fresh.meta.clone(),
+                        );
                         return Ok(tok);
                     }
                     refreshed_ok = true;

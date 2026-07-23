@@ -138,12 +138,37 @@ impl ApiClient {
     pub fn with_style(mut self, style: ApiStyle) -> Self {
         // Grok Build session tokens target xAI's Responses-based CLI proxy;
         // API-key xAI requests retain the catalog's Chat Completions style.
-        self.style = if self.provider_id == "xai" && self.oauth.is_some() {
-            ApiStyle::Responses
-        } else {
-            style
-        };
+        if self.provider_id == "xai" && self.oauth.is_some() {
+            self.style = ApiStyle::Responses;
+            return self;
+        }
+        // Antigravity / google-family OAuth (`ya29.`) tokens are Google access
+        // tokens, not Gemini API keys: the generativelanguage OpenAI-compat host
+        // rejects them 401, so route those sessions through the native Cloud Code
+        // Gemini protocol instead. A bare Gemini API key on `google` keeps the
+        // catalog's Chat Completions style + generativelanguage host untouched.
+        if self.wants_gemini_cloud_code() {
+            self.style = ApiStyle::GeminiCloudCode;
+            self.base_url = crate::providers::ANTIGRAVITY_CLOUD_CODE_BASE_URL
+                .trim_end_matches('/')
+                .to_string();
+            return self;
+        }
+        self.style = style;
         self
+    }
+
+    /// Should this client speak the Cloud Code Gemini protocol?
+    ///
+    /// True for `antigravity` (its catalog style is already `GeminiCloudCode`),
+    /// and for any google-family provider carrying an OAuth session (the
+    /// credential is a Google access token, not an API key). Google with a bare
+    /// API key stays on the OpenAI-compat generativelanguage endpoint.
+    fn wants_gemini_cloud_code(&self) -> bool {
+        if !crate::providers::is_google_family(&self.provider_id) {
+            return false;
+        }
+        self.provider_id == "antigravity" || self.oauth.is_some()
     }
 
     /// Switch this client to the OpenAI Chat Completions shape.
@@ -284,7 +309,9 @@ impl ApiClient {
                 }
                 req
             }
-            ApiStyle::Responses | ApiStyle::ChatCompletions => req.bearer_auth(&api_key),
+            ApiStyle::Responses | ApiStyle::ChatCompletions | ApiStyle::GeminiCloudCode => {
+                req.bearer_auth(&api_key)
+            }
         };
         if self.provider_id == "openai" {
             if let Some(oauth) = &self.oauth {
@@ -358,6 +385,7 @@ impl ApiClient {
         match self.style {
             ApiStyle::ChatCompletions => return self.create_chat(req).await,
             ApiStyle::AnthropicMessages => return self.create_anthropic(req).await,
+            ApiStyle::GeminiCloudCode => return self.create_gemini_cloudcode(req).await,
             ApiStyle::Responses => {}
         }
         // ChatGPT/Codex OAuth backend often ignores stream:false and returns SSE.
@@ -446,6 +474,11 @@ impl ApiClient {
             }
             ApiStyle::AnthropicMessages => {
                 return self.create_anthropic_stream(req, on_event, cancel).await
+            }
+            ApiStyle::GeminiCloudCode => {
+                return self
+                    .create_gemini_cloudcode_stream(req, on_event, cancel)
+                    .await
             }
             ApiStyle::Responses => {}
         }
@@ -1167,6 +1200,197 @@ impl ApiClient {
         on_event(StreamEvent::Completed(resp.clone()));
         Ok(resp)
     }
+
+    /// Resolve the Cloud Code project id: the OAuth session's stored id, else a
+    /// live `loadCodeAssist` lookup for the active access token.
+    fn gemini_project_id(&self) -> Result<String> {
+        if let Some(project_id) = self
+            .oauth
+            .as_ref()
+            .and_then(|context| context.project_id.clone())
+            .filter(|p| !p.trim().is_empty())
+        {
+            return Ok(project_id);
+        }
+        // No stored project id (imported session, or stale meta): ask the server.
+        let token = self.api_key_for_request();
+        let token_for_lookup = token.clone();
+        let resolved = oauth_blocking(move || {
+            crate::oauth::antigravity_resolve_project_id(&token_for_lookup)
+        });
+        resolved.map_err(|e| {
+            MuseError::Other(format!(
+                "Cloud Code needs a project id and loadCodeAssist failed: {e}"
+            ))
+        })
+    }
+
+    /// Non-streaming Gemini Cloud Code call (`v1internal:generateContent`).
+    async fn create_gemini_cloudcode(&self, req: &ResponseRequest) -> Result<ApiResponse> {
+        let project = self.gemini_project_id()?;
+        let model = crate::providers::normalize_antigravity_model_id(&req.model);
+        let body = super::gemini::build_body(req, &project, &model);
+        let url = format!(
+            "{}/v1internal:generateContent",
+            self.base_url.trim_end_matches('/')
+        );
+        let mut attempt = 0u32;
+        let mut oauth_refreshed = false;
+        loop {
+            attempt += 1;
+            let res = self
+                .auth_headers(
+                    self.http
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .json(&body),
+                )
+                .send()
+                .await;
+            let res = match res {
+                Ok(r) => r,
+                Err(e) if attempt < 4 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(300 * attempt as u64)).await;
+                    let _ = e;
+                    continue;
+                }
+                Err(e) => return Err(MuseError::Other(format!("request failed: {e}"))),
+            };
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            if !status.is_success() {
+                if status.as_u16() == 401 && !oauth_refreshed && self.refresh_after_unauthorized() {
+                    oauth_refreshed = true;
+                    continue;
+                }
+                let message = parse_error_message(&text).unwrap_or(text);
+                if is_retryable_error(status.as_u16(), &message, false) && attempt < 4 {
+                    let backoff =
+                        std::time::Duration::from_millis(300 * (1 << (attempt - 1)) + rand_jitter());
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                return Err(MuseError::Api {
+                    status: status.as_u16(),
+                    message,
+                });
+            }
+            return super::gemini::parse_completion(&text);
+        }
+    }
+
+    /// Streaming Gemini Cloud Code call (`v1internal:streamGenerateContent?alt=sse`).
+    async fn create_gemini_cloudcode_stream(
+        &self,
+        req: &ResponseRequest,
+        mut on_event: impl FnMut(StreamEvent),
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<ApiResponse> {
+        let project = self.gemini_project_id()?;
+        let model = crate::providers::normalize_antigravity_model_id(&req.model);
+        let body = super::gemini::build_body(req, &project, &model);
+        let url = format!(
+            "{}/v1internal:streamGenerateContent?alt=sse",
+            self.base_url.trim_end_matches('/')
+        );
+        let mut attempt = 0u32;
+        let mut oauth_refreshed = false;
+
+        loop {
+            attempt += 1;
+            let res = match self
+                .auth_headers(
+                    self.http
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", "text/event-stream")
+                        .json(&body),
+                )
+                .send()
+                .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    if attempt < 3 {
+                        tokio::time::sleep(std::time::Duration::from_millis(400 * attempt as u64))
+                            .await;
+                        continue;
+                    }
+                    return Err(MuseError::Other(format!(
+                        "Cloud Code stream connect failed after {attempt}: {e}"
+                    )));
+                }
+            };
+
+            let status = res.status();
+            if !status.is_success() {
+                if status.as_u16() == 401 && !oauth_refreshed && self.refresh_after_unauthorized() {
+                    oauth_refreshed = true;
+                    continue;
+                }
+                let body_text = res.text().await.unwrap_or_default();
+                let msg = parse_error_message(&body_text).unwrap_or(body_text);
+                if is_retryable_error(status.as_u16(), &msg, false) && attempt < 3 {
+                    let backoff = std::time::Duration::from_millis(500 * (1 << (attempt - 1)));
+                    tokio::time::sleep(backoff).await;
+                    continue;
+                }
+                return Err(MuseError::Api {
+                    status: status.as_u16(),
+                    message: msg,
+                });
+            }
+
+            let mut stream = res.bytes_stream();
+            let mut parser = super::sse::SseParser::new();
+            let mut acc = super::gemini::GeminiAccumulator::new();
+
+            loop {
+                let chunk = tokio::select! {
+                    _ = cancel.cancelled() => return Err(MuseError::Interrupted),
+                    c = stream.next() => c,
+                };
+                let Some(chunk) = chunk else {
+                    if let Some(data) = parser.finish() {
+                        drain_gemini_frame(&data, &mut acc, &mut on_event);
+                    }
+                    break;
+                };
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => return Err(MuseError::Other(format!("stream chunk error: {e}"))),
+                };
+                for data in parser.push(&chunk) {
+                    drain_gemini_frame(&data, &mut acc, &mut on_event);
+                }
+            }
+
+            let value = acc.into_response_value();
+            let resp: ApiResponse = serde_json::from_value(value).map_err(|e| {
+                MuseError::Other(format!("Cloud Code stream map failed: {e}"))
+            })?;
+            on_event(StreamEvent::Completed(resp.clone()));
+            return Ok(resp);
+        }
+    }
+}
+
+/// Parse one Cloud Code SSE `data:` payload and fold it into the accumulator,
+/// emitting any text delta live.
+fn drain_gemini_frame(
+    data: &str,
+    acc: &mut super::gemini::GeminiAccumulator,
+    on_event: &mut impl FnMut(StreamEvent),
+) {
+    let trimmed = data.trim();
+    if trimmed.is_empty() || trimmed == "[DONE]" {
+        return;
+    }
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(delta) = acc.push_frame(&v) {
+            on_event(StreamEvent::TextDelta(delta));
+        }
+    }
 }
 
 fn handle_sse_json(
@@ -1769,6 +1993,42 @@ data: {"type":"response.completed","response":{"id":"resp_tools","status":"compl
             key_client.with_style(ApiStyle::ChatCompletions).style,
             ApiStyle::ChatCompletions
         );
+    }
+
+    #[test]
+    fn google_oauth_routes_to_cloud_code_while_api_key_keeps_chat_completions() {
+        // A google-family session carrying an OAuth token is a Google access
+        // token, not a Gemini API key: it must speak the Cloud Code protocol on
+        // the cloudcode-pa host. A bare API key stays on generativelanguage CC.
+        let mut oauth_client =
+            ApiClient::new("https://generativelanguage.googleapis.com/v1beta/openai", "ya29.tok")
+                .unwrap();
+        oauth_client.provider_id = "google".to_string();
+        oauth_client.oauth = Some(crate::auth::OAuthRequestContext::default());
+        let routed = oauth_client.with_style(ApiStyle::ChatCompletions);
+        assert_eq!(routed.style, ApiStyle::GeminiCloudCode);
+        assert_eq!(routed.base_url, "https://cloudcode-pa.googleapis.com");
+
+        let mut key_client =
+            ApiClient::new("https://generativelanguage.googleapis.com/v1beta/openai", "AIza-key")
+                .unwrap();
+        key_client.provider_id = "google".to_string();
+        let kept = key_client.with_style(ApiStyle::ChatCompletions);
+        assert_eq!(kept.style, ApiStyle::ChatCompletions);
+        assert!(kept.base_url.contains("generativelanguage"));
+    }
+
+    #[test]
+    fn antigravity_always_speaks_cloud_code_even_without_stored_oauth() {
+        let mut client = ApiClient::new(
+            crate::providers::ANTIGRAVITY_CLOUD_CODE_BASE_URL,
+            "ya29.tok",
+        )
+        .unwrap();
+        client.provider_id = "antigravity".to_string();
+        let routed = client.with_style(ApiStyle::GeminiCloudCode);
+        assert_eq!(routed.style, ApiStyle::GeminiCloudCode);
+        assert_eq!(routed.base_url, "https://cloudcode-pa.googleapis.com");
     }
 
     #[test]

@@ -41,6 +41,19 @@ pub enum AgentEvent {
     },
     /// Todo list changed — TUI should refresh.
     TodosChanged(String),
+    /// A subagent was requested on a provider with no stored credentials. The
+    /// TUI turns this into a pre-selected `/login` prompt so the user can
+    /// authenticate and activate that provider. The parent run continues on the
+    /// parent provider in the meantime.
+    LoginRequired {
+        provider_id: String,
+        provider_name: String,
+        /// The original subagent request that was blocked, so the TUI can
+        /// faithfully re-deploy it verbatim once the user completes login
+        /// (rather than relying on the model to reconstruct it from context).
+        retry_prompt: Option<String>,
+        retry_desc: Option<String>,
+    },
     /// Plan written via submit_plan.
     PlanSubmitted(String),
     ApprovalRequest {
@@ -1158,6 +1171,8 @@ impl AgentRunner {
                     &config,
                     provider_override.as_deref(),
                     model_override.as_deref(),
+                    Some(prompt.as_str()),
+                    Some(desc.as_str()),
                     &tx_child,
                 );
                 subagent::run_subagent(
@@ -1637,6 +1652,35 @@ mod tests {
         assert_eq!(resolve_provider_alias("deepseek").map(|p| p.id), Some("deepseek"));
         // Direct id passes through.
         assert_eq!(resolve_provider_alias("anthropic").map(|p| p.id), Some("anthropic"));
+        // Antigravity is its OWN provider — must NOT collapse to google.
+        assert_eq!(
+            resolve_provider_alias("antigravity").map(|p| p.id),
+            Some("antigravity")
+        );
+        assert_eq!(
+            resolve_provider_alias("google antigravity").map(|p| p.id),
+            Some("antigravity")
+        );
+        // Filler words are stripped, so full NL phrases still resolve.
+        assert_eq!(
+            resolve_provider_alias("antigravity subagent").map(|p| p.id),
+            Some("antigravity")
+        );
+        assert_eq!(resolve_provider_alias("use grok").map(|p| p.id), Some("xai"));
+        assert_eq!(
+            resolve_provider_alias("the gemini provider").map(|p| p.id),
+            Some("google")
+        );
+        // Model-family nicknames route to the serving provider.
+        assert_eq!(resolve_provider_alias("sonnet").map(|p| p.id), Some("anthropic"));
+        assert_eq!(resolve_provider_alias("opus").map(|p| p.id), Some("anthropic"));
+        assert_eq!(resolve_provider_alias("flash").map(|p| p.id), Some("google"));
+        assert_eq!(resolve_provider_alias("gpt").map(|p| p.id), Some("openai"));
+        // Distinct kimi vs moonshot catalog ids.
+        assert_eq!(resolve_provider_alias("kimi").map(|p| p.id), Some("kimi"));
+        assert_eq!(resolve_provider_alias("moonshot").map(|p| p.id), Some("moonshot"));
+        // "meta" must not over-match every display name via naive substring.
+        assert_eq!(resolve_provider_alias("meta").map(|p| p.id), Some("meta"));
         // Unknown name → None (caller falls back to parent).
         assert!(resolve_provider_alias("nonesuch-xyz").is_none());
     }
@@ -2429,6 +2473,8 @@ async fn run_agent_tool(
         &runner.config,
         provider_override.as_deref(),
         model_override.as_deref(),
+        Some(prompt.as_str()),
+        Some(desc.as_str()),
         tx,
     );
     subagent::run_subagent(
@@ -2454,6 +2500,8 @@ fn resolve_subagent_target(
     parent_config: &Config,
     provider: Option<&str>,
     model: Option<&str>,
+    retry_prompt: Option<&str>,
+    retry_desc: Option<&str>,
     tx: &mpsc::UnboundedSender<AgentEvent>,
 ) -> (ApiClient, Config) {
     let Some(requested) = provider else {
@@ -2489,9 +2537,58 @@ fn resolve_subagent_target(
                 .unwrap_or_default()
         }
     };
+    let mut key = key;
     if key.trim().is_empty() && !prov.key_optional {
+        // No stored credential yet. Before popping a /login modal, try to
+        // auto-import the vendor CLI (t3code driver) session for this provider,
+        // persist it into the per-provider OAuth store, and re-resolve. If that
+        // works the subagent "just works" with no user input.
+        if let Some(driver) = driver_for_provider(prov.id) {
+            if crate::t3code::probe_driver(driver).has_credentials {
+                match crate::oauth::import_existing_session(prov.id) {
+                    Ok(Some(tokens)) if !tokens.access_token.trim().is_empty() => {
+                        // Persist so load_provider_oauth_token can re-resolve it.
+                        let _ = crate::auth::save_provider_oauth(
+                            prov.id,
+                            &tokens.access_token,
+                            tokens.refresh_token.clone(),
+                            tokens.expires_at,
+                            tokens.meta.clone(),
+                        );
+                        // Re-resolve the credential now that a session exists.
+                        let reresolved = match crate::auth::resolve_api_key_for(Some(prov.id)) {
+                            Ok(k) if !k.trim().is_empty() => k,
+                            _ => crate::auth::load_provider_key(prov.id)
+                                .or_else(|| crate::auth::load_provider_oauth_token(prov.id))
+                                .unwrap_or_else(|| tokens.access_token.trim().to_string()),
+                        };
+                        if !reresolved.trim().is_empty() {
+                            let _ = tx.send(AgentEvent::Status(format!(
+                                "subagent · imported {} session from vendor CLI ({})",
+                                prov.name,
+                                driver.as_str()
+                            )));
+                            key = reresolved;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    if key.trim().is_empty() && !prov.key_optional {
+        // No stored credential and no importable vendor CLI session. Surface a
+        // typed signal the TUI turns into a pre-selected `/login` modal, and
+        // continue on the parent so the run doesn't silently die. The status
+        // line is also actionable in case the modal can't open (e.g. headless).
+        let _ = tx.send(AgentEvent::LoginRequired {
+            provider_id: prov.id.to_string(),
+            provider_name: prov.name.to_string(),
+            retry_prompt: retry_prompt.map(str::to_string),
+            retry_desc: retry_desc.map(str::to_string),
+        });
         let _ = tx.send(AgentEvent::Status(format!(
-            "subagent · not signed in to {} — using parent provider (run /login {} first)",
+            "subagent · not signed in to {} - opening /login {} (using parent provider until you authenticate)",
             prov.name, prov.id
         )));
         return (parent_client.clone(), parent_config.clone());
@@ -2520,37 +2617,31 @@ fn resolve_subagent_target(
     (client, cfg)
 }
 
-/// Map a natural-language provider name to a catalog provider. Accepts ids,
-/// display names, and common aliases ("grok" → xai, "gemini" → google,
-/// "claude" → anthropic, "gpt"/"chatgpt" → openai, …).
+/// Map a natural-language provider name to a catalog provider. Thin wrapper over
+/// [`crate::providers::resolve_provider_alias`] - the single source of truth
+/// shared with `/login <provider>` in the TUI - so cross-provider subagent
+/// deployment and the login modal accept the exact same aliases.
 fn resolve_provider_alias(raw: &str) -> Option<&'static crate::providers::Provider> {
-    let q = raw.trim().to_ascii_lowercase();
-    // Direct id hit first.
-    if let Some(p) = crate::providers::by_id(&q) {
-        return Some(p);
+    crate::providers::resolve_provider_alias(raw)
+}
+
+/// Map a nur provider id to the vendor CLI (t3code) driver that can supply its
+/// credentials via `import_existing_session`. Used to auto-import a logged-in
+/// vendor CLI session before falling back to a `/login` prompt so cross-provider
+/// subagents "just work" when the user is already signed in to the vendor CLI.
+/// Returns `None` for providers with no direct vendor CLI (e.g. cursor has no
+/// nur provider of its own).
+fn driver_for_provider(provider_id: &str) -> Option<crate::t3code::DriverId> {
+    use crate::t3code::DriverId;
+    match provider_id {
+        "anthropic" => Some(DriverId::Claude),
+        "openai" => Some(DriverId::Codex),
+        "xai" => Some(DriverId::Grok),
+        "antigravity" => Some(DriverId::Antigravity),
+        "google" => Some(DriverId::Gemini),
+        "opencode" => Some(DriverId::OpenCode),
+        _ => None,
     }
-    // Common natural-language aliases → canonical id.
-    let id = match q.as_str() {
-        "grok" | "x" | "x.ai" | "xai" => "xai",
-        "gemini" | "google" | "google-oauth" | "antigravity" | "bard" => "google",
-        "claude" | "anthropic" => "anthropic",
-        "gpt" | "chatgpt" | "openai" | "oai" => "openai",
-        "deepseek" | "ds" => "deepseek",
-        "mistral" | "le chat" | "lechat" => "mistral",
-        "kimi" | "moonshot" => "kimi",
-        "llama" | "meta" | "muse" | "spark" => "meta",
-        "opencode" | "zen" => "opencode",
-        _ => "",
-    };
-    if !id.is_empty() {
-        if let Some(p) = crate::providers::by_id(id) {
-            return Some(p);
-        }
-    }
-    // Fuzzy: match against display names ("Anthropic", "OpenAI", …).
-    crate::providers::PROVIDERS
-        .iter()
-        .find(|p| p.name.to_ascii_lowercase() == q || p.name.to_ascii_lowercase().contains(&q))
 }
 
 pub async fn compact_session(

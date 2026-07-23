@@ -20,6 +20,11 @@ pub enum ApiStyle {
     /// Anthropic Messages API (`POST /v1/messages`) - **not** OpenAI-compatible.
     /// Used by Anthropic and compatible providers such as MiniMax.
     AnthropicMessages,
+    /// Google Cloud Code assist native Gemini protocol
+    /// (`POST v1internal:streamGenerateContent`). Used by Antigravity / gcloud
+    /// OAuth (`ya29.`) sessions: those tokens are rejected 401 by the
+    /// generativelanguage OpenAI-compat host but accepted 200 by cloudcode-pa.
+    GeminiCloudCode,
 }
 
 /// A selectable provider.
@@ -44,7 +49,26 @@ pub struct Provider {
     pub browser_auth: bool,
 }
 
-use ApiStyle::{AnthropicMessages as AM, ChatCompletions as CC, Responses as R};
+use ApiStyle::{
+    AnthropicMessages as AM, ChatCompletions as CC, GeminiCloudCode as GCC, Responses as R,
+};
+
+/// Google Cloud Code assist host that accepts Antigravity/gcloud OAuth tokens.
+///
+/// The `ya29.` access token minted by the agy CLI is a Google access token, not
+/// a Gemini API key. It returns 401 UNAUTHENTICATED against the
+/// generativelanguage OpenAI-compat endpoint even with `x-goog-user-project`,
+/// but 200 against this host over the native Gemini protocol
+/// (`v1internal:streamGenerateContent`).
+pub const ANTIGRAVITY_CLOUD_CODE_BASE_URL: &str = "https://cloudcode-pa.googleapis.com";
+
+/// The three catalog ids that share Google's OAuth login and Cloud Code backend.
+pub const GOOGLE_FAMILY_IDS: &[&str] = &["google", "antigravity", "google-oauth"];
+
+/// Is this a Google-family provider id (google / antigravity / google-oauth)?
+pub fn is_google_family(provider_id: &str) -> bool {
+    GOOGLE_FAMILY_IDS.contains(&provider_id)
+}
 
 /// OpenAI's ChatGPT/Codex backend used by ChatGPT OAuth sessions.
 pub const OPENAI_OAUTH_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
@@ -149,6 +173,40 @@ pub fn normalize_google_model_id(model: &str) -> String {
     ];
     if RETIRED.contains(&m) {
         return GOOGLE_DEFAULT_MODEL.to_string();
+    }
+    m.to_string()
+}
+
+/// Default model for the Antigravity Cloud Code backend.
+///
+/// The catalog's Google default (`gemini-3.1-pro-preview`) is a
+/// generativelanguage id that Cloud Code does not serve; `gemini-2.5-flash` is
+/// the id proven working (HTTP 200) against `v1internal:streamGenerateContent`
+/// with an agy OAuth token.
+pub const ANTIGRAVITY_DEFAULT_MODEL: &str = "gemini-2.5-flash";
+
+/// Rewrite a model id onto one the Cloud Code (`cloudcode-pa`) backend serves.
+///
+/// The `-preview` first-party suffixes and the retired ids handled by
+/// [`normalize_google_model_id`] are not accepted here. agy advertises
+/// `gemini-3.6-flash-*`, `gemini-2.5-flash`, and friends; anything empty or a
+/// known generativelanguage-only id falls back to [`ANTIGRAVITY_DEFAULT_MODEL`].
+pub fn normalize_antigravity_model_id(model: &str) -> String {
+    let m = model.trim();
+    if m.is_empty() {
+        return ANTIGRAVITY_DEFAULT_MODEL.to_string();
+    }
+    // generativelanguage-only ids Cloud Code rejects → map to a known-good id.
+    const NOT_ON_CLOUD_CODE: &[&str] = &[
+        "gemini-3.1-pro-preview",
+        "gemini-3-pro-preview",
+        "gemini-3-pro",
+        "gemini-2.5-pro-preview-03-25",
+        "gemini-2.5-pro-preview-05-06",
+        "gemini-2.5-pro-preview-06-05",
+    ];
+    if NOT_ON_CLOUD_CODE.contains(&m) {
+        return ANTIGRAVITY_DEFAULT_MODEL.to_string();
     }
     m.to_string()
 }
@@ -398,11 +456,14 @@ pub const PROVIDERS: &[Provider] = &[
     Provider {
         id: "antigravity",
         name: "Antigravity",
-        base_url: "https://generativelanguage.googleapis.com/v1beta/openai",
-        default_model: GOOGLE_DEFAULT_MODEL,
+        // agy's `ya29.` OAuth token is a Google access token, not a Gemini API
+        // key: the generativelanguage OpenAI-compat host answers 401 for it, so
+        // route it to Cloud Code's native Gemini protocol which accepts it.
+        base_url: ANTIGRAVITY_CLOUD_CODE_BASE_URL,
+        default_model: ANTIGRAVITY_DEFAULT_MODEL,
         env_key: "GEMINI_API_KEY",
-        style: CC,
-        note: "Gemini via agy CLI · OAuth + project ID · uses same endpoint as google",
+        style: GCC,
+        note: "Gemini via agy CLI · OAuth + project ID · Cloud Code endpoint",
         key_optional: false,
         browser_auth: true,
     },
@@ -1075,6 +1136,164 @@ pub const PROVIDERS: &[Provider] = &[
 /// Look up a provider by id.
 pub fn by_id(id: &str) -> Option<&'static Provider> {
     PROVIDERS.iter().find(|p| p.id == id)
+}
+
+/// Map a natural-language provider name to a catalog provider. Accepts catalog
+/// ids, display names, and a broad table of common aliases and model-family
+/// nicknames, so phrases like "deploy a subagent on gemini", "use grok",
+/// "spawn a claude subagent", "google antigravity", or "antigravity subagent"
+/// all resolve to the right provider.
+///
+/// This is the single source of truth used both by the subagent target
+/// resolver (cross-provider deployment via the `agent` tool) and by
+/// `/login <provider>` in the TUI. Resolution order, most specific first:
+///   1. exact catalog id ("openai", "xai", "antigravity", …)
+///   2. curated alias / model-family table
+///   3. exact display-name match ("Anthropic", "OpenAI", …)
+///   4. token-aware fuzzy match against display names (whole-word equality)
+pub fn resolve_provider_alias(raw: &str) -> Option<&'static Provider> {
+    let mut q = raw.trim().to_ascii_lowercase();
+    // Strip filler words a model (or user) might tack on ("the gemini provider",
+    // "antigravity subagent", "run on grok") so the core token survives.
+    for junk in [
+        " provider",
+        " subagent",
+        " agent",
+        " model",
+        " api",
+        "provider ",
+        "run on ",
+        "use ",
+        "on ",
+        "the ",
+    ] {
+        q = q.replace(junk, " ");
+    }
+    let q = q.trim();
+
+    // 1. Try the whole (cleaned) string as a single token first — direct id,
+    //    alias table, then exact display name.
+    if let Some(p) = resolve_provider_token(q) {
+        return Some(p);
+    }
+
+    // 2. Multi-word query ("google antigravity", "grok 4 fast"): scan each token
+    //    and pick the FIRST that resolves. The alias table lists the most
+    //    specific token first for a given family, but tokens are scanned in
+    //    order, so a more specific qualifier that appears later still wins over
+    //    a generic leading word only when the leading word does NOT resolve.
+    //    To keep "google antigravity" → antigravity (the specific provider),
+    //    we prefer a token that maps to a NON-`google` provider when present.
+    let tokens: Vec<&str> = q
+        .split(|c: char| c.is_whitespace())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if tokens.len() > 1 {
+        // First pass: any token that resolves to something other than a bare
+        // gateway/aggregator generic — prefer the most specific hit.
+        let mut generic: Option<&'static Provider> = None;
+        for t in &tokens {
+            if let Some(p) = resolve_provider_token(t) {
+                // "antigravity" is more specific than the generic "google" it
+                // sits alongside; prefer a non-google resolution when mixed.
+                if p.id == "google" {
+                    generic.get_or_insert(p);
+                } else {
+                    return Some(p);
+                }
+            }
+        }
+        if let Some(p) = generic {
+            return Some(p);
+        }
+    }
+
+    // 3. Token-aware fuzzy match: a whole word of a display name equals the
+    //    query (avoids "meta" over-matching every name via naive substring).
+    if !q.is_empty() {
+        if let Some(p) = PROVIDERS.iter().find(|p| {
+            p.name
+                .to_ascii_lowercase()
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|word| !word.is_empty() && word == q)
+        }) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// Resolve a SINGLE cleaned token to a catalog provider: exact id → curated
+/// alias / model-family table → exact display-name match. Returns `None` if the
+/// token names nothing recognizable.
+fn resolve_provider_token(q: &str) -> Option<&'static Provider> {
+    if q.is_empty() {
+        return None;
+    }
+    // Exact catalog id (e.g. "antigravity", "google", "openai-cc").
+    if let Some(p) = by_id(q) {
+        return Some(p);
+    }
+    // Curated alias + model-family table → canonical catalog id. Model
+    // nicknames (flash/pro/sonnet/opus/o-series/…) map to the provider that
+    // serves them; the subagent then falls back to that provider's default
+    // model when the exact model string doesn't exist.
+    let id = match q {
+        // xAI Grok
+        "grok" | "x" | "x.ai" | "xai" | "grok-4" | "grok4" | "grok-4.5" | "grok-code"
+        | "grok-fast" => "xai",
+        // Google Gemini (first-party API / gcloud SSO)
+        "gemini" | "google" | "google-gemini" | "google-oauth" | "bard" | "flash" | "pro"
+        | "gemini-flash" | "gemini-pro" | "gemini-3" | "gemini-3.1" | "gemini3" => "google",
+        // Antigravity is its OWN provider (agy CLI OAuth + project id). Keep it
+        // distinct from `google` so its stored credentials are used.
+        "antigravity" | "agy" | "gravity" => "antigravity",
+        // Anthropic Claude (model nicknames included)
+        "claude" | "anthropic" | "sonnet" | "opus" | "haiku" | "claude-sonnet"
+        | "claude-opus" | "claude-haiku" => "anthropic",
+        // OpenAI
+        "gpt" | "chatgpt" | "openai" | "oai" | "o1" | "o3" | "o4" | "gpt-5" | "gpt5"
+        | "gpt-4" | "gpt4" => "openai",
+        "openai-cc" | "gpt-cc" | "openai-chat" => "openai-cc",
+        // DeepSeek
+        "deepseek" | "ds" | "deep-seek" | "r1" | "deepseek-r1" | "deepseek-v3" => "deepseek",
+        // Mistral
+        "mistral" | "lechat" | "mixtral" | "codestral" => "mistral",
+        // Kimi / Moonshot (distinct catalog ids)
+        "kimi" | "kimi-code" | "k2" | "kimi-k2" => "kimi",
+        "moonshot" | "moonshot-ai" => "moonshot",
+        // Meta (default vendor)
+        "llama" | "meta" | "muse" | "spark" | "muse-spark" | "meta-ai" => "meta",
+        // Chinese labs
+        "qwen" | "dashscope" | "alibaba" | "tongyi" => "qwen",
+        "zhipu" | "z.ai" | "zai" | "glm" | "chatglm" => "zhipu",
+        "minimax" | "abab" => "minimax",
+        "stepfun" | "step" => "stepfun",
+        "baichuan" => "baichuan",
+        // Aggregators / routers
+        "openrouter" | "or" => "openrouter",
+        "opencode" | "zen" => "opencode",
+        "groq" => "groq",
+        "cerebras" => "cerebras",
+        "together" | "together-ai" | "togetherai" => "together",
+        "fireworks" | "fireworks-ai" => "fireworks",
+        "perplexity" | "pplx" => "perplexity",
+        "cohere" => "cohere",
+        // Local servers
+        "ollama" | "local" => "ollama",
+        "lmstudio" | "lm-studio" => "lmstudio",
+        "llamacpp" | "llama.cpp" | "llama-cpp" => "llamacpp",
+        "vllm" => "vllm",
+        "jan" => "jan",
+        _ => "",
+    };
+    if !id.is_empty() {
+        if let Some(p) = by_id(id) {
+            return Some(p);
+        }
+    }
+    // Exact display-name match ("Anthropic", "OpenAI", "Antigravity", …).
+    PROVIDERS.iter().find(|p| p.name.to_ascii_lowercase() == q)
 }
 
 /// The default provider (Meta).

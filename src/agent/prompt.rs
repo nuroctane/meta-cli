@@ -234,7 +234,7 @@ plur, ruflo, skill, memory, todo_write, submit_plan, agent
 - Skills activate on demand only: natural-language intent (e.g. "think like fable") or
   `/skill-name` slash. When a **SKILL ACTIVATED** block appears below, follow it for the turn.
 - UI polish -> design-eng. Site clone -> clone-website-meta. Security -> cybersecurity then one playbook.
-- agent: spawn explore (read-only) or general subagent for parallel research
+- agent: spawn explore (read-only) or general subagent for parallel research; set `provider` (claude/gpt/grok/gemini/antigravity/deepseek/…) to deploy a subagent on ANOTHER provider - pass it whenever the user names a provider or model
 - todo_write: maintain a live task list for multi-step work (always keep one in_progress)
 - submit_plan: formal plan artifact in plan mode
 - memory: local markdown journal ~/.nur/memory.md (never store secrets) — complementary to plur

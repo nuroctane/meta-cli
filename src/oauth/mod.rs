@@ -22,6 +22,13 @@ pub fn kimi_request_headers() -> Result<Vec<(&'static str, String)>> {
     flows::kimi::request_headers()
 }
 
+/// Resolve the Cloud Code (`cloudcode-pa`) project id for a Google/Antigravity
+/// OAuth access token via `loadCodeAssist`. Used by the API layer when a Gemini
+/// Cloud Code request has no stored `project_id` on its session.
+pub fn antigravity_resolve_project_id(access_token: &str) -> Result<String> {
+    flows::antigravity::resolve_project_id(access_token)
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -200,7 +200,16 @@ impl App {
                 let st = crate::ecosystem::ensure_ecosystem(false);
                 self.push_note(Tone::Skill, st.report());
             }
-            "/login" => self.open_login(),
+            "/login" => {
+                // `/login` opens the plain picker; `/login <provider>` pre-selects
+                // that provider (accepts the same NL aliases as the agent tool,
+                // e.g. `/login grok`, `/login gemini`, `/login antigravity`).
+                if arg.trim().is_empty() {
+                    self.open_login();
+                } else {
+                    self.open_login_for(arg.trim());
+                }
+            }
             "/logout" => self.cmd_logout(),
             "/goal" => self.cmd_goal(&arg),
             "/graph" => self.cmd_graph(),

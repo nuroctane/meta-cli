@@ -2920,8 +2920,14 @@ fn draw_sidegraph_panel(f: &mut Frame, app: &mut App, area: Rect) {
             " zoom: {} · Ctrl+wheel · drag to pan ",
             app.sidegraph_zoom_label()
         )
-    } else if app.sidegraph_scroll_x > 0 {
-        format!(" panned +{} · Ctrl+wheel zoom ", app.sidegraph_scroll_x)
+    } else if app.sidegraph_scroll_x > 0 || app.sidegraph_scroll > 0 {
+        // Show an x/y reading so users can gauge where they are on the canvas.
+        // x = horizontal pan from the left edge; y = vertical offset up from the
+        // live edge (0 = latest cards at the bottom).
+        format!(
+            " panned x:{} y:{} · Ctrl+wheel zoom · dbl-click empty to recenter ",
+            app.sidegraph_scroll_x, app.sidegraph_scroll
+        )
     } else {
         " drag to pan · Ctrl+wheel zoom · rgt-click box to peek ".to_string()
     };
@@ -4952,7 +4958,10 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
             .border_style(Style::default().fg(p.hue))
             .style(Style::default().bg(theme::SURFACE_2))
             .title(format!(" {} ", p.title))
-            .title_bottom(" Esc · outside · ✕ · Ctrl+C "),
+            .title_bottom({
+                let mode = if app.peek_expanded { "e collapse" } else { "e expand" };
+                format!(" Esc · outside · ✕ · Ctrl+C · {mode} ")
+            }),
         rect,
     );
     let inner = Rect {
@@ -4988,21 +4997,32 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
     }
 
     // Content: green/red diff bands for edit tools, soft-wrapped (ANSI-clean)
-    // text for everything else. Capped generously; the body scrolls.
+    // text for everything else. Capped generously; the body scrolls. When the
+    // peek is expanded (`e`), the cap is lifted so the full body is scrollable.
+    // The cap MUST stay well under u16::MAX (65_535): the scrollview sizes its
+    // offscreen buffer to `total_rows` (`Size` is u16) and `app.peek_rows` is
+    // u16, so a larger row count would either wrap on the `as u16` cast (losing
+    // the tail) or, if saturated, allocate a multi-hundred-MB per-frame buffer.
     const PEEK_MAX_ROWS: usize = 400;
+    const PEEK_MAX_ROWS_EXPANDED: usize = 10_000;
+    let row_cap = if app.peek_expanded {
+        PEEK_MAX_ROWS_EXPANDED
+    } else {
+        PEEK_MAX_ROWS
+    };
     let mut lines: Vec<Line> = Vec::new();
     let max_cols = (inner.width as usize).saturating_sub(2).max(8);
 
     if let Some(diff) = &p.diff {
         let w = (inner.width as usize).saturating_sub(1);
-        for l in diff.iter().take(PEEK_MAX_ROWS) {
+        for l in diff.iter().take(row_cap) {
             lines.push(diff_line(l, 0, w));
         }
-        if diff.len() > PEEK_MAX_ROWS {
+        if diff.len() > row_cap {
             lines.push(Line::from(Span::styled(
                 format!(
                     "… +{} more · e expands in place",
-                    diff.len() - PEEK_MAX_ROWS
+                    diff.len() - row_cap
                 ),
                 theme::style_faint(),
             )));
@@ -5019,9 +5039,9 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
             let mut rest = raw;
             let mut first = true;
             loop {
-                if lines.len() >= PEEK_MAX_ROWS {
+                if lines.len() >= row_cap {
                     lines.push(Line::from(Span::styled(
-                        "… truncated".to_string(),
+                        "… truncated · e expands".to_string(),
                         Style::default().fg(theme::FAINT),
                     )));
                     break 'outer;
@@ -5051,7 +5071,7 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
         )));
     }
 
-    let total_rows = lines.len() as u16;
+    let total_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     app.peek_rows = total_rows;
     let bg = Style::default().bg(theme::SURFACE_2);
 
@@ -5085,7 +5105,7 @@ fn draw_hover_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
 ///     scrolls and whose colour never changes with the tool, and
 ///   • below a tool-hue seam, the DYNAMIC tool-output content (border + accent
 ///     colour follow the run's current tool) which scrolls independently.
-/// Ctrl+C copies only the dynamic content (handled in app.rs).
+/// Ctrl+C copies the full trace (task header + dynamic content; handled in app.rs).
 fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Rect)> {
     let run_id = app.peek_swarm?;
     let run = crate::agent::swarm::snapshot()
@@ -5141,7 +5161,10 @@ fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
             .border_style(Style::default().fg(accent))
             .style(Style::default().bg(theme::SURFACE_2))
             .title(format!(" {title_task} "))
-            .title_bottom(" Esc · outside · ✕ · Ctrl+C copies tool output "),
+            .title_bottom({
+                let mode = if app.peek_expanded { "e collapse" } else { "e expand" };
+                format!(" Esc · outside · ✕ · Ctrl+C copies full trace · {mode} ")
+            }),
         rect,
     );
     let inner = Rect {
@@ -5249,14 +5272,20 @@ fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
     };
     let body = crate::tui::app::swarm_peek_tool_content(&run);
     const PEEK_MAX_ROWS: usize = 400;
+    const PEEK_MAX_ROWS_EXPANDED: usize = 200_000;
+    let row_cap = if app.peek_expanded {
+        PEEK_MAX_ROWS_EXPANDED
+    } else {
+        PEEK_MAX_ROWS
+    };
     let max_cols = iw.saturating_sub(1).max(8);
     let mut lines: Vec<Line> = Vec::new();
     'outer: for raw in body.lines() {
         let mut rest = raw;
         loop {
-            if lines.len() >= PEEK_MAX_ROWS {
+            if lines.len() >= row_cap {
                 lines.push(Line::from(Span::styled(
-                    "… truncated".to_string(),
+                    "… truncated · e expands".to_string(),
                     Style::default().fg(theme::FAINT),
                 )));
                 break 'outer;
@@ -5287,7 +5316,7 @@ fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
         )));
     }
 
-    let total_rows = lines.len() as u16;
+    let total_rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     app.peek_rows = total_rows;
     if total_rows <= content_area.height {
         app.peek_scroll = 0;

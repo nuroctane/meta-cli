@@ -551,6 +551,20 @@ pub struct SideGraphHit {
     pub h: usize,
 }
 
+/// A cross-provider subagent deployment that was blocked on missing credentials
+/// and is waiting for the user to finish `/login`. Captured from
+/// `AgentEvent::LoginRequired` so the exact original request can be re-deployed
+/// verbatim once that provider is authenticated.
+#[derive(Debug, Clone, Default)]
+pub struct PendingSubagentLogin {
+    /// Catalog id of the provider the subagent needs.
+    pub provider_id: String,
+    /// The original subagent prompt (task), if the loop supplied it.
+    pub prompt: Option<String>,
+    /// The original short description/label, if the loop supplied it.
+    pub desc: Option<String>,
+}
+
 /// Hit-box for a sidegraph kid (swarm subagent) that maps to a swarm run id.
 #[derive(Debug, Clone, Default)]
 pub struct SwarmHit {
@@ -704,6 +718,11 @@ impl Cell {
                     format!("turn · took {t} · thought {th}")
                 })
             }
+            Cell::Assistant { streaming, .. } => Some(if *streaming {
+                "answer · writing".to_string()
+            } else {
+                "answer".to_string()
+            }),
             _ => None,
         }
     }
@@ -779,6 +798,17 @@ impl Cell {
                     theme::fmt_duration(*thought)
                 )
             }),
+            Cell::Assistant { text, streaming } => {
+                if text.trim().is_empty() {
+                    Some(if *streaming {
+                        "…writing".into()
+                    } else {
+                        "(empty answer)".into()
+                    })
+                } else {
+                    Some(text.clone())
+                }
+            }
             _ => None,
         }
     }
@@ -1689,6 +1719,10 @@ pub struct App {
     pub peek_rows: u16,
     /// Peek cell the scroll offset belongs to — reset when the target changes.
     pub peek_scroll_cell: Option<usize>,
+    /// Expanded state for the open peek modal. When set, the row cap that
+    /// truncates long tool output is lifted so the full body is scrollable.
+    /// Toggled with `e` while a peek is open; reset whenever a peek opens/closes.
+    pub peek_expanded: bool,
     /// Terminal graphics picker (protocol + font size) for inline image peeks.
     #[cfg(feature = "image-peek")]
     pub img_picker: Option<ratatui_image::picker::Picker>,
@@ -1872,6 +1906,12 @@ pub struct App {
     window_base: String,
     /// Secure API-key entry modal (`/login`), when open.
     pub login: Option<LoginModal>,
+    /// When a subagent asked for a provider with no credentials, we pop a
+    /// `/login` modal (see `AgentEvent::LoginRequired`). This remembers that
+    /// provider id (plus the original subagent prompt/desc) so, once the user
+    /// finishes signing in, we can faithfully auto-retry the exact pending
+    /// cross-provider subagent instead of making them re-issue it.
+    pub pending_subagent_login: Option<PendingSubagentLogin>,
     /// Model chooser (`/model`) — live provider model list, when open.
     pub model_picker: Option<ModelPicker>,
     /// Plugin marketplace (`/plugins`) — install / enable / disable.
@@ -2169,6 +2209,7 @@ pub async fn run_tui(
         peek_scroll: 0,
         peek_rows: 0,
         peek_scroll_cell: None,
+        peek_expanded: false,
         #[cfg(feature = "image-peek")]
         img_picker,
         #[cfg(feature = "image-peek")]
@@ -2263,6 +2304,7 @@ pub async fn run_tui(
         title_from_prompt,
         window_base: seed_prompt.clone().unwrap_or_else(|| "ready".into()),
         login: None,
+        pending_subagent_login: None,
         model_picker: None,
         plugin_picker: None,
         authed: true,
@@ -3130,6 +3172,7 @@ impl App {
         self.peek_close = ratatui::layout::Rect::default();
         self.peek_scroll = 0;
         self.peek_scroll_cell = None;
+        self.peek_expanded = false;
     }
 
     fn open_stable_peek(&mut self, idx: usize) {
@@ -3139,6 +3182,7 @@ impl App {
         self.peek_frozen = None;
         self.peek_scroll = 0;
         self.peek_scroll_cell = Some(idx);
+        self.peek_expanded = false;
         self.hover_cell = None;
     }
 
@@ -3151,6 +3195,7 @@ impl App {
         self.peek_frozen = None;
         self.peek_scroll = 0;
         self.peek_scroll_cell = None;
+        self.peek_expanded = false;
         self.hover_cell = None;
     }
 
@@ -3326,13 +3371,14 @@ impl App {
                         }
                     }
                 }
-                // Swarm kid peek: copy ONLY the tool-output content, never the
-                // sticky task header (per the spec — task is context, not payload).
+                // Swarm kid peek: copy the FULL trace — task header (context)
+                // PLUS the dynamic tool output — so the clipboard carries the
+                // whole picture, not just the currently-visible dynamic band.
                 if let Some(run_id) = self.peek_swarm {
                     let body = crate::agent::swarm::snapshot()
                         .iter()
                         .find(|r| r.id == run_id)
-                        .map(swarm_peek_tool_content)
+                        .map(swarm_peek_full_copy)
                         .unwrap_or_default();
                     if !body.trim().is_empty() {
                         clipboard_set(&body);
@@ -3409,6 +3455,13 @@ impl App {
                     self.clear_paste_merge_state();
                 }
             }
+            // `e` / `E` while a peek modal is open toggles expanded view: the row
+            // cap that truncates long tool output is lifted so the full body is
+            // scrollable. Gated on an open peek so it never eats normal typing.
+            KeyCode::Char('e') | KeyCode::Char('E') if !ctrl && !alt && self.peek_is_open() => {
+                self.peek_expanded = !self.peek_expanded;
+                self.peek_scroll = 0;
+            }
             // Shift+Enter → newline. Plain Enter → always submit. Never the reverse.
             KeyCode::Enter if shift && !ctrl && !alt => {
                 self.input.insert_char('\n');
@@ -3424,13 +3477,14 @@ impl App {
                     let idx = self.palette_idx.min(matches.len().saturating_sub(1));
                     let name = matches[idx].0.clone();
                     let text = self.input.text();
-                    // Exact match or unique completion -> run it.
-                    if text.trim() == name || matches.len() == 1 || idx > 0 {
+                    // First Enter fills the selected command exactly (no trailing
+                    // space, so the palette stays open). Second Enter submits it
+                    // once the input already equals the selected command.
+                    if text.trim() == name {
                         self.input.clear();
-                        let cmd = name;
-                        self.submit_text(&cmd);
+                        self.submit_text(&name);
                     } else {
-                        self.input.set_text(&format!("{name} "));
+                        self.input.set_text(&name);
                     }
                     self.palette_idx = 0;
                     self.palette_scroll = 0;
@@ -3830,9 +3884,9 @@ impl App {
                     let is_dbl = self
                         .sidegraph_last_click
                         .map(|(t, c, r)| {
-                            now.duration_since(t) < Duration::from_millis(450)
-                                && (c as i32 - m.column as i32).abs() < 3
-                                && (r as i32 - m.row as i32).abs() < 2
+                            now.duration_since(t) < Duration::from_millis(500)
+                                && (c as i32 - m.column as i32).abs() < 4
+                                && (r as i32 - m.row as i32).abs() < 3
                         })
                         .unwrap_or(false);
                     let hit = self.sidegraph_hit_at(m.column, m.row);
@@ -4520,7 +4574,10 @@ impl App {
         None
     }
 
-    /// Double-click empty space should return to root / steer / prompt position.
+    /// Fast double-click on empty sidegraph canvas -> recenter on the latest
+    /// active tool-output cards (the live edge). Snaps vertical scroll to the
+    /// newest node (scroll 0 == bottom/latest in this model), clears any manual
+    /// pan, and re-enables auto-follow so freshly generated cards stay visible.
     pub(crate) fn sidegraph_reset_view(&mut self) {
         self.sidegraph_scroll = 0;
         self.sidegraph_scroll_x = 0;
@@ -5163,7 +5220,53 @@ impl App {
         });
     }
 
-    /// Open the provider picker in failover-manage mode. Unlike `/login`, this
+    /// Open the `/login` modal pre-selected to a specific provider. Used both by
+    /// `/login <provider>` and by the subagent path when a cross-provider run
+    /// requests a provider with no stored credentials. Resolves the same
+    /// natural-language aliases the agent tool accepts ("grok", "gemini",
+    /// "antigravity", …); on an unknown name it opens the plain picker filtered
+    /// by the raw text so the user can still find it.
+    fn open_login_for(&mut self, requested: &str) {
+        let requested = requested.trim();
+        if requested.is_empty() {
+            self.open_login();
+            return;
+        }
+        // Map NL alias → catalog provider. Fall back to a filtered picker when
+        // the name doesn't resolve, rather than silently opening on the parent.
+        let resolved = crate::providers::resolve_provider_alias(requested);
+        self.open_login();
+        let Some(m) = &mut self.login else { return };
+        match resolved {
+            Some(p) => {
+                // Pre-select the provider and advance straight to its auth step
+                // (Method for OAuth-capable providers, else Key entry).
+                m.filter = p.id.to_string();
+                m.sel = 0;
+                m.scroll = 0;
+                m.provider_id = p.id.to_string();
+                m.error = None;
+                m.buf.clear();
+                if p.browser_auth {
+                    m.can_import = crate::oauth::import_existing_session(p.id)
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    m.method_sel = 0;
+                    m.stage = LoginStage::Method;
+                } else {
+                    m.stage = LoginStage::Key;
+                }
+            }
+            None => {
+                // Unknown alias: leave the picker open, filtered by the raw text.
+                m.filter = requested.to_string();
+                m.sel = 0;
+                m.scroll = 0;
+                m.clamp_scroll();
+            }
+        }
+    }
     /// does **not** log the active provider out — it only edits the failover
     /// chain (`fallback_providers`) and per-provider keys.
     fn open_failover(&mut self) {
@@ -6403,8 +6506,50 @@ impl App {
     }
 
     /// Apply provider config + hot-swap HTTP client after key or OAuth success.
-    fn apply_provider_login(&mut self, provider_id: &str, key: &str, via_oauth: bool) {
-        let provider = crate::providers::by_id(provider_id)
+    /// After a `/login` completes, resume a subagent deployment that was blocked
+    /// on missing credentials for `authed_provider` (see `LoginRequired` +
+    /// `pending_subagent_login`). We inject a synthetic follow-up through the
+    /// normal message path so the model re-issues the cross-provider subagent -
+    /// no need for the user to re-type their request. If a turn is still running
+    /// this lands as a steer on the next model round; if idle it starts a fresh
+    /// turn. When the just-authenticated provider does not match the pending
+    /// request we leave it alone.
+    fn maybe_retry_pending_subagent(&mut self, authed_provider: &str, provider_name: &str) {
+        let matches = self
+            .pending_subagent_login
+            .as_ref()
+            .map(|p| p.provider_id == authed_provider)
+            .unwrap_or(false);
+        if !matches {
+            return;
+        }
+        let pending = self.pending_subagent_login.take();
+        self.push_note(
+            Tone::Mode,
+            format!("signed in to {provider_name} - re-deploying the subagent there now"),
+        );
+        // Route through submit_text so it steers into a live turn or starts a
+        // new one when idle - the same channel a manual follow-up would use.
+        // When we captured the original subagent prompt, replay it verbatim so
+        // the re-deploy is faithful; otherwise fall back to a generic re-run
+        // instruction that relies on the model's own context of the request.
+        let original = pending.as_ref().and_then(|p| p.prompt.clone());
+        let prompt = match original {
+            Some(task) => format!(
+                "You are now signed in to {provider_name}. Re-deploy the subagent on \
+                 {provider_name} that was blocked because it was not authenticated. \
+                 The original task was:\n\n{task}"
+            ),
+            None => format!(
+                "You are now signed in to {provider_name}. Re-run the cross-provider subagent \
+                 deployment on {provider_name} that was previously blocked because it was not \
+                 authenticated."
+            ),
+        };
+        self.submit_text(&prompt);
+    }
+
+    fn apply_provider_login(&mut self, provider_id: &str, key: &str, via_oauth: bool) {        let provider = crate::providers::by_id(provider_id)
             .copied()
             .unwrap_or(*crate::providers::default_provider());
 
@@ -6487,6 +6632,7 @@ impl App {
                         provider.name, self.cfg.model, self.cfg.base_url,
                     ),
                 );
+                self.maybe_retry_pending_subagent(provider_id, provider.name);
             }
             Err(e) => {
                 if let Some(m) = &mut self.login {
@@ -7175,24 +7321,28 @@ impl App {
                     })
                 },
                 Cell::Assistant { streaming, text } => {
+                    // Emit an Answering node for BOTH streaming and finished
+                    // answers so a completed answer box stays peekable (right
+                    // click / double click opens its cell). Previously only the
+                    // streaming case was registered, so once an answer finished
+                    // its box vanished from the hit map and could not be peeked.
                     if *streaming {
                         in_turn = true;
-                        // Provide a fallback excerpt so the Answering node is
-                        // never empty — poolside sometimes emits a streaming
-                        // Assistant cell with only whitespace/newlines before
-                        // the first real token arrives, which left the node
-                        // blank and unregistered in the sidegraph.
-                        let excerpt = first_line(text, 80);
-                        let excerpt = if excerpt.is_empty() {
-                            "…".to_string()
-                        } else {
-                            excerpt
-                        };
-                        nodes.push(SgNode::Answering {
-                            text_excerpt: excerpt,
-                            cell_idx: idx,
-                        });
                     }
+                    // Provide a fallback excerpt so the Answering node is never
+                    // empty — poolside sometimes emits a streaming Assistant cell
+                    // with only whitespace/newlines before the first real token
+                    // arrives, which left the node blank and unregistered.
+                    let excerpt = first_line(text, 80);
+                    let excerpt = if excerpt.is_empty() {
+                        "…".to_string()
+                    } else {
+                        excerpt
+                    };
+                    nodes.push(SgNode::Answering {
+                        text_excerpt: excerpt,
+                        cell_idx: idx,
+                    });
                 }
                 Cell::User(text) => {
                     if !first_user_seen {
@@ -7746,6 +7896,34 @@ impl App {
             AgentEvent::TodosChanged(text) => {
                 self.push_note(Tone::Todos, format!("todos\n{text}"));
             }
+            AgentEvent::LoginRequired {
+                provider_id,
+                provider_name,
+                retry_prompt,
+                retry_desc,
+            } => {
+                // A subagent asked for a provider with no stored credentials.
+                // Surface an actionable note and pop the /login modal pre-selected
+                // to that provider so the user can authenticate and activate it.
+                self.push_note(
+                    Tone::Mode,
+                    format!(
+                        "sign in to {provider_name} to deploy subagents there - opening /login (or run /login {provider_id})"
+                    ),
+                );
+                // Only auto-open if no other modal is already up, so we don't
+                // stomp an in-progress login / picker the user is mid-flow on.
+                if self.login.is_none() {
+                    self.open_login_for(&provider_id);
+                }
+                // Remember the exact request (provider + original prompt/desc) so
+                // we can faithfully re-deploy it once the user finishes signing in.
+                self.pending_subagent_login = Some(PendingSubagentLogin {
+                    provider_id,
+                    prompt: retry_prompt,
+                    desc: retry_desc,
+                });
+            }
             AgentEvent::PlanSubmitted(text) => {
                 self.push_note(
                     Tone::Plan,
@@ -8163,6 +8341,27 @@ pub fn swarm_peek_tool_content(run: &crate::agent::swarm::AgentRun) -> String {
             s.push('\n');
         }
     }
+    s
+}
+
+/// Full clipboard payload for a swarm kid peek (Ctrl+C): the sticky task header
+/// (context) PLUS the dynamic tool output/trace. `swarm_peek_tool_content` is
+/// the on-screen dynamic band; this stitches the task in front of it so a copy
+/// carries the whole picture, not just what happened to be scrolled into view.
+pub fn swarm_peek_full_copy(run: &crate::agent::swarm::AgentRun) -> String {
+    let mut s = String::new();
+    let task = if run.task.trim().is_empty() {
+        "(no task provided)".to_string()
+    } else {
+        run.task.clone()
+    };
+    s.push_str(&format!("TASK (kid #{}·{})\n", run.id, run.kind));
+    s.push_str(&task);
+    if !task.ends_with('\n') {
+        s.push('\n');
+    }
+    s.push_str("\n── tool output ──\n");
+    s.push_str(&swarm_peek_tool_content(run));
     s
 }
 
