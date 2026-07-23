@@ -615,7 +615,10 @@ pub fn save_config(cfg: &Config) -> Result<()> {
     Ok(())
 }
 
-pub const VALID_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+/// Rung names nur ships knowing about. Not a whitelist — the set a request may
+/// carry is derived per provider by [`crate::providers::effort_levels`], and an
+/// unknown name is forwarded rather than rejected.
+pub const VALID_EFFORTS: &[&str] = crate::providers::EFFORT_LADDER;
 
 #[cfg(test)]
 mod tests {
@@ -768,10 +771,14 @@ mod tests {
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
-        if !VALID_EFFORTS.contains(&self.reasoning_effort.as_str()) {
+        // Effort is deliberately NOT a closed set. Rungs are provider-specific
+        // and vendors keep adding them, so a name nur has not heard of is
+        // forwarded (see `providers::nearest_effort`) rather than treated as a
+        // config error — otherwise a brand-new rung bricks startup until nur
+        // ships a release. Only an empty value is wrong here.
+        if self.reasoning_effort.trim().is_empty() {
             return Err(MuseError::Config(format!(
-                "invalid reasoning_effort '{}' — use {}",
-                self.reasoning_effort,
+                "reasoning_effort is empty — use one of {} (or any level your provider accepts)",
                 VALID_EFFORTS.join("|")
             )));
         }

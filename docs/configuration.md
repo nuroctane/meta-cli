@@ -34,7 +34,7 @@ poor_mode = false
 # Background TTL pack repair on later TUI opens (first install is foreground)
 ecosystem_auto_ensure = true
 
-# Self-update from GitHub Releases on interactive launch (TTL-throttled)
+# Self-update from GitHub Releases — checked on EVERY launch (60s network floor)
 auto_update = true
 ```
 
@@ -56,7 +56,7 @@ auto_update = true
 | `compact_tool_body_max_chars` | integer | `800` | When compacting, truncate older tool bodies to this many chars (`0` = leave intact) |
 | `poor_mode` | bool | `false` | Skip PLUR auto-inject and long memory (skill NL/slash activation still works) |
 | `ecosystem_auto_ensure` | bool | `true` | Background TTL **repair** of packs on later TUI opens (first install is foreground via one-liner / EXE / `nur install`); set `false` to skip repair |
-| `auto_update` | bool | `true` | On interactive launch, check [GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest) and install a newer binary when available (6h TTL when already current). Opt out with `false` or env `NUR_SKIP_AUTO_UPDATE=1`. `nur update` always runs the full update path |
+| `auto_update` | bool | `true` | On **every** launch (bare TUI, `nur "prompt"`, `nur run …`, gateway), check [GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest) and install a newer binary when available; it runs on a background thread so it never delays or breaks a run, and the new binary is picked up on the next launch. A 60s floor between network checks stops a script that loops `nur` from hammering the API — tune it with `NUR_AUTO_UPDATE_TTL_SECS` (`0` = check every run). Opt out with `false` or env `NUR_SKIP_AUTO_UPDATE=1`. Verify with `nur update --check`; `nur update` always runs the full update path |
 
 ### Reasoning effort levels
 
@@ -164,10 +164,15 @@ Set by NurCLI for host integrations (legacy `META_*` aliases are also exported):
 
 ### Update control
 
+The release check runs on **every** launch (see `auto_update` above).
+
 | Variable | Purpose |
 |----------|---------|
-| `DISABLE_AUTOUPDATER` | Set to `1` to disable background auto-updates |
-| `DISABLE_UPDATES` | Set to `1` to block all update paths |
+| `NUR_SKIP_AUTO_UPDATE` | Set to `1` to skip the launch-time release check for this shell (legacy `META_SKIP_AUTO_UPDATE`) |
+| `NUR_DISABLE_UPDATES` / `DISABLE_UPDATES` | Set to `1` to disable the launch-time release check |
+| `DISABLE_AUTOUPDATER` | Claude Code's kill switch — also honored. It is injected only inside AI-agent sessions, so nur stays on your last version there instead of swapping its own binary mid-session. Absent from an ordinary terminal, where nur still updates every run |
+| `NUR_AUTO_UPDATE_TTL_SECS` | Minimum seconds between network checks (default `60`; `0` = check every single run). Guards against a script looping `nur` |
+| `NUR_AUTO_UPDATE_BLOCKING` | Set to `1` to wait for the check to finish before continuing, instead of backgrounding it (scripts / CI that want to be on the newest build now) |
 
 ### Ecosystem
 

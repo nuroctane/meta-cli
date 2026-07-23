@@ -245,11 +245,21 @@ See [Authentication](authentication.md).
 
 ## Update
 
-**Automatic (default):** each interactive `nur` launch checks
-[GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest) (TTL ~6h
-when already current). If a newer version is available, it downloads the platform
-binary into `~/.local/bin`, then restarts into the new build. Offline / API errors
-are soft — the TUI still opens.
+**Automatic (default):** **every** `nur` launch — the bare TUI, `nur "prompt"`,
+`nur run …`, the gateway — checks
+[GitHub Releases](https://github.com/nuroctane/nur-cli/releases/latest). If a newer
+version is available it downloads the platform binary into `~/.local/bin`; the new
+build is used on the next launch. The check runs on a background thread, so it
+never delays or breaks a run, and offline / API errors are soft — nur still opens.
+A 60s floor between network checks stops a script looping `nur` from hammering the
+API (`NUR_AUTO_UPDATE_TTL_SECS=0` to check every single run).
+
+Confirm it is working:
+
+```bash
+nur update --check   # local vs latest, picked asset, decision, last-check state
+nur doctor           # includes the same auto-update block
+```
 
 Opt out:
 

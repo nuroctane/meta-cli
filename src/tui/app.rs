@@ -243,7 +243,9 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("/models", "show and switch models  (alias of /model)"),
     ("/plugins", "browse · install · enable marketplace plugins"),
     ("/plugin", "browse · install · enable marketplace plugins  (alias of /plugins)"),
-    ("/effort", "reasoning effort: minimal|low|medium|high|xhigh"),
+    // Rendered through `App::command_hint` — the rungs shown are the active
+    // provider's, not this placeholder.
+    ("/effort", "reasoning effort for the active provider"),
     ("/sessions", "browse & open past sessions  ·  c → takeover  (same as /resume)"),
     ("/resume", "browse & open past sessions  (same as /sessions)"),
     (
@@ -1818,9 +1820,11 @@ pub struct App {
     /// When true, a cancel (send-now interject) keeps the queue so the follow-up
     /// can start immediately after the interrupted turn ends.
     preserve_queue_on_interrupt: bool,
-    /// Swarm card already auto-surfaced for this turn (see
-    /// [`App::poll_swarm_autoshow`]). Reset in `start_turn`.
-    swarm_autoshow_done: bool,
+    /// Highest subagent run id the swarm card has already been surfaced for
+    /// (see [`App::poll_swarm_autoshow`]). Monotonic for the life of the
+    /// session — run ids never restart, so this must NOT be reset per turn or
+    /// last turn's finished runs would re-open the card on every new prompt.
+    swarm_autoshow_seen_id: u64,
     /// User dismissed the swarm card with `/swarm hide`; do not auto-surface it
     /// again until the next turn.
     swarm_autoshow_suppressed: bool,
@@ -2266,7 +2270,7 @@ pub async fn run_tui(
         input: InputState::new(),
         queue: VecDeque::new(),
         preserve_queue_on_interrupt: false,
-        swarm_autoshow_done: false,
+        swarm_autoshow_seen_id: 0,
         swarm_autoshow_suppressed: false,
         sidegraph_open: false,
         sidegraph_live: false,
@@ -2760,6 +2764,27 @@ pub async fn run_tui(
 }
 
 impl App {
+    /// One-line hint for a built-in command, resolved against live session
+    /// state where a static string would be wrong or misleading.
+    ///
+    /// `/effort` is the case that forced this: the rungs are provider-specific
+    /// (xAI takes `low|high`; Anthropic and Gemini take none at all and budget
+    /// thinking in tokens), and vendors keep adding new ones — so printing a
+    /// frozen `minimal|low|medium|high|xhigh` was wrong for most providers.
+    pub fn command_hint(&self, name: &str, base: &str) -> String {
+        if name != "/effort" {
+            return base.to_string();
+        }
+        let levels = crate::providers::effort_levels(&self.cfg.provider);
+        if levels.is_empty() {
+            let who = crate::providers::by_id(&self.cfg.provider)
+                .map(|p| p.name)
+                .unwrap_or(self.cfg.provider.as_str());
+            return format!("reasoning effort — {who} budgets thinking in tokens, no rungs");
+        }
+        format!("reasoning effort: {}", levels.join("|"))
+    }
+
     // ── palette ────────────────────────────────────────────────────────
     pub fn palette_matches(&self) -> Vec<(String, String)> {
         let text = self.input.text();
@@ -2777,7 +2802,7 @@ impl App {
             .filter(|(name, _)| {
                 name.starts_with(token) || name.to_ascii_lowercase().starts_with(&token_l)
             })
-            .map(|(n, d)| ((*n).to_string(), (*d).to_string()))
+            .map(|(n, d)| ((*n).to_string(), self.command_hint(n, d)))
             .collect();
 
         // Built-in command names (without slash) so skills don't shadow them.
@@ -7188,37 +7213,79 @@ impl App {
     /// Arm or freeze every inline swarm card. Live cards re-read the subagent
     /// registry each frame; freezing them at end of turn keeps an idle TUI from
     /// re-rendering a static grid forever.
-    /// Surface the swarm card automatically the moment a subagent spawns.
+    /// Run `/swarm` automatically every time a subagent spawns.
     ///
     /// [`Self::set_swarm_live`] only *re-arms an existing* card, so before this
     /// a user who had never typed `/swarm` saw nothing at all while subagents
     /// ran — the whole fan-out was invisible. Spawning an agent is exactly when
-    /// you want the panel, so the first run of a turn opens it.
+    /// you want the panel.
     ///
-    /// Auto-shows at most once per turn, and never fights the user: `/swarm hide`
-    /// sets [`Self::swarm_autoshow_suppressed`] and this stays out of the way
-    /// until the next turn re-arms it.
+    /// Keyed on run **ids**, not on "is anything running": ids are monotonic, so
+    /// remembering the last one reacted to catches every later spawn — a second
+    /// fan-out mid-turn, or a child that started and finished inside one frame.
+    /// A once-per-turn latch missed all of those.
+    ///
+    /// Never fights the user: `/swarm hide` sets
+    /// [`Self::swarm_autoshow_suppressed`] and this stays out of the way until
+    /// the next turn re-arms it.
     ///
     /// Returns true when the transcript changed (caller marks the frame dirty).
     pub fn poll_swarm_autoshow(&mut self) -> bool {
-        if self.swarm_autoshow_done || self.swarm_autoshow_suppressed {
+        if self.swarm_autoshow_suppressed {
             return false;
         }
-        if crate::agent::swarm::running_count() == 0 {
+        let fresh = crate::agent::swarm::runs_since(self.swarm_autoshow_seen_id);
+        let Some(newest) = fresh.iter().map(|r| r.id).max() else {
             return false;
+        };
+        self.swarm_autoshow_seen_id = newest;
+        self.surface_swarm_card(false);
+        // One line per batch, not per child: a 4-way fan-out lands in the same
+        // frame and four identical notes would bury the card it just opened.
+        let label = fresh
+            .iter()
+            .map(|r| match r.provider.trim() {
+                "" => format!("#{}·{}", r.id, r.kind),
+                p => format!("#{}·{} ⇢ {p}", r.id, r.kind),
+            })
+            .collect::<Vec<_>>()
+            .join("  ");
+        self.push_note(Tone::Neutral, format!("swarm · {label}"));
+        true
+    }
+
+    /// Mark every spawn currently in the registry as already surfaced.
+    fn ack_swarm_spawns(&mut self) {
+        let newest = crate::agent::swarm::runs_since(self.swarm_autoshow_seen_id)
+            .iter()
+            .map(|r| r.id)
+            .max();
+        if let Some(id) = newest {
+            self.swarm_autoshow_seen_id = id;
         }
-        self.swarm_autoshow_done = true;
-        if self.cells.iter().any(|c| matches!(c, Cell::Swarm { .. })) {
-            // Already on screen — just make sure it is the live one at the end.
-            self.set_swarm_live(true);
-            return true;
+    }
+
+    /// Put a live swarm card at the bottom of the transcript, folding in the
+    /// detail flag of any card already there. Returns true when one was already
+    /// on screen (the caller was a refresh, not a first open).
+    fn surface_swarm_card(&mut self, detail: bool) -> bool {
+        let mut want_detail = detail;
+        let mut found = false;
+        for c in &self.cells {
+            if let Cell::Swarm { detail: d, .. } = c {
+                want_detail |= *d;
+                found = true;
+            }
+        }
+        if found {
+            self.remove_cells_matching(|c| matches!(c, Cell::Swarm { .. }));
         }
         self.cells.push(Cell::Swarm {
             live: true,
-            detail: false,
+            detail: want_detail,
         });
-        self.scroll_from_bottom = 0;
-        true
+        self.scroll_to_bottom();
+        found
     }
 
     fn set_swarm_live(&mut self, on: bool) {
@@ -7280,29 +7347,15 @@ impl App {
             _ => {}
         }
 
+        // An explicit `/swarm` acknowledges every spawn so far, so the
+        // auto-surface does not immediately fire again for runs already shown.
+        self.ack_swarm_spawns();
         let detail = matches!(arg.as_str(), "detail" | "full" | "verbose");
         // Resurface an existing card at the bottom (UX fix: previously refreshed in place, forcing scroll-up to see).
-        let mut existing_detail = detail;
-        let mut found = false;
-        for c in &self.cells {
-            if let Cell::Swarm { detail: d, .. } = c {
-                existing_detail |= *d;
-                found = true;
-            }
-        }
-        if found {
-            self.remove_cells_matching(|c| matches!(c, Cell::Swarm { .. }));
-            self.cells.push(Cell::Swarm {
-                live: true,
-                detail: existing_detail,
-            });
+        if self.surface_swarm_card(detail) {
             self.push_note(Tone::Neutral, "swarm · refreshed · moved to bottom".into());
-            self.scroll_to_bottom();
             return;
         }
-
-        self.cells.push(Cell::Swarm { live: true, detail });
-        self.scroll_to_bottom();
         let running = crate::agent::swarm::running_count();
         self.push_note(
             Tone::Neutral,
@@ -7915,7 +7968,9 @@ impl App {
         // turn's ids onto finished cards sitting in the scrollback.
         self.tool_cells.clear();
         // Re-arm swarm auto-show for the new turn, including after a `/swarm hide`.
-        self.swarm_autoshow_done = false;
+        // `swarm_autoshow_seen_id` is deliberately NOT reset: run ids keep
+        // climbing, so the next real spawn is what re-opens the card, not the
+        // finished runs this turn inherited.
         self.swarm_autoshow_suppressed = false;
         // Re-arm any swarm card the user left in the transcript so this turn's
         // subagents animate in it without re-running `/swarm`.
@@ -9320,6 +9375,8 @@ mod tests {
             id: 7,
             kind: "general".into(),
             task: "implement expand".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4".into(),
             state: RunState::Running,
             started: std::time::Instant::now(),
             ended: None,

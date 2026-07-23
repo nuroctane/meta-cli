@@ -105,7 +105,12 @@ pub enum Commands {
     /// Alias for `nur install`
     SelfInstall,
     /// Pull latest source + rebuild/reinstall full stack (same spirit as the one-liner)
-    Update,
+    Update {
+        /// Dry run: print local version, latest release, the asset picked for this
+        /// platform, and the decision — then exit without installing anything.
+        #[arg(long)]
+        check: bool,
+    },
     /// Diagnose install, auth, config, and ecosystem readiness
     Doctor,
     /// Graphify · PLUR · Ruflo ecosystem (auto-provisioned on open)

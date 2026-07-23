@@ -200,7 +200,15 @@ Double-clicking `nur-windows-x86_64.exe` from [Releases](https://github.com/nuro
 
 ```bash
 nur update
+
+# dry run — print local version, latest release, the asset picked for this
+# platform, and the decision, then exit WITHOUT installing anything:
+nur update --check
 ```
+
+`nur update --check` is the way to confirm auto-update is wired correctly from a
+shell. It also prints when the launch-time check last ran and what it decided
+(read from `~/.nur/auto_update.json`); `nur doctor` shows the same block.
 
 | Step | Action |
 |------|--------|

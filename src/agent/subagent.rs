@@ -76,8 +76,10 @@ pub async fn run_subagent(
 
     let handle = super::spawn_turn(runner, session, usage, prompt, tx, cancel);
 
-    // Publish this run to the shared table the inline `/swarm` card reads.
-    let run_id = swarm::begin(subagent_type, &task);
+    // Publish this run to the shared table the inline `/swarm` card reads,
+    // including where it was routed — the whole point of a cross-provider
+    // fan-out is being able to see that it actually went elsewhere.
+    let run_id = swarm::begin_on(subagent_type, &task, &cfg.provider, &cfg.model);
 
     let mut last_text = String::new();
     while let Some(ev) = rx.recv().await {

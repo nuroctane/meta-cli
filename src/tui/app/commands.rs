@@ -777,7 +777,7 @@ impl App {
 
         s.push_str("\ncommands\n");
         for (name, desc) in COMMANDS {
-            s.push_str(&format!("  {name:<12}  {desc}\n"));
+            s.push_str(&format!("  {name:<12}  {}\n", self.command_hint(name, desc)));
         }
         s.push_str("\n  #<note>       quick-save to memory (no turn)\n");
         self.push_info(s);
@@ -1762,22 +1762,59 @@ impl App {
         }
     }
 
+    /// `/effort` — reasoning effort for the **active provider**.
+    ///
+    /// The rungs are not universal: xAI takes only `low|high`, Anthropic and
+    /// Gemini budget thinking in tokens and take no effort name at all, and
+    /// every vendor keeps adding rungs. So the offered set comes from the
+    /// catalog, and a name nur does not recognise is accepted with a note
+    /// instead of rejected — a rung a provider shipped this morning must work
+    /// this morning, without waiting for a nur release.
     fn cmd_effort(&mut self, arg: &str) {
-        const LEVELS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
-        if arg.is_empty() {
+        let provider = self.cfg.provider.clone();
+        let levels = crate::providers::effort_levels(&provider);
+        let name = crate::providers::by_id(&provider)
+            .map(|p| p.name)
+            .unwrap_or(provider.as_str());
+
+        if levels.is_empty() {
             self.push_info(format!(
-                "effort: {} · /effort <{}>",
-                self.cfg.reasoning_effort,
-                LEVELS.join("|")
+                "effort: {} · {name} has no effort setting — it budgets thinking in tokens, \
+                 so nur omits the field. The value is kept and applies again on a provider \
+                 that takes one.",
+                self.cfg.reasoning_effort
             ));
             return;
         }
-        if !LEVELS.contains(&arg) {
-            self.push_error(format!("invalid effort '{arg}' — use {}", LEVELS.join("|")));
+        if arg.is_empty() {
+            self.push_info(format!(
+                "effort: {} · /effort <{}>  ({name})",
+                self.cfg.reasoning_effort,
+                levels.join("|")
+            ));
             return;
         }
-        self.cfg.reasoning_effort = arg.to_string();
-        self.push_info(format!("reasoning effort → {arg}"));
+
+        let want = arg.trim().to_ascii_lowercase();
+        self.cfg.reasoning_effort = want.clone();
+        match crate::providers::nearest_effort(&provider, &want) {
+            Some(sent) if sent == want => {
+                self.push_info(format!("reasoning effort → {want}"));
+            }
+            // Known rung this provider does not have: say what goes on the wire.
+            Some(sent) => self.push_info(format!(
+                "reasoning effort → {want} · {name} accepts {} — sending {sent}",
+                levels.join("|")
+            )),
+            None => self.push_info(format!("reasoning effort → {want}")),
+        }
+        if !crate::providers::EFFORT_LADDER.contains(&want.as_str())
+            && !levels.contains(&want.as_str())
+        {
+            self.push_info(format!(
+                "'{want}' is not a rung nur knows — forwarding it to {name} as-is"
+            ));
+        }
     }
 
     pub(super) fn cmd_resume(&mut self, arg: &str) {

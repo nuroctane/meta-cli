@@ -552,8 +552,15 @@ impl AgentRunner {
                 tool_choice: Some(tool_choice.into()),
                 store: Some(false),
                 include: Some(vec!["reasoning.encrypted_content".into()]),
+                // Effort rungs differ per provider and keep being added. Send
+                // what this one actually accepts — clamped to its nearest rung,
+                // or omitted entirely for thinking-budget providers, which
+                // reject an unexpected `effort` string outright.
                 reasoning: Some(ReasoningConfig {
-                    effort: Some(self.config.reasoning_effort.clone()),
+                    effort: crate::providers::nearest_effort(
+                        &self.config.provider,
+                        &self.config.reasoning_effort,
+                    ),
                     summary: Some("auto".into()),
                 }),
                 stream: Some(self.config.stream && !self.is_subagent),
@@ -1734,6 +1741,53 @@ mod tests {
         );
     }
 
+    /// A task prompt that merely *starts* with a product name is describing its
+    /// subject, not requesting a backend. Reading it as routing blocks the spawn
+    /// behind a /login modal the user never asked for.
+    #[test]
+    fn a_provider_name_leading_the_prompt_is_a_subject_not_a_route() {
+        for prompt in [
+            "Claude Code session import path — map how it works",
+            "Gemini response parsing has a bug, find it",
+            "GPT-style tool schemas: audit our converter",
+        ] {
+            let (_, _, _, prov, _) = parse_agent_call(&FunctionCallRef {
+                call_id: "a".into(),
+                name: "agent".into(),
+                arguments: serde_json::json!({ "prompt": prompt, "description": "audit" })
+                    .to_string(),
+            })
+            .unwrap();
+            assert!(
+                prov.is_none(),
+                "prompt subject must not route: {prompt:?} → {prov:?}"
+            );
+        }
+
+        // The same leading name in the *description* is still routing — that
+        // field is a label the model wrote about the spawn itself.
+        let (_, _, _, prov, _) = parse_agent_call(&FunctionCallRef {
+            call_id: "b".into(),
+            name: "agent".into(),
+            arguments: r#"{"prompt":"audit the failover path","description":"grok audit"}"#.into(),
+        })
+        .unwrap();
+        assert_eq!(prov.as_deref(), Some("xai"));
+
+        // And an explicit cue inside the prompt still routes.
+        let (_, _, _, prov, _) = parse_agent_call(&FunctionCallRef {
+            call_id: "c".into(),
+            name: "agent".into(),
+            arguments: r#"{"prompt":"Claude subagent: review auth for races","description":"review"}"#.into(),
+        })
+        .unwrap();
+        assert_eq!(
+            prov.as_deref(),
+            Some("anthropic"),
+            "'<provider> subagent' at the head of a prompt is an explicit route"
+        );
+    }
+
     /// "gemini" resolves to catalog id `google` (see `natural_language_provider_names_resolve`),
     /// a *different* id from an active `antigravity` session — but both share the
     /// same Google OAuth login. A subagent saying "gemini" while the parent is
@@ -2649,13 +2703,16 @@ fn infer_provider_from_agent_text(
     if let Some(p) = resolve_provider_alias(desc.trim()) {
         return Some((p.id.to_string(), None));
     }
-    // 3) Routing phrases in description first, then the head of the prompt.
-    for text in [desc, prompt] {
-        if let Some(hit) = extract_provider_routing_phrase(text) {
-            return Some(hit);
-        }
+    // 3) Routing phrases. The description is a label the model wrote *about the
+    //    spawn*, so a provider name at its head ("claude review") is routing.
+    //    The prompt is the task itself, where a leading provider name is usually
+    //    just the subject ("Claude Code session import path") — misreading that
+    //    as routing blocks the spawn behind a /login the user never asked for,
+    //    so the prompt only counts with an explicit cue ("… on claude").
+    if let Some(hit) = extract_provider_routing_phrase(desc, true) {
+        return Some(hit);
     }
-    None
+    extract_provider_routing_phrase(prompt, false)
 }
 
 /// `provider:claude`, `provider=xai`, `model:grok-4` pairs in free text.
@@ -2686,7 +2743,13 @@ fn extract_explicit_provider_kv(text: &str) -> Option<(String, Option<String>)> 
 
 /// Phrases like "on claude", "using gemini", "via antigravity", "with grok",
 /// "spawn a claude subagent", "deploy on xai".
-fn extract_provider_routing_phrase(text: &str) -> Option<(String, Option<String>)> {
+///
+/// `lead_counts` allows a bare hit at position 0 to route on its own. True for
+/// the short description label, false for task prose.
+fn extract_provider_routing_phrase(
+    text: &str,
+    lead_counts: bool,
+) -> Option<(String, Option<String>)> {
     let lower = text.to_ascii_lowercase();
     // Prefer longer / more specific multi-word hits first.
     const PHRASES: &[&str] = &[
@@ -2757,11 +2820,12 @@ fn extract_provider_routing_phrase(text: &str) -> Option<(String, Option<String>
         // Window before the match for a routing cue.
         let window_start = idx.saturating_sub(24);
         let window = &lower[window_start..idx];
-        let cued = idx == 0
-            || CUES.iter().any(|c| window.ends_with(c.trim_start()) || window.contains(c))
-            || window.trim().is_empty();
-        // Bare description-start hit is ok (idx==0); mid-sentence needs a cue.
-        if !cued && idx > 0 {
+        // A hit at the head of the text routes on its own only where a leading
+        // provider name means routing (the description label), never in prose.
+        let leads = idx == 0 || window.trim().is_empty();
+        let cued = (leads && lead_counts)
+            || CUES.iter().any(|c| window.ends_with(c.trim_start()) || window.contains(c));
+        if !cued {
             // Also allow "…claude subagent" / "…grok agent" immediately after.
             let tail = &lower[after..];
             let tail_ok = tail.trim_start().starts_with("subagent")
@@ -2985,9 +3049,17 @@ fn resolve_subagent_target(
             message,
         };
     }
-    let style = prov.style;
+    // The catalog row describes the API-key endpoint. When the credential we just
+    // resolved is an OAuth access token the provider answers somewhere else
+    // entirely (ChatGPT → Codex backend, Grok Build → CLI proxy in Responses
+    // shape, Google `ya29.` → Cloud Code), on a different default model. Aiming
+    // the token at the key-only host is an immediate 401, so resolve the real
+    // endpoint the same way failover does.
+    let is_oauth = crate::auth::oauth_request_context(prov.id, &key).is_some();
+    let (base_url, style, default_model) =
+        crate::providers::endpoint_for_credential(prov, is_oauth);
     // key_optional local providers may have an empty key.
-    let client = match ApiClient::for_provider(prov.base_url, &key, prov.id) {
+    let client = match ApiClient::for_provider(base_url, &key, prov.id) {
         Ok(c) => c.with_style(style),
         Err(e) => {
             let _ = tx.send(AgentEvent::Status(format!(
@@ -3002,10 +3074,14 @@ fn resolve_subagent_target(
     };
     let mut cfg = parent_config.clone();
     cfg.provider = prov.id.to_string();
-    cfg.base_url = prov.base_url.to_string();
+    cfg.base_url = base_url.trim_end_matches('/').to_string();
     cfg.model = model
         .map(str::to_string)
-        .unwrap_or_else(|| prov.default_model.to_string());
+        .unwrap_or_else(|| default_model.to_string());
+    // A failover chain configured for the parent's account is not this child's:
+    // it would quietly move a "run this on grok" subagent onto some other
+    // vendor and report the answer as grok's. Explicit routing means explicit.
+    cfg.fallback_providers.clear();
     let _ = tx.send(AgentEvent::Status(format!(
         "subagent · routed to {} · {}",
         prov.name, cfg.model

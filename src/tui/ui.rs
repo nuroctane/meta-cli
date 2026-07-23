@@ -4699,7 +4699,12 @@ fn draw_pane(
     } else {
         theme::fmt_duration(run.elapsed())
     };
-    let title = format!("{glyph} {}·{}", run.id, run.kind);
+    // Provider rides in the title: a cross-provider fan-out is only believable
+    // if you can see, per pane, where that child actually ran.
+    let title = match run.provider.trim() {
+        "" => format!("{glyph} {}·{}", run.id, run.kind),
+        p => format!("{glyph} {}·{} ⇢ {p}", run.id, run.kind),
+    };
     let title_room = inner_w.saturating_sub(elapsed.chars().count() + 3);
     canvas.text(x - 1, top, " ", border, 1);
     let used = canvas.text_clipped(
@@ -4736,7 +4741,13 @@ fn draw_pane(
         y += 1;
     }
     if detail && y < last {
-        canvas.text_clipped(x, y, &run.activity, theme::style_faint(), inner_w);
+        let route = run.route_label();
+        let line = if route.is_empty() {
+            run.activity.clone()
+        } else {
+            format!("{route} — {}", run.activity)
+        };
+        canvas.text_clipped(x, y, &line, theme::style_faint(), inner_w);
     }
 
     let trace_y = last.saturating_sub(1);
@@ -5345,6 +5356,10 @@ fn draw_swarm_peek(f: &mut Frame, app: &mut App, area: Rect) -> Option<(Rect, Re
         RunState::Cancelled => "cancelled",
     };
     push_wrapped(&mut rows, &format!("#{}\u{00b7}{} \u{2014} {status}", run.id, run.kind), theme::FG, None);
+    let route = run.route_label();
+    if !route.is_empty() {
+        push_wrapped(&mut rows, &format!("ran on: {route}"), theme::FAINT, None);
+    }
     if let Some(tool) = run.tool.as_deref() {
         push_wrapped(&mut rows, &format!("current tool: {tool}"), theme::FAINT, None);
     }
@@ -7612,6 +7627,8 @@ mod sidegraph_canvas_tests {
             id,
             kind: kind.into(),
             task: task.into(),
+            provider: "xai".into(),
+            model: "grok-4.5".into(),
             state: crate::agent::swarm::RunState::Running,
             started: std::time::Instant::now(),
             ended: None,

@@ -125,6 +125,12 @@ pub struct AgentRun {
     pub kind: String,
     /// What it was asked to do (first meaningful line of the prompt).
     pub task: String,
+    /// Catalog provider id this child actually ran against (`anthropic`, `xai`,
+    /// …). Recorded at spawn so a cross-provider fan-out is verifiable on sight
+    /// rather than inferred from a status line that has already scrolled away.
+    pub provider: String,
+    /// Model id the child ran on.
+    pub model: String,
     pub state: RunState,
     pub started: Instant,
     pub ended: Option<Instant>,
@@ -147,6 +153,18 @@ impl AgentRun {
         match self.ended {
             Some(end) => end.duration_since(self.started),
             None => self.started.elapsed(),
+        }
+    }
+
+    /// Short routing label for the card/box header — `provider · model`, or just
+    /// the provider when the model id adds nothing. Empty when unknown (older
+    /// runs, or a spawn that never resolved a target).
+    pub fn route_label(&self) -> String {
+        match (self.provider.trim(), self.model.trim()) {
+            ("", "") => String::new(),
+            (p, "") => p.to_string(),
+            ("", m) => m.to_string(),
+            (p, m) => format!("{p} · {m}"),
         }
     }
 }
@@ -206,13 +224,22 @@ fn trim_trace(run: &mut AgentRun) {
     }
 }
 
-/// Register a starting subagent; returns its handle id.
+/// Register a starting subagent with no known routing (tests / legacy callers).
+#[cfg(test)]
 pub fn begin(kind: &str, task: &str) -> u64 {
+    begin_on(kind, task, "", "")
+}
+
+/// Register a starting subagent and the provider/model it was routed to;
+/// returns its handle id.
+pub fn begin_on(kind: &str, task: &str, provider: &str, model: &str) -> u64 {
     let id = next_id();
     let run = AgentRun {
         id,
         kind: clip(kind),
         task: clip(task),
+        provider: clip(provider),
+        model: clip(model),
         state: RunState::Running,
         started: Instant::now(),
         ended: None,
@@ -239,8 +266,8 @@ pub fn activity(id: u64, text: &str) {
     });
 }
 
-/// A tool call started inside the subagent. `args` is the tool JSON/arguments
-/// string (clipped for storage) so the peek modal can expand it later.
+/// A tool call started inside the subagent, with no captured arguments.
+#[cfg(test)]
 pub fn tool_start(id: u64, name: &str) {
     tool_start_with(id, name, "");
 }
@@ -262,7 +289,8 @@ pub fn tool_start_with(id: u64, name: &str, args: &str) {
     });
 }
 
-/// A tool call finished inside the subagent.
+/// A tool call finished inside the subagent, with no captured result body.
+#[cfg(test)]
 pub fn tool_end(id: u64, ok: bool) {
     tool_end_with(id, ok, "");
 }
@@ -356,6 +384,19 @@ pub fn snapshot() -> Vec<AgentRun> {
 /// Cheap count of table entries without cloning the runs (PERF-D).
 pub fn snapshot_len() -> usize {
     table().lock().map(|g| g.len()).unwrap_or(0)
+}
+
+/// Runs registered after `after_id`, oldest first.
+///
+/// Ids are process-global and monotonic, so a caller that remembers the last id
+/// it reacted to gets exactly the spawns it has not seen yet — including ones
+/// that started *and finished* between two polls, which a "who is running now"
+/// check would miss entirely.
+pub fn runs_since(after_id: u64) -> Vec<AgentRun> {
+    table()
+        .lock()
+        .map(|g| g.iter().filter(|r| r.id > after_id).cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Forget every finished run (running ones stay).
@@ -528,6 +569,38 @@ mod tests {
             run.ended.is_some(),
             "a cancelled run stops accumulating time"
         );
+    }
+
+    /// The `/swarm` auto-surface keys on ids, not on "is anything running", so
+    /// it must catch a child that started *and finished* between two frames —
+    /// exactly the case a running-count check drops on the floor.
+    #[test]
+    fn runs_since_reports_every_spawn_including_already_finished_ones() {
+        let _g = lock();
+        reset();
+        let mut seen = 0;
+
+        let a = begin_on("explore", "first", "anthropic", "claude-sonnet-4");
+        let fresh = runs_since(seen);
+        assert_eq!(fresh.iter().map(|r| r.id).collect::<Vec<_>>(), vec![a]);
+        assert_eq!(fresh[0].provider, "anthropic");
+        assert_eq!(fresh[0].route_label(), "anthropic · claude-sonnet-4");
+        seen = fresh.iter().map(|r| r.id).max().unwrap();
+
+        // Nothing new: the same poll must not re-surface the card.
+        assert!(runs_since(seen).is_empty());
+
+        // A whole second fan-out, one of which is already done by the time we
+        // look — both must still be reported.
+        let b = begin_on("general", "second", "xai", "grok-4.5");
+        let c = begin_on("general", "third", "", "");
+        finish(c, RunState::Done, 10);
+        let ids: Vec<u64> = runs_since(seen).iter().map(|r| r.id).collect();
+        assert_eq!(ids, vec![b, c], "a run that finished fast is still a spawn");
+
+        // A run with no resolved routing renders no route label.
+        let unrouted = runs_since(seen).into_iter().find(|r| r.id == c).unwrap();
+        assert_eq!(unrouted.route_label(), "");
     }
 
     #[test]

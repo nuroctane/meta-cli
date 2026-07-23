@@ -34,6 +34,22 @@ struct BootstrapMarker {
 
 /// Default install directory (`~/.local/bin`) — same as the shell installers.
 pub fn install_dir() -> PathBuf {
+    install_dir_from(env::var("NUR_INSTALL_DIR").ok().as_deref())
+}
+
+/// Split out so the override is testable without mutating process env (tests run
+/// in parallel threads and `set_var` would leak across them).
+///
+/// `NUR_INSTALL_DIR` exists so an end-to-end update rehearsal can point the whole
+/// install/replace path at a scratch directory instead of the user's live
+/// `~/.local/bin/nur` — proving the download+swap without risking the real tool.
+fn install_dir_from(env_override: Option<&str>) -> PathBuf {
+    if let Some(dir) = env_override {
+        let t = dir.trim();
+        if !t.is_empty() {
+            return PathBuf::from(t);
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".local")
@@ -423,8 +439,109 @@ fn finish_update_stack(version: &str) -> Result<()> {
 // ── Auto-update on launch (GitHub Releases) ───────────────────────────────
 
 const GH_RELEASES_LATEST: &str = "https://api.github.com/repos/nuroctane/nur-cli/releases/latest";
-/// Min seconds between network checks when already current (rate-limit friendly).
-const AUTO_UPDATE_TTL_SECS: u64 = 6 * 60 * 60; // 6 hours
+
+/// Floor between network checks — **not** a cache TTL. The contract is "every
+/// time `nur` runs in a shell it looks for a new release"; this only stops a
+/// script that loops `nur` in a tight `for` loop from hammering api.github.com
+/// (unauthenticated GitHub allows 60 req/h/IP, so 60s ≈ exactly at the limit).
+///
+/// This used to be 6 hours, which meant the overwhelming majority of launches
+/// never touched the network at all — the feature looked broken because it was
+/// asleep, not because the plumbing failed.
+const AUTO_UPDATE_MIN_INTERVAL_SECS: u64 = 60;
+
+/// Leftover `.nur-update-*` downloads older than this are abandoned garbage: the
+/// background thread is killed when a short headless run exits, so a partial
+/// body can outlive the process that was writing it.
+const UPDATE_TMP_MAX_AGE_SECS: u64 = 60 * 60;
+const UPDATE_TMP_PREFIX: &str = ".nur-update-";
+
+/// Per-shell opt-out. Returns the name of the set variable (for reporting) or
+/// `None`.
+///
+/// Honors Claude Code's `DISABLE_AUTOUPDATER`: that variable is injected only
+/// inside AI-agent sessions to stop tools from swapping their own binary out
+/// from under a running agent, and it is absent from an ordinary terminal — so
+/// respecting it costs the user nothing (their real shell still updates every
+/// run) while keeping nur from silently changing version mid-session. It stays
+/// alongside nur's own kill switches rather than replacing them.
+fn auto_update_opt_out_var() -> Option<&'static str> {
+    [
+        "NUR_SKIP_AUTO_UPDATE",
+        "META_SKIP_AUTO_UPDATE",
+        "NUR_DISABLE_UPDATES",
+        "DISABLE_UPDATES",
+        "DISABLE_AUTOUPDATER",
+    ]
+    .into_iter()
+    .find(|k| env_truthy(k))
+}
+
+/// Effective floor, overridable per-shell for testing/CI. `0` = check every run.
+fn auto_update_min_interval_secs() -> u64 {
+    let raw = env::var("NUR_AUTO_UPDATE_TTL_SECS")
+        .or_else(|_| env::var("META_AUTO_UPDATE_TTL_SECS"))
+        .ok();
+    parse_min_interval(raw.as_deref())
+}
+
+/// Garbage in the env must never disable the feature or spin the network — fall
+/// back to the default floor on anything unparseable.
+fn parse_min_interval(raw: Option<&str>) -> u64 {
+    match raw {
+        Some(v) => v
+            .trim()
+            .parse::<u64>()
+            .unwrap_or(AUTO_UPDATE_MIN_INTERVAL_SECS),
+        None => AUTO_UPDATE_MIN_INTERVAL_SECS,
+    }
+}
+
+/// Pure launch gate so the "does it actually check?" policy is unit-testable.
+/// `now < last_check_at` means the wall clock moved backwards (NTP correction,
+/// dual-boot); treating that as "due" beats being wedged shut for hours.
+fn auto_update_due(last_check_at: u64, now: u64, min_interval: u64) -> bool {
+    if last_check_at == 0 || min_interval == 0 || now < last_check_at {
+        return true;
+    }
+    now - last_check_at >= min_interval
+}
+
+/// Delete abandoned partial downloads from the install dir. Returns how many
+/// were removed. A temp still being written by a *live* sibling process is
+/// younger than `max_age_secs`, so an in-flight download is never yanked.
+fn cleanup_stale_update_temps(dir: &Path, max_age_secs: u64) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0usize;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with(UPDATE_TMP_PREFIX) {
+            continue;
+        }
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let age_ok = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| {
+                m.elapsed()
+                    .map(|d| d.as_secs() >= max_age_secs)
+                    // Future mtime (clock skew) — old enough to be junk.
+                    .unwrap_or(true)
+            })
+            // No mtime available: err on the side of cleaning up.
+            .unwrap_or(true);
+        if age_ok && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AutoUpdateState {
@@ -459,24 +576,42 @@ fn save_auto_update_state(st: &AutoUpdateState) {
     }
 }
 
-/// Interactive TUI launch: if a newer GitHub release exists, install it and
-/// re-exec so the user lands on the new binary. Returns `true` when the
-/// caller should **exit** (child took over the session).
+/// Called on **every** launch — bare TUI, `nur run …`, `nur "prompt"`,
+/// gateway, everything. If a newer GitHub release exists, install it in the
+/// background so the *next* launch runs it. Returns `true` when the caller
+/// should **exit** (reserved for a future re-exec handoff; today always false).
 ///
-/// Safe defaults:
-/// - Off when `NUR_SKIP_AUTO_UPDATE` / `META_SKIP_AUTO_UPDATE` is set
-/// - Off when `config.auto_update = false` (caller passes enabled flag)
-/// - Off for release-artifact first install (bootstrap owns that path)
-/// - Never fails the launch: network/errors are soft and open the TUI
+/// Strictly non-blocking and soft-failing: the network call happens on a
+/// detached OS thread, so a headless invocation is never delayed and can never
+/// fail because api.github.com is unreachable. The tradeoff is that a very
+/// short headless run may exit before the download lands — that is fine, the
+/// check is retried next launch and the partial file is swept up (see
+/// `cleanup_stale_update_temps`).
+///
+/// Off when:
+/// - `config.auto_update = false` (caller passes the flag)
+/// - `NUR_SKIP_AUTO_UPDATE` / `META_SKIP_AUTO_UPDATE` / `NUR_DISABLE_UPDATES` /
+///   `DISABLE_UPDATES` / `DISABLE_AUTOUPDATER` is set (the last is Claude Code's,
+///   present only inside agent sessions — see [`auto_update_opt_out_var`])
+/// - running a release artifact or an un-installed build (bootstrap owns those)
+/// - the last check was under the floor (default 60s, `NUR_AUTO_UPDATE_TTL_SECS`)
+///
+/// `NUR_AUTO_UPDATE_BLOCKING=1` waits for the check to finish instead of
+/// detaching — for scripts and for proving this path end to end.
 pub fn maybe_auto_update_on_launch(enabled: bool) -> bool {
     if !enabled {
         return false;
     }
-    if env_truthy("NUR_SKIP_AUTO_UPDATE") || env_truthy("META_SKIP_AUTO_UPDATE") {
+    if auto_update_opt_out_var().is_some() {
         return false;
     }
     // First-run / release EXE: bootstrap already handles install.
     if looks_like_release_artifact() {
+        return false;
+    }
+    // A foreground one-stop install is about to rewrite the same binary — two
+    // writers on ~/.local/bin/nur.exe is how you end up with a bricked PATH.
+    if should_bootstrap_on_launch() {
         return false;
     }
     // Only auto-update when the product is installed (or we are it).
@@ -485,21 +620,23 @@ pub fn maybe_auto_update_on_launch(enabled: bool) -> bool {
     }
 
     let st = load_auto_update_state();
-    let now = now_secs();
     // Throttle on the timestamp alone. Keying this on `last_result == "current"`
     // meant a failed check re-downloaded on every single launch — invisible now
     // that the attempt happens on a background thread.
-    if st.last_check_at > 0 && now.saturating_sub(st.last_check_at) < AUTO_UPDATE_TTL_SECS {
+    if !auto_update_due(st.last_check_at, now_secs(), auto_update_min_interval_secs()) {
         return false;
     }
 
-    // Non-blocking: spawn background thread so TUI startup stays instant.
+    // Non-blocking: spawn background thread so startup stays instant.
     // Previously this did a blocking 8s HTTP call to api.github.com on the main thread,
     // adding 1s+ latency to every cold launch when cache stale.
     // Now we return immediately and let background handle it; next launch uses new binary.
-    std::thread::Builder::new()
+    let handle = std::thread::Builder::new()
         .name("nur-auto-update".into())
         .spawn(move || {
+            // Sweep first: a previous run that exited mid-download left a partial
+            // body in the install dir, and those accumulate forever otherwise.
+            cleanup_stale_update_temps(&install_dir(), UPDATE_TMP_MAX_AGE_SECS);
             // Re-load state inside thread to avoid race, use fresh now
             let now_inner = now_secs();
             let mut st_inner = load_auto_update_state();
@@ -540,35 +677,215 @@ pub fn maybe_auto_update_on_launch(enabled: bool) -> bool {
         })
         .ok();
 
+    // Opt-in synchronous mode. Default stays detached so `nur run …` in a script
+    // pays zero latency; scripts that *want* to be on the newest build (and the
+    // end-to-end test for this path) set the env var and wait.
+    if env_truthy("NUR_AUTO_UPDATE_BLOCKING") {
+        if let Some(h) = handle {
+            let _ = h.join();
+        }
+    }
+
     false
 }
 
-/// Query GitHub Releases and install a newer binary when available.
-/// `force_verbose` prints status lines (used by `nur update`).
-fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
+/// `nur update --check` — dry run. Says exactly what the auto-updater would do
+/// on this machine, right now, and installs nothing. This exists because the
+/// real path is deliberately silent and backgrounded, which makes "is it even
+/// working?" unanswerable from a shell otherwise.
+pub fn run_update_check() -> Result<()> {
     let local = env!("CARGO_PKG_VERSION");
-    let http = reqwest::blocking::Client::builder()
-        .user_agent(format!("nur-cli/{local}"))
-        .timeout(std::time::Duration::from_secs(if force_verbose {
-            60
-        } else {
-            8
-        }))
-        .build()
-        .map_err(|e| MuseError::Other(format!("http client: {e}")))?;
+    println!();
+    theme::print_info("nur update --check · dry run (nothing will be installed)");
+    println!();
 
-    if force_verbose {
-        step("Checking GitHub Releases…");
+    let rel = fetch_latest_release(20)?;
+    let tag = rel
+        .get("tag_name")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if tag.is_empty() {
+        return Err(MuseError::Other("empty release tag".into()));
     }
-    let rel: serde_json::Value = http
-        .get(GH_RELEASES_LATEST)
+    let remote = strip_v_prefix(&tag).to_string();
+    let assets = release_assets(&rel);
+    let picked = pick_nur_release_asset(&assets);
+
+    println!("  local     v{local}");
+    println!("  remote    v{remote}   (tag {tag})");
+    println!(
+        "  platform  {}-{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    );
+    match &picked {
+        Some((name, url)) => {
+            println!("  asset     {name}");
+            println!("  url       {url}");
+        }
+        None => {
+            println!("  asset     (none matched this platform)");
+            println!(
+                "  found     {}",
+                if assets.is_empty() {
+                    "(release has no assets)".to_string()
+                } else {
+                    assets
+                        .iter()
+                        .map(|(n, _)| n.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                }
+            );
+        }
+    }
+    println!("  install   {}", install_binary_path().display());
+    println!(
+        "  interval  every launch, min {}s between network checks (NUR_AUTO_UPDATE_TTL_SECS)",
+        auto_update_min_interval_secs()
+    );
+    println!();
+
+    let newer = version_is_newer(&remote, local);
+    if newer && picked.is_some() {
+        theme::print_ok(&format!(
+            "decision  WOULD UPDATE  v{local} → v{remote}  (run `nur update` to apply)"
+        ));
+    } else if newer {
+        theme::print_err("decision  newer release exists but no asset matches this platform");
+    } else if remote == local {
+        theme::print_ok(&format!("decision  up to date (v{local})"));
+    } else {
+        theme::print_ok(&format!(
+            "decision  up to date — local v{local} is ahead of the latest release v{remote}"
+        ));
+    }
+
+    // Show what the launch gate believes, so a stuck throttle is visible too.
+    println!();
+    for line in auto_update_report() {
+        println!("  {line}");
+    }
+    println!();
+    Ok(())
+}
+
+/// State lines for `nur doctor` / `nur update --check`: is the launch check
+/// enabled, when did it last run, and what did it decide?
+pub fn auto_update_report() -> Vec<String> {
+    let mut out = Vec::new();
+    let enabled = config::load_config().map(|c| c.auto_update).unwrap_or(true);
+    let skipped = auto_update_opt_out_var();
+    out.push(match (enabled, skipped) {
+        (false, _) => "auto-update  off (config.auto_update = false)".to_string(),
+        (true, Some(k)) => format!("auto-update  off for this shell ({k} is set)"),
+        (true, None) => format!(
+            "auto-update  on · every launch · min {}s between checks",
+            auto_update_min_interval_secs()
+        ),
+    });
+
+    let st = load_auto_update_state();
+    if st.last_check_at == 0 {
+        out.push("last check   never (no ~/.nur/auto_update.json yet)".to_string());
+    } else {
+        let ago = now_secs().saturating_sub(st.last_check_at);
+        let stamp = chrono::DateTime::from_timestamp(st.last_check_at as i64, 0)
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
+            })
+            .unwrap_or_else(|| st.last_check_at.to_string());
+        out.push(format!("last check   {stamp}  ({} ago)", human_secs(ago)));
+        out.push(format!(
+            "last remote  v{}",
+            if st.last_remote_version.is_empty() {
+                "(unknown)"
+            } else {
+                st.last_remote_version.as_str()
+            }
+        ));
+        out.push(format!(
+            "last result  {}",
+            if st.last_result.is_empty() {
+                "(none)"
+            } else {
+                st.last_result.as_str()
+            }
+        ));
+    }
+    out.push(format!("state file   {}", auto_update_state_path().display()));
+    out
+}
+
+fn human_secs(s: u64) -> String {
+    if s < 90 {
+        format!("{s}s")
+    } else if s < 90 * 60 {
+        format!("{}m", s / 60)
+    } else if s < 48 * 3600 {
+        format!("{}h", s / 3600)
+    } else {
+        format!("{}d", s / 86400)
+    }
+}
+
+/// GET the latest release JSON. Shared by the installer and the `--check` dry
+/// run so both can never disagree about which release "latest" means.
+fn fetch_latest_release(timeout_secs: u64) -> Result<serde_json::Value> {
+    let http = http_client(timeout_secs)?;
+    http.get(GH_RELEASES_LATEST)
         .header("Accept", "application/vnd.github+json")
         .send()
         .map_err(|e| MuseError::Other(format!("releases API: {e}")))?
         .error_for_status()
         .map_err(|e| MuseError::Other(format!("releases API: {e}")))?
         .json()
-        .map_err(|e| MuseError::Other(format!("releases JSON: {e}")))?;
+        .map_err(|e| MuseError::Other(format!("releases JSON: {e}")))
+}
+
+fn http_client(timeout_secs: u64) -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(format!("nur-cli/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .map_err(|e| MuseError::Other(format!("http client: {e}")))
+}
+
+fn release_assets(rel: &serde_json::Value) -> Vec<(String, String)> {
+    rel.get("assets")
+        .and_then(|a| a.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|a| {
+                    Some((
+                        a.get("name")?.as_str()?.to_string(),
+                        a.get("browser_download_url")?.as_str()?.to_string(),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Query GitHub Releases and install a newer binary when available.
+/// `force_verbose` prints status lines (used by `nur update`); the launch path
+/// passes `false` and stays **completely silent** — it runs on a background
+/// thread while ratatui owns the alternate screen (or while a headless run is
+/// streaming to stdout), so any print here corrupts someone's output.
+fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
+    let local = env!("CARGO_PKG_VERSION");
+    // Launch path gets a short leash: 8s to notice a new release, then give up
+    // until the next run. `nur update` is user-initiated and may wait.
+    let http = http_client(if force_verbose { 60 } else { 8 })?;
+
+    if force_verbose {
+        step("Checking GitHub Releases…");
+    }
+    let rel: serde_json::Value = fetch_latest_release(if force_verbose { 60 } else { 8 })?;
 
     let tag = rel
         .get("tag_name")
@@ -585,36 +902,23 @@ fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
         });
     }
 
-    let assets: Vec<(String, String)> = rel
-        .get("assets")
-        .and_then(|a| a.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|a| {
-                    Some((
-                        a.get("name")?.as_str()?.to_string(),
-                        a.get("browser_download_url")?.as_str()?.to_string(),
-                    ))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let assets = release_assets(&rel);
 
     let (name, url) = pick_nur_release_asset(&assets)
         .ok_or_else(|| MuseError::Other("no matching release asset for this platform".into()))?;
 
     if force_verbose {
         step(&format!("Downloading {name} (v{remote})…"));
-    } else {
-        theme::print_info(&format!("Update available: v{local} → v{remote}"));
-        theme::print_info(&format!("Downloading {name}…"));
     }
 
     let dest_dir = install_dir();
     fs::create_dir_all(&dest_dir)?;
+    // Unique per process: two shells launching at once must not write the same
+    // temp file and hand each other half an EXE.
     let tmp = dest_dir.join(format!(
-        ".nur-update-{}{}",
+        "{UPDATE_TMP_PREFIX}{}-{}{}",
         remote,
+        std::process::id(),
         if cfg!(windows) { ".exe.tmp" } else { ".tmp" }
     ));
     let bytes = http
@@ -625,6 +929,10 @@ fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
         .map_err(|e| MuseError::Other(format!("download: {e}")))?
         .bytes()
         .map_err(|e| MuseError::Other(format!("download body: {e}")))?;
+    // Validate **before** anything touches disk, so a partial or bogus body can
+    // never reach `install_binary_safe`. `.bytes()` already errors on a
+    // truncated body; these two guards catch the cases that still return 200:
+    // a rate-limit/HTML error page, or an asset pointing at the wrong file.
     if bytes.len() < 1_000_000 {
         // Guard against HTML error pages / truncated assets (real EXEs are multi-MB).
         return Err(MuseError::Other(format!(
@@ -632,7 +940,25 @@ fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
             bytes.len()
         )));
     }
+    if !looks_like_native_executable(&bytes) {
+        return Err(MuseError::Other(
+            "downloaded asset is not a native executable — aborting".into(),
+        ));
+    }
     fs::write(&tmp, &bytes).map_err(MuseError::Io)?;
+    // A short write (disk full) would leave a truncated image that passes the
+    // guards above purely because they ran on the in-memory buffer.
+    match fs::metadata(&tmp) {
+        Ok(m) if m.len() as usize == bytes.len() => {}
+        other => {
+            let _ = fs::remove_file(&tmp);
+            return Err(MuseError::Other(format!(
+                "download did not land intact ({} of {} bytes) — aborting",
+                other.map(|m| m.len()).unwrap_or(0),
+                bytes.len()
+            )));
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -640,8 +966,11 @@ fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
     }
 
     let dest = install_binary_path();
-    install_binary_safe(&tmp, &dest)?;
+    // Remove the temp on the failure path too — otherwise a locked target leaks
+    // a multi-MB file into ~/.local/bin on every attempt.
+    let installed = install_binary_safe(&tmp, &dest);
     let _ = fs::remove_file(&tmp);
+    installed?;
     scrub_legacy_and_impostor_bins(&dest_dir, &dest);
     if let Some(hash) = file_sha256(&dest) {
         let record = format!(
@@ -655,6 +984,33 @@ fn try_install_from_github(force_verbose: bool) -> Result<UpdateOutcome> {
     Ok(UpdateOutcome::Updated {
         version: remote.to_string(),
     })
+}
+
+/// Cheap "is this actually a binary for this OS" check on the downloaded body.
+/// GitHub can answer 200 with an HTML error page or a redirect stub; installing
+/// that over `nur.exe` bricks the tool until the user re-runs the installer.
+/// Mach-O has four valid magics (fat/thin × endianness), so macOS checks all.
+fn looks_like_native_executable(bytes: &[u8]) -> bool {
+    if bytes.len() < 4 {
+        return false;
+    }
+    if cfg!(windows) {
+        return &bytes[..2] == b"MZ";
+    }
+    if cfg!(target_os = "macos") {
+        const MACHO: [[u8; 4]; 4] = [
+            [0xfe, 0xed, 0xfa, 0xce],
+            [0xfe, 0xed, 0xfa, 0xcf],
+            [0xce, 0xfa, 0xed, 0xfe],
+            [0xcf, 0xfa, 0xed, 0xfe],
+        ];
+        const FAT: [[u8; 4]; 2] = [[0xca, 0xfe, 0xba, 0xbe], [0xbe, 0xba, 0xfe, 0xca]];
+        // Release pipeline may also ship .tar.gz for macOS — gzip magic passes.
+        return MACHO.iter().chain(FAT.iter()).any(|m| &bytes[..4] == m)
+            || bytes[..2] == [0x1f, 0x8b];
+    }
+    // Linux: ELF, or a gzip tarball of one.
+    &bytes[..4] == b"\x7fELF" || bytes[..2] == [0x1f, 0x8b]
 }
 
 fn strip_v_prefix(tag: &str) -> &str {
@@ -1172,6 +1528,149 @@ mod auto_update_tests {
     fn strip_v_prefix_works() {
         assert_eq!(strip_v_prefix("v0.18.7"), "0.18.7");
         assert_eq!(strip_v_prefix("0.18.7"), "0.18.7");
+    }
+
+    // ── launch gate ───────────────────────────────────────────────────────
+    // The bug this whole change exists to kill: a 6h TTL meant a launch almost
+    // never checked. These lock in "checks on every run, with a small floor".
+
+    #[test]
+    fn first_ever_launch_always_checks() {
+        assert!(auto_update_due(0, 1_700_000_000, 60));
+    }
+
+    #[test]
+    fn checks_again_once_the_floor_elapses() {
+        let last = 1_700_000_000u64;
+        // Inside the floor: skip. At/after the floor: check.
+        assert!(!auto_update_due(last, last + 1, 60));
+        assert!(!auto_update_due(last, last + 59, 60));
+        assert!(auto_update_due(last, last + 60, 60));
+        assert!(auto_update_due(last, last + 61, 60));
+        // The old 6h TTL would have skipped all of these.
+        assert!(auto_update_due(last, last + 5 * 60, 60));
+    }
+
+    #[test]
+    fn zero_interval_checks_every_single_launch() {
+        let last = 1_700_000_000u64;
+        assert!(auto_update_due(last, last, 0));
+        assert!(auto_update_due(last, last + 1, 0));
+    }
+
+    #[test]
+    fn backwards_clock_does_not_wedge_the_gate() {
+        // NTP correction / dual boot: `now` behind `last_check_at` must not
+        // subtract-underflow into "wait forever".
+        assert!(auto_update_due(1_700_000_000, 1_600_000_000, 60));
+    }
+
+    #[test]
+    fn min_interval_env_parsing() {
+        assert_eq!(parse_min_interval(None), AUTO_UPDATE_MIN_INTERVAL_SECS);
+        assert_eq!(parse_min_interval(Some("0")), 0);
+        assert_eq!(parse_min_interval(Some("900")), 900);
+        assert_eq!(parse_min_interval(Some("  120  ")), 120);
+        // Garbage must fall back to the default, never to 0 (network hammer)
+        // and never to a huge number (feature asleep again).
+        assert_eq!(parse_min_interval(Some("")), AUTO_UPDATE_MIN_INTERVAL_SECS);
+        assert_eq!(
+            parse_min_interval(Some("nonsense")),
+            AUTO_UPDATE_MIN_INTERVAL_SECS
+        );
+        assert_eq!(parse_min_interval(Some("-5")), AUTO_UPDATE_MIN_INTERVAL_SECS);
+    }
+
+    #[test]
+    fn default_floor_is_small_enough_to_feel_like_every_run() {
+        assert!(AUTO_UPDATE_MIN_INTERVAL_SECS <= 60);
+    }
+
+    // ── install dir override ──────────────────────────────────────────────
+
+    #[test]
+    fn install_dir_env_override() {
+        let scratch = if cfg!(windows) {
+            "C:\\scratch\\bin"
+        } else {
+            "/tmp/scratch/bin"
+        };
+        assert_eq!(install_dir_from(Some(scratch)), PathBuf::from(scratch));
+        // Blank / unset falls back to ~/.local/bin.
+        let dflt = install_dir_from(None);
+        assert!(dflt.ends_with("bin"));
+        assert_eq!(install_dir_from(Some("   ")), dflt);
+    }
+
+    // ── stale temp cleanup ────────────────────────────────────────────────
+
+    #[test]
+    fn cleanup_removes_only_stale_update_temps() {
+        let dir = std::env::temp_dir().join(format!("nur-cleanup-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let temps = [".nur-update-0.1.0-123.exe.tmp", ".nur-update-9.9.9-7.tmp"];
+        let keep = ["nur.exe", "nur", "nur.sha256", "claude.exe"];
+        for f in temps.iter().chain(keep.iter()) {
+            fs::write(dir.join(f), b"x").unwrap();
+        }
+
+        // max_age far in the future: nothing is old enough yet — an in-flight
+        // download by a live sibling process must survive.
+        assert_eq!(cleanup_stale_update_temps(&dir, 3600), 0);
+        for f in temps.iter().chain(keep.iter()) {
+            assert!(dir.join(f).is_file(), "{f} vanished too early");
+        }
+
+        // max_age 0: every leftover temp is fair game, real binaries are not.
+        assert_eq!(cleanup_stale_update_temps(&dir, 0), temps.len());
+        for f in &temps {
+            assert!(!dir.join(f).exists(), "{f} should be gone");
+        }
+        for f in &keep {
+            assert!(dir.join(f).is_file(), "{f} must never be touched");
+        }
+
+        // Idempotent on an already-clean dir, and safe on a missing one.
+        assert_eq!(cleanup_stale_update_temps(&dir, 0), 0);
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(cleanup_stale_update_temps(&dir, 0), 0);
+    }
+
+    // ── partial-download guard ────────────────────────────────────────────
+
+    #[test]
+    fn rejects_non_executable_payloads() {
+        // The realistic failure: GitHub/CDN answers 200 with HTML.
+        assert!(!looks_like_native_executable(
+            b"<!DOCTYPE html><html>rate limited"
+        ));
+        assert!(!looks_like_native_executable(b""));
+        assert!(!looks_like_native_executable(b"MZ")); // too short to judge
+        assert!(!looks_like_native_executable(b"{\"message\":\"Not Found\"}"));
+    }
+
+    #[test]
+    fn accepts_this_platforms_executable_magic() {
+        if cfg!(windows) {
+            assert!(looks_like_native_executable(b"MZ\x90\x00\x03\x00"));
+            assert!(!looks_like_native_executable(b"\x7fELF\x02\x01"));
+        } else if cfg!(target_os = "macos") {
+            assert!(looks_like_native_executable(&[0xcf, 0xfa, 0xed, 0xfe, 0, 0]));
+        } else {
+            assert!(looks_like_native_executable(b"\x7fELF\x02\x01"));
+            assert!(!looks_like_native_executable(b"MZ\x90\x00"));
+        }
+    }
+
+    #[test]
+    fn real_running_binary_passes_the_magic_check() {
+        // Belt and braces: whatever this OS calls an executable, our own image
+        // must satisfy the guard — otherwise updates would always self-reject.
+        let exe = std::env::current_exe().unwrap();
+        let head = fs::read(&exe).unwrap();
+        assert!(looks_like_native_executable(&head[..64.min(head.len())]));
     }
 
     #[test]

@@ -382,6 +382,77 @@ pub const XAI_GROK_CLI_MIN_VERSION: &str = "0.1.202";
 /// Fallback fingerprint when `~/.grok/version.json` is absent (must be ≥ min).
 pub const XAI_GROK_CLI_DEFAULT_VERSION: &str = "0.2.101";
 
+// ── Reasoning effort ───────────────────────────────────────────────────────
+//
+// Effort is not one ladder. OpenAI-shaped APIs take a `reasoning.effort`
+// string, xAI historically takes only the two ends of it, Anthropic and Gemini
+// take a *token budget* instead of a name, and every vendor keeps adding rungs
+// (`minimal` and `xhigh` did not exist when this knob shipped). So the set is
+// derived per provider, and an unrecognised level is a *warning*, never a hard
+// error — a rung a vendor added this morning has to work this morning.
+
+/// The rung names nur itself understands, weakest → strongest. New vendor names
+/// outside this list are still accepted and forwarded verbatim.
+pub const EFFORT_LADDER: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+
+/// The ladder xAI's API accepts — it takes only the two ends.
+const EFFORT_LOW_HIGH: &[&str] = &["low", "high"];
+
+/// Rungs `provider_id` is known to accept, weakest → strongest.
+///
+/// Empty means the provider has no effort knob at all (it budgets thinking in
+/// tokens, or does not expose reasoning controls) — callers must then omit the
+/// field rather than send a value the endpoint will reject.
+pub fn effort_levels(provider_id: &str) -> &'static [&'static str] {
+    match provider_id {
+        // Thinking-budget providers: no `effort` string on the wire.
+        "anthropic" | "google" | "antigravity" | "google-oauth" => &[],
+        "xai" => EFFORT_LOW_HIGH,
+        _ => EFFORT_LADDER,
+    }
+}
+
+/// Does this provider take a reasoning-effort name on the wire?
+pub fn supports_effort(provider_id: &str) -> bool {
+    !effort_levels(provider_id).is_empty()
+}
+
+/// The rung this provider will actually accept for a requested `want`.
+///
+/// - `None` when the provider has no effort knob (omit the field entirely).
+/// - The request unchanged when the provider lists it, **or** when the level is
+///   one nur does not know: an unknown name is far more likely to be a rung the
+///   vendor just added than a typo, and refusing it would make nur the reason a
+///   new capability is unreachable.
+/// - Otherwise the closest rung it does support, by position on [`EFFORT_LADDER`]
+///   (so `xhigh` on a low/high provider lands on `high`, not `low`). Ties round
+///   **up**: nur's own default is `medium`, which is equidistant from `low` and
+///   `high` on a two-rung provider, and quietly downgrading every session there
+///   is a worse failure than spending a little more.
+pub fn nearest_effort(provider_id: &str, want: &str) -> Option<String> {
+    let want = want.trim().to_ascii_lowercase();
+    let levels = effort_levels(provider_id);
+    if levels.is_empty() {
+        return None;
+    }
+    if want.is_empty() {
+        return Some("medium".to_string());
+    }
+    if levels.contains(&want.as_str()) {
+        return Some(want);
+    }
+    let Some(rank) = EFFORT_LADDER.iter().position(|l| *l == want) else {
+        // Unknown to nur — forward it and let the provider decide.
+        return Some(want);
+    };
+    let nearest = levels
+        .iter()
+        .filter_map(|l| EFFORT_LADDER.iter().position(|x| x == l).map(|i| (i, *l)))
+        .min_by_key(|(i, _)| (i.abs_diff(rank), std::cmp::Reverse(*i)))
+        .map(|(_, l)| l.to_string());
+    nearest.or(Some(want))
+}
+
 /// Fixed inference backends bound to first-party OAuth access tokens.
 pub fn oauth_base_url(provider_id: &str) -> Option<&'static str> {
     match provider_id {
@@ -390,6 +461,39 @@ pub fn oauth_base_url(provider_id: &str) -> Option<&'static str> {
         "kimi" => Some(KIMI_CODE_BASE_URL),
         _ => None,
     }
+}
+
+/// Where a provider actually answers, given whether the credential in hand is an
+/// OAuth access token or a plain API key.
+///
+/// The catalog row describes the *API-key* endpoint. A first-party OAuth session
+/// frequently speaks a different host, wire format, and model line:
+/// ChatGPT tokens hit the Codex backend, Grok Build tokens hit the CLI proxy in
+/// Responses shape, and Google `ya29.` tokens are rejected by the
+/// generativelanguage OpenAI-compat host and must go to Cloud Code.
+///
+/// Every place that builds a client for a provider *other than the active one*
+/// (cross-provider subagents, failover) must go through this, or it silently
+/// aims an OAuth token at the key-only endpoint and eats a 401.
+pub fn endpoint_for_credential(p: &Provider, is_oauth: bool) -> (&'static str, ApiStyle, &'static str) {
+    if !is_oauth {
+        return (p.base_url, p.style, p.default_model);
+    }
+    // Google-family OAuth tokens only work over Cloud Code's native protocol.
+    if is_google_family(p.id) {
+        return (
+            ANTIGRAVITY_CLOUD_CODE_BASE_URL,
+            ApiStyle::GeminiCloudCode,
+            p.default_model,
+        );
+    }
+    let base = oauth_base_url(p.id).unwrap_or(p.base_url);
+    if p.id == "xai" {
+        // The Grok Build proxy is Responses-shaped and serves the current
+        // flagship id, not whatever the key-side catalog row happens to hold.
+        return (base, ApiStyle::Responses, XAI_DEFAULT_MODEL);
+    }
+    (base, p.style, p.default_model)
 }
 
 /// Grok CLI version string for `x-grok-client-version` (subscription OAuth proxy).
@@ -1570,6 +1674,97 @@ mod tests {
         // Whole-word: "pro" alone is not scanned; "gemini pro" is.
         assert!(named_providers_in_text("write a pro implementation").is_empty());
         assert!(named_providers_in_text("run on gemini pro").contains(&"gemini pro".into()));
+    }
+
+    /// A credential's *kind* decides the endpoint, not just the provider id.
+    /// Every cross-provider client (subagent routing, failover) builds through
+    /// this, so an OAuth token must never be aimed at the key-only host.
+    #[test]
+    fn endpoint_follows_the_credential_kind() {
+        let openai = by_id("openai").expect("openai in catalog");
+        let (base, style, model) = endpoint_for_credential(openai, false);
+        assert_eq!(base, openai.base_url, "API key keeps the catalog host");
+        assert_eq!(style, openai.style);
+        assert_eq!(model, openai.default_model);
+
+        let (base, _, _) = endpoint_for_credential(openai, true);
+        assert_eq!(base, OPENAI_OAUTH_BASE_URL, "ChatGPT session → Codex backend");
+
+        // Grok Build sessions change host, wire format AND model line.
+        let xai = by_id("xai").expect("xai in catalog");
+        let (base, style, model) = endpoint_for_credential(xai, true);
+        assert_eq!(base, XAI_OAUTH_BASE_URL);
+        assert_eq!(style, ApiStyle::Responses, "proxy is Responses-shaped");
+        assert_eq!(model, XAI_DEFAULT_MODEL);
+        assert_eq!(endpoint_for_credential(xai, false).1, xai.style);
+
+        // Google `ya29.` tokens are 401 on generativelanguage — Cloud Code only.
+        let google = by_id("google").expect("google in catalog");
+        let (base, style, _) = endpoint_for_credential(google, true);
+        assert_eq!(base, ANTIGRAVITY_CLOUD_CODE_BASE_URL);
+        assert_eq!(style, ApiStyle::GeminiCloudCode);
+        assert_eq!(
+            endpoint_for_credential(google, false).0,
+            google.base_url,
+            "a bare Gemini API key stays on the OpenAI-compat host"
+        );
+
+        // Kimi Code sessions have their own inference host.
+        let kimi = by_id("kimi").expect("kimi in catalog");
+        assert_eq!(endpoint_for_credential(kimi, true).0, KIMI_CODE_BASE_URL);
+
+        // Providers with no OAuth backend are unchanged either way.
+        let anthropic = by_id("anthropic").expect("anthropic in catalog");
+        assert_eq!(
+            endpoint_for_credential(anthropic, true),
+            endpoint_for_credential(anthropic, false)
+        );
+    }
+
+    /// Effort rungs are per-provider and open-ended. A level the provider does
+    /// not have must be clamped, a provider with no knob must yield nothing,
+    /// and a name nur has never heard of must pass straight through — vendors
+    /// add rungs faster than nur ships releases.
+    #[test]
+    fn effort_is_derived_per_provider_and_stays_open_ended() {
+        // OpenAI-shaped: the full ladder, passed through untouched.
+        assert_eq!(effort_levels("openai"), EFFORT_LADDER);
+        assert_eq!(nearest_effort("openai", "xhigh").as_deref(), Some("xhigh"));
+
+        // xAI takes only the two ends — clamp toward the nearer one.
+        assert_eq!(effort_levels("xai"), EFFORT_LOW_HIGH);
+        assert_eq!(nearest_effort("xai", "xhigh").as_deref(), Some("high"));
+        // Equidistant: round up rather than silently downgrade the default.
+        assert_eq!(nearest_effort("xai", "medium").as_deref(), Some("high"));
+        assert_eq!(nearest_effort("xai", "minimal").as_deref(), Some("low"));
+        assert_eq!(nearest_effort("xai", "low").as_deref(), Some("low"));
+
+        // Thinking-budget providers take no effort name at all: omit the field
+        // rather than send one they will reject.
+        for id in ["anthropic", "google", "antigravity", "google-oauth"] {
+            assert!(effort_levels(id).is_empty(), "{id} should have no rungs");
+            assert!(!supports_effort(id), "{id}");
+            assert_eq!(nearest_effort(id, "high"), None, "{id}");
+        }
+
+        // A rung a vendor shipped after this build must still reach them.
+        assert_eq!(
+            nearest_effort("openai", "ludicrous").as_deref(),
+            Some("ludicrous"),
+            "unknown rungs are forwarded, not rejected"
+        );
+        assert_eq!(
+            nearest_effort("xai", "ludicrous").as_deref(),
+            Some("ludicrous")
+        );
+
+        // Case and padding are normalised; empty falls back to a sane default.
+        assert_eq!(nearest_effort("openai", "  HIGH ").as_deref(), Some("high"));
+        assert_eq!(nearest_effort("openai", "").as_deref(), Some("medium"));
+
+        // Unknown provider ids get the full ladder rather than nothing, so a
+        // custom/self-hosted endpoint is not silently stripped of the knob.
+        assert_eq!(effort_levels("some-new-vendor"), EFFORT_LADDER);
     }
 
     #[test]

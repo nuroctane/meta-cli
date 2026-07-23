@@ -88,6 +88,16 @@ fn init_tracing() {
 async fn real_main() -> Result<()> {
     let cli = Cli::parse();
 
+    // "every time nur is ran in shell, it should update automatically" — so the
+    // release check fires for *every* invocation shape (bare TUI, `nur "prompt"`,
+    // `nur run …`, gateway, bench…), not just the interactive one. It spawns a
+    // thread and returns immediately, so a headless run pays no latency and
+    // cannot fail because GitHub is unreachable.
+    if maybe_auto_update_on_launch(&cli.command) {
+        // Reserved: a future re-exec handoff would return true here.
+        return Ok(());
+    }
+
     match &cli.command {
         Some(Commands::Auth { action }) => {
             match action {
@@ -123,8 +133,12 @@ async fn real_main() -> Result<()> {
             bootstrap::run_full_install()?;
             return Ok(());
         }
-        Some(Commands::Update) => {
-            bootstrap::run_update()?;
+        Some(Commands::Update { check }) => {
+            if *check {
+                bootstrap::run_update_check()?;
+            } else {
+                bootstrap::run_update()?;
+            }
             return Ok(());
         }
         Some(Commands::Doctor) => {
@@ -202,13 +216,8 @@ async fn real_main() -> Result<()> {
                     return Ok(());
                 }
             }
-            // Existing installs: check GitHub Releases and self-update when a
-            // newer version is available (TTL-throttled; soft-fails offline).
-            let auto = load_config().map(|c| c.auto_update).unwrap_or(true);
-            if bootstrap::maybe_auto_update_on_launch(auto) {
-                // Child process took over the TUI with the new binary.
-                return Ok(());
-            }
+            // The release check already fired at the top of `real_main` for
+            // every invocation shape — nothing extra to do here.
         }
         _ => {}
     }
@@ -544,7 +553,7 @@ async fn real_main() -> Result<()> {
         | Some(Commands::InstallHook)
         | Some(Commands::Install)
         | Some(Commands::SelfInstall)
-        | Some(Commands::Update)
+        | Some(Commands::Update { .. })
         | Some(Commands::Doctor)
         | Some(Commands::Ecosystem { .. })
         | Some(Commands::Browser { .. })
@@ -553,6 +562,29 @@ async fn real_main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Fire the GitHub release check for this launch. Returns `true` when the caller
+/// should exit because something else took over the session.
+///
+/// Opted out per-command, not per-mode:
+/// - `install` / `self-install` / `update` rewrite `~/.local/bin/nur` in the
+///   foreground; a background thread writing the same file is how you brick PATH.
+/// - `update --check` and `doctor` exist to *report* the auto-update state, so
+///   they must not mutate the timestamp they are about to print.
+fn maybe_auto_update_on_launch(command: &Option<Commands>) -> bool {
+    if matches!(
+        command,
+        Some(Commands::Install)
+            | Some(Commands::SelfInstall)
+            | Some(Commands::Update { .. })
+            | Some(Commands::Doctor)
+    ) {
+        return false;
+    }
+    // Missing/corrupt config must not disable updates — default on.
+    let enabled = load_config().map(|c| c.auto_update).unwrap_or(true);
+    bootstrap::maybe_auto_update_on_launch(enabled)
 }
 
 fn run_plugins_cli(action: Option<&cli::PluginsCmd>) -> Result<()> {
@@ -716,6 +748,20 @@ fn run_doctor() -> Result<()> {
         }
         Err(_) => theme::print_err("auth    not set — run: nur auth login"),
     }
+
+    // Auto-update — the only place a user can see whether the launch check is
+    // actually running. `doctor` deliberately does not trigger one, so these
+    // numbers describe real launches, not this command.
+    println!();
+    for line in bootstrap::auto_update_report() {
+        if line.contains("error:") || line.starts_with("auto-update  off") {
+            theme::print_info(&line);
+        } else {
+            theme::print_ok(&line);
+        }
+    }
+    theme::print_info("live check: nur update --check   ·   apply now: nur update");
+    println!();
 
     // Paths
     theme::print_ok(&format!("home    {}", config::meta_home().display()));

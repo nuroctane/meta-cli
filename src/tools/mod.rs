@@ -283,11 +283,15 @@ impl Tool for AgentStub {
          \"openrouter\", \"ollama\" (local). `model` is optional - omit it and the \
          subagent uses that provider's default model (recommended unless you know \
          a valid model id for that provider). The subagent uses that \
-         provider's stored credentials. If you are NOT signed in to the requested \
-         provider, the run continues on the parent provider and the TUI pops a \
-         /login prompt pre-selected to that provider so the user can authenticate - \
-         tell the user to complete /login (or run /login <provider>) then retry. \
-         Omit `provider` and `model` to inherit yours. Watch runs live with /swarm."
+         provider's stored credentials, importing a logged-in vendor CLI session \
+         (Claude Code, Codex, agy, gemini, …) automatically when there is no key \
+         on disk. If you are NOT signed in to the requested provider, the spawn is \
+         BLOCKED - it does NOT fall back to your provider - and the TUI pops /login \
+         pre-selected to that provider. In that case tell the user to finish /login \
+         (or run /login <provider>); nur then hands you the exact re-deploy call. \
+         Never re-run that task on your own provider and report it as the \
+         requested one. Omit `provider` and `model` to inherit yours. Watch runs \
+         live with /swarm - each pane shows the provider its child ran on."
     }
 
     fn parameters_schema(&self) -> Value {
