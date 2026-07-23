@@ -211,8 +211,11 @@ pub fn resolve_target_key(p: &Provider) -> Option<String> {
             return Some(k);
         }
     }
-    // t3 fallback: vendor CLI logged-in session
-    if let Ok(Some(tokens)) = crate::oauth::import_existing_session(p.id) {
+    // t3 fallback: vendor CLI logged-in session. Isolated via run_blocking:
+    // this is called synchronously from the async failover path and can shell
+    // out (e.g. reading an OS credential store), so it must not block a Tokio
+    // worker thread outright.
+    if let Ok(Some(tokens)) = crate::oauth::run_blocking(|| crate::oauth::import_existing_session(p.id)) {
         let tok = tokens.access_token.trim().to_string();
         if !tok.is_empty() {
             return Some(tok);

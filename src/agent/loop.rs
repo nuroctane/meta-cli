@@ -1734,6 +1734,72 @@ mod tests {
         );
     }
 
+    /// "gemini" resolves to catalog id `google` (see `natural_language_provider_names_resolve`),
+    /// a *different* id from an active `antigravity` session — but both share the
+    /// same Google OAuth login. A subagent saying "gemini" while the parent is
+    /// already on `antigravity` (or vice versa) must be treated as the provider
+    /// the user is *already using*: reuse the parent client verbatim, never
+    /// rebuild one or touch credential resolution. Regression test for the hang
+    /// where this fell through to the cross-provider branch instead.
+    #[test]
+    fn subagent_target_short_circuits_within_the_google_family() {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let parent_client = ApiClient::new("https://example.invalid", "parent-key").unwrap();
+        let mut parent_config = Config::default();
+        parent_config.provider = "antigravity".into();
+        parent_config.model = "gemini-2.5-pro".into();
+
+        let target = resolve_subagent_target(
+            &parent_client,
+            &parent_config,
+            Some("gemini"),
+            None,
+            None,
+            None,
+            None,
+            &tx,
+        );
+        match target {
+            SubagentTarget::Ready { config, .. } => {
+                assert_eq!(
+                    config.provider, "antigravity",
+                    "same-family request must keep the parent's actual provider id, \
+                     not rebuild against the unrelated `google` catalog entry"
+                );
+                assert_eq!(
+                    config.model, "gemini-2.5-pro",
+                    "no explicit model override was given, so it must inherit the parent's"
+                );
+            }
+            SubagentTarget::AwaitingLogin { .. } => {
+                panic!("same-provider-family request must never require login");
+            }
+        }
+
+        // The reverse direction (parent already on `google`, request "antigravity")
+        // must also short-circuit.
+        let mut parent_config_google = Config::default();
+        parent_config_google.provider = "google".into();
+        let target2 = resolve_subagent_target(
+            &parent_client,
+            &parent_config_google,
+            Some("antigravity"),
+            None,
+            None,
+            None,
+            None,
+            &tx,
+        );
+        match target2 {
+            SubagentTarget::Ready { config, .. } => {
+                assert_eq!(config.provider, "google");
+            }
+            SubagentTarget::AwaitingLogin { .. } => {
+                panic!("same-provider-family request must never require login");
+            }
+        }
+    }
+
     #[test]
     fn natural_language_provider_names_resolve() {
         assert_eq!(resolve_provider_alias("grok").map(|p| p.id), Some("xai"));
@@ -2811,8 +2877,19 @@ fn resolve_subagent_target(
             config: parent_config.clone(),
         };
     };
-    // Same provider as parent → just reuse the parent client (maybe new model).
-    if prov.id == parent_config.provider {
+    // Same provider as parent — or same account family (google / antigravity /
+    // google-oauth all share one Google OAuth session) — means the model is
+    // calling a provider the user is *already using*. Skip every bit of the
+    // cross-provider machinery below (credential re-resolution, vendor-CLI
+    // probing, client rebuild) and just reuse the parent client verbatim, the
+    // same way subagents worked before cross-provider routing existed. A bare
+    // `prov.id == parent_config.provider` check missed this: "gemini" resolves
+    // to catalog id `google`, a different id from an active `antigravity`
+    // session, even though it's the same provider/account.
+    let same_provider = prov.id == parent_config.provider
+        || (crate::providers::is_google_family(prov.id)
+            && crate::providers::is_google_family(&parent_config.provider));
+    if same_provider {
         let mut cfg = parent_config.clone();
         if let Some(m) = model {
             cfg.model = m.to_string();
@@ -2839,8 +2916,13 @@ fn resolve_subagent_target(
         // persist it into the per-provider OAuth store, and re-resolve. If that
         // works the subagent "just works" with no user input.
         if let Some(driver) = driver_for_provider(prov.id) {
-            if crate::t3code::probe_driver(driver).has_credentials {
-                match crate::oauth::import_existing_session(prov.id) {
+            // Both probe_driver and import_existing_session can shell out
+            // (reading a vendor CLI's credential file/store) — isolate via
+            // run_blocking so a slow probe can't stall the whole runtime.
+            let has_credentials =
+                crate::oauth::run_blocking(|| crate::t3code::probe_driver(driver)).has_credentials;
+            if has_credentials {
+                match crate::oauth::run_blocking(|| crate::oauth::import_existing_session(prov.id)) {
                     Ok(Some(tokens)) if !tokens.access_token.trim().is_empty() => {
                         // Persist so load_provider_oauth_token can re-resolve it.
                         let _ = crate::auth::save_provider_oauth(

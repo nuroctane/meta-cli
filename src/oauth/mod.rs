@@ -51,6 +51,31 @@ pub fn antigravity_setup_code_assist_force(
     Ok((s.project_id, s.tier_id))
 }
 
+/// Run a blocking operation (network call, subprocess spawn, credential-store
+/// read, …) without stalling the async runtime.
+///
+/// A bare `std::thread::spawn(..).join()` from inside a Tokio task blocks the
+/// calling worker thread *without telling Tokio's scheduler a blocking op is
+/// in flight* — unlike `block_in_place`, it does not get a replacement worker
+/// thread. Under concurrent load (a turn plus several subagents all resolving
+/// credentials at once) that can starve every worker thread simultaneously,
+/// hanging the whole process. Prefer this helper for anything that isn't a
+/// plain non-blocking `.await`.
+pub fn run_blocking<T: Send>(operation: impl FnOnce() -> T + Send) -> T {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(operation)
+        }
+        Ok(_) => std::thread::scope(|scope| {
+            scope
+                .spawn(operation)
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }),
+        Err(_) => operation(),
+    }
+}
+
 pub fn now_unix() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

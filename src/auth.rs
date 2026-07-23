@@ -285,7 +285,12 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
         // `expires_at` mandatory: an expired vendor session would otherwise be
         // handed to the API on every request forever, producing an endless 401
         // loop with a misleading error instead of a clean "run /login".
-        if let Ok(Some(tokens)) = crate::oauth::import_existing_session(exp) {
+        // Isolated via run_blocking: this can shell out (e.g. reading Windows
+        // Credential Manager for a vendor-CLI session), and resolve_api_key_for
+        // is reachable directly from the async main() / turn-1 startup path, so
+        // an unguarded call here could stall a Tokio worker thread on the very
+        // first request.
+        if let Ok(Some(tokens)) = crate::oauth::run_blocking(|| crate::oauth::import_existing_session(exp)) {
             let tok = tokens.access_token.trim().to_string();
             if !tok.is_empty() && !oauth_expired(tokens.expires_at) {
                 return Ok(tok);
@@ -301,7 +306,7 @@ pub fn resolve_api_key_for(expected_provider: Option<&str>) -> Result<String> {
                     provider: exp.to_string(),
                     ..Default::default()
                 };
-                if let Ok(fresh) = crate::oauth::refresh_tokens(exp, &probe, refresh) {
+                if let Ok(fresh) = crate::oauth::run_blocking(|| crate::oauth::refresh_tokens(exp, &probe, refresh)) {
                     let tok = fresh.access_token.trim().to_string();
                     if !tok.is_empty() && !oauth_expired(fresh.expires_at) {
                         // Persist the refreshed token back to the per-provider
@@ -509,15 +514,13 @@ pub fn refresh_oauth_in_place(auth: &mut Auth) -> Result<bool> {
 
 fn refresh_oauth_with_token(auth: &mut Auth, refresh: &str) -> Result<bool> {
     let provider = auth.provider.as_str();
-    // Provider adapters use reqwest's blocking client. Always isolate refresh
-    // on a plain worker thread so callers are safe both inside and outside a
-    // Tokio runtime (headless startup, streaming retries, TUI model refresh).
-    let tokens = std::thread::scope(|scope| {
-        scope
-            .spawn(|| crate::oauth::refresh_tokens(provider, auth, refresh))
-            .join()
-    })
-    .map_err(|_| MuseError::Other("OAuth refresh worker panicked".into()))??;
+    // Provider adapters use reqwest's blocking client (and, for vendor-CLI
+    // imported sessions, may shell out to read an OS credential store, which
+    // can take several seconds). Isolate via `run_blocking` so this can never
+    // stall every Tokio worker thread at once — see its doc comment for why a
+    // bare `thread::spawn(..).join()` here previously caused turn-1 and
+    // concurrent-subagent hangs whenever a token needed refreshing.
+    let tokens = crate::oauth::run_blocking(|| crate::oauth::refresh_tokens(provider, auth, refresh))?;
     auth.api_key = tokens.access_token;
     if let Some(r) = tokens.refresh_token {
         auth.refresh_token = Some(r);
